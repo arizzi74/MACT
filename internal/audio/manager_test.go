@@ -657,6 +657,20 @@ func TestDownloadProgressAndShutdownCancellation(t *testing.T) {
 		t.Fatal("download did not start")
 	}
 	status := waitSettings(t, m, "downloading")
+	// The pipe write returns when Read consumes the bytes, before io.Copy
+	// necessarily records them through progressWriter.
+	progressDeadline := time.NewTimer(3 * time.Second)
+	defer progressDeadline.Stop()
+	progressTick := time.NewTicker(time.Millisecond)
+	defer progressTick.Stop()
+	for status.Operation.State == "downloading" && status.Operation.DownloadedBytes == 0 {
+		select {
+		case <-progressDeadline.C:
+			t.Fatalf("download progress missing: %+v", status.Operation)
+		case <-progressTick.C:
+			status = m.Snapshot()
+		}
+	}
 	if status.Operation.DownloadedBytes != 8 || status.Operation.TotalBytes != int64(len(data)) {
 		t.Fatalf("download progress missing: %+v", status.Operation)
 	}
