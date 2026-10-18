@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 
@@ -25,6 +26,25 @@ func TestNativeWorkerArchiveDeleteProjectAndRestoreOriginalSession(t *testing.T)
 	if os.Getenv("CODEX_NATIVE_ARCHIVE_TEST") != "1" {
 		t.Skip("set CODEX_NATIVE_ARCHIVE_TEST=1 for isolated installed-Codex worker proof")
 	}
+	if os.Getenv("CODEX_NATIVE_ARCHIVE_UMASK_CHILD") != "1" {
+		// Umask is process-wide: isolate the production worker's restrictive
+		// setting from other tests, including tests running in parallel.
+		testBinary, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 9*time.Minute)
+		defer cancel()
+		command := exec.CommandContext(ctx, testBinary, "-test.run=^"+t.Name()+"$", "-test.v", "-test.timeout=9m")
+		command.Env = append(os.Environ(), "CODEX_NATIVE_ARCHIVE_UMASK_CHILD=1")
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("native worker archive proof with umask 0077: %v\n%s", err, output)
+		}
+		t.Logf("native worker archive proof with umask 0077:\n%s", output)
+		return
+	}
+	syscall.Umask(0077)
 	binary := os.Getenv("CODEX_REAL_BINARY")
 	if binary == "" {
 		var err error
@@ -59,9 +79,42 @@ func TestNativeWorkerArchiveDeleteProjectAndRestoreOriginalSession(t *testing.T)
 			if err := os.WriteFile(filepath.Join(codexHome, "config.toml"), []byte("model_provider = \"archive_verify\"\nmodel = \"archive-proof\"\ncheck_for_update_on_startup = false\n[model_providers.archive_verify]\nname = \"Offline worker archive test\"\nbase_url = \"http://127.0.0.1:1\"\nwire_api = \"responses\"\nrequires_openai_auth = false\n[features]\nplugins = false\n"), 0600); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(project, "project.txt"), []byte("fabricated project contents"), 0640); err != nil {
-				t.Fatal(err)
+			projectFiles := []struct {
+				name, contents string
+				mode           os.FileMode
+			}{
+				{"project.txt", "fabricated project contents", 0640},
+				{"readable.txt", "fabricated readable contents", 0644},
+				{"executable.sh", "#!/bin/sh\nexit 0\n", 0755},
 			}
+			for _, file := range projectFiles {
+				path := filepath.Join(project, file.name)
+				if err := os.WriteFile(path, []byte(file.contents), 0600); err != nil {
+					t.Fatal(err)
+				}
+				// Creation modes are masked by umask, so set and check the source
+				// modes explicitly before exercising the archive worker.
+				if err := os.Chmod(path, file.mode); err != nil {
+					t.Fatal(err)
+				}
+			}
+			assertProjectFiles := func() {
+				t.Helper()
+				for _, file := range projectFiles {
+					path := filepath.Join(project, file.name)
+					if data, err := os.ReadFile(path); err != nil || string(data) != file.contents {
+						t.Fatalf("project file %s contents = %q, %v", file.name, data, err)
+					}
+					info, err := os.Lstat(path)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !info.Mode().IsRegular() || info.Mode().Perm() != file.mode {
+						t.Fatalf("project file %s mode = %v, want regular file with permissions %04o", file.name, info.Mode(), file.mode)
+					}
+				}
+			}
+			assertProjectFiles()
 			parentSentinel := filepath.Join(workspace, "parent-sentinel.txt")
 			sibling := filepath.Join(workspace, "neighbor-project")
 			if err := os.Mkdir(sibling, 0700); err != nil {
@@ -72,15 +125,21 @@ func TestNativeWorkerArchiveDeleteProjectAndRestoreOriginalSession(t *testing.T)
 					t.Fatal(err)
 				}
 			}
-			parentInfo, err := os.Stat(workspace)
-			if err != nil {
-				t.Fatal(err)
+			outsideInfo := make(map[string]os.FileInfo)
+			for _, path := range []string{workspace, sibling, parentSentinel, filepath.Join(sibling, "keep.txt")} {
+				info, err := os.Stat(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				outsideInfo[path] = info
 			}
 			assertParentPreserved := func() {
 				t.Helper()
-				after, err := os.Stat(workspace)
-				if err != nil || !os.SameFile(parentInfo, after) {
-					t.Fatalf("archive replaced or removed the parent directory: %v", err)
+				for path, before := range outsideInfo {
+					after, err := os.Stat(path)
+					if err != nil || !os.SameFile(before, after) {
+						t.Fatalf("archive replaced or removed a path outside the selected project %s: %v", path, err)
+					}
 				}
 				for _, path := range []string{parentSentinel, filepath.Join(sibling, "keep.txt")} {
 					if data, err := os.ReadFile(path); err != nil || string(data) != "outside the archived project" {
@@ -203,6 +262,22 @@ func TestNativeWorkerArchiveDeleteProjectAndRestoreOriginalSession(t *testing.T)
 				t.Fatalf("source project remains: %v", err)
 			}
 			assertParentPreserved()
+			archivePath := filepath.Join(home, "CODEX_Archived", archived.Result.SessionArchive.Archive.ID)
+			manifest, err := sessionarchive.Read(ctx, archivePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			archiveFiles := make(map[string]sessionarchive.Entry)
+			for _, entry := range manifest.Files {
+				archiveFiles[entry.Path] = entry
+			}
+			for _, file := range projectFiles {
+				path := "project/" + file.name
+				entry, found := archiveFiles[path]
+				if !found || entry.Kind != "file" || entry.Mode != uint32(file.mode) {
+					t.Fatalf("archived project file %s = %#v, found=%v; want file with permissions %04o", path, entry, found, file.mode)
+				}
+			}
 			if archived, err := client.ThreadArchived(ctx, ancestorID); err != nil || archived {
 				t.Fatalf("archive affected the ancestor session: archived=%v error=%v", archived, err)
 			}
@@ -231,11 +306,9 @@ func TestNativeWorkerArchiveDeleteProjectAndRestoreOriginalSession(t *testing.T)
 			if restored.State != CommandCompleted || restored.Result.Session == nil || restored.Result.Session.ID != session.ID || restored.Result.Session.ThreadID != threadID || restored.Result.Session.Archived || !restored.Result.Session.Loaded {
 				t.Fatalf("native worker restore = %#v error=%+v", restored.Result, restored.Result.Error)
 			}
-			if data, err := os.ReadFile(filepath.Join(project, "project.txt")); err != nil || string(data) != "fabricated project contents" {
-				t.Fatalf("restored project=%q %v", data, err)
-			}
+			assertProjectFiles()
 			assertParentPreserved()
-			if _, err := os.Stat(filepath.Join(home, "CODEX_Archived", archived.Result.SessionArchive.Archive.ID)); err != nil {
+			if _, err := os.Stat(archivePath); err != nil {
 				t.Fatal("restore removed verified archive")
 			}
 		})

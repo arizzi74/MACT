@@ -47,7 +47,10 @@ uses `/home/antonio/CODEX_Archived`. These are not gateway-side downloads. Each
 archive includes its title, original project path, creation date, Codex version,
 native session state and file checksums. Treat it as a private backup: it can
 contain project secrets and conversation content.
-File contents, basic permissions and symbolic links are preserved; ownership,
+File contents, basic permissions and symbolic links are preserved, including
+when the worker service uses a restrictive file-creation mask such as `0077`.
+Archive creation and restoration set the saved file permissions explicitly;
+the worker's global mask stays unchanged. Ownership,
 ACLs and extended attributes are not captured. The archive manifest is bounded
 to 16 MiB; a project with more file metadata is rejected before source cleanup.
 

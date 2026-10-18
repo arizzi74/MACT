@@ -55,7 +55,11 @@ and saved, unloaded sessions in both history formats. The unloaded cases
 first verify the native terminal API rejects unloaded threads, reproducing
 the archive guard regression. Each worker round trip also includes an idle
 session in the project parent and verifies the parent inode, a parent file and
-a neighboring project's file remain intact after cleanup and restoration. No account
+a neighboring project's file remain intact after cleanup and restoration.
+The worker round trips run in an isolated subprocess with `umask 0077` and
+explicitly check `0640`, `0644` and `0755` source, archive and restored modes.
+Unit tests also reject concurrent permission changes during export and prove
+that content, permission and entry changes still prevent cleanup. No account
 credentials or paid API calls are used. With that version installed locally:
 
 ```sh

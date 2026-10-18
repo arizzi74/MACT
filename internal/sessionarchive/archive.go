@@ -305,10 +305,10 @@ func copyFile(ctx context.Context, src, dst string, before os.FileInfo) error {
 	if err != nil {
 		return err
 	}
-	if !opened.Mode().IsRegular() || !os.SameFile(before, opened) {
+	if !opened.Mode().IsRegular() || !os.SameFile(before, opened) || before.Mode().Perm() != opened.Mode().Perm() {
 		return fmt.Errorf("source changed during archive: %s", src)
 	}
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, before.Mode().Perm()&0777)
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
 		return err
 	}
@@ -320,6 +320,11 @@ func copyFile(ctx context.Context, src, dst string, before os.FileInfo) error {
 		}
 	}()
 	_, err = io.Copy(out, &contextReader{ctx: ctx, r: in})
+	if err == nil {
+		// Creation modes are filtered by umask; set the exact source permissions
+		// on the opened file before it is inventoried or published.
+		err = out.Chmod(before.Mode().Perm())
+	}
 	closeErr := out.Close()
 	if err != nil {
 		return err
@@ -331,7 +336,7 @@ func copyFile(ctx context.Context, src, dst string, before os.FileInfo) error {
 	if err != nil {
 		return err
 	}
-	if !os.SameFile(before, after) || before.Size() != after.Size() || !before.ModTime().Equal(after.ModTime()) {
+	if !os.SameFile(before, after) || before.Size() != after.Size() || !before.ModTime().Equal(after.ModTime()) || before.Mode().Perm() != after.Mode().Perm() {
 		return fmt.Errorf("source changed during archive: %s", src)
 	}
 	complete = true
@@ -554,7 +559,7 @@ func unpack(ctx context.Context, filename, dst string) (Manifest, error) {
 				if err := os.MkdirAll(filepath.Dir(target), 0700); err != nil {
 					return m, err
 				}
-				out, err = os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, os.FileMode(e.Mode)&0777)
+				out, err = os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 				if err != nil {
 					return m, err
 				}
@@ -562,6 +567,9 @@ func unpack(ctx context.Context, filename, dst string) (Manifest, error) {
 			}
 			_, copyErr := io.Copy(w, tr)
 			if out != nil {
+				if copyErr == nil {
+					copyErr = out.Chmod(os.FileMode(e.Mode))
+				}
 				err = out.Close()
 			}
 			if copyErr != nil {
