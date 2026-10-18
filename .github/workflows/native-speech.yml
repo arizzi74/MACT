@@ -67,7 +67,7 @@ jobs:
           mkdir -p "$model_dir/piper" "$model_dir/qwen-tts"
           fetch_model() {
             local url="$1" path="$2" size="$3" digest="$4" actual
-            curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 --retry 3 --max-filesize "$size" "$url" -o "$path"
+            curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 --retry 5 --retry-delay 15 --retry-max-time 300 --max-filesize "$size" "$url" -o "$path"
             test "$(wc -c < "$path" | tr -d ' ')" -eq "$size"
             if command -v sha256sum >/dev/null; then actual=$(sha256sum "$path" | cut -d ' ' -f 1)
             else actual=$(shasum -a 256 "$path" | cut -d ' ' -f 1); fi
