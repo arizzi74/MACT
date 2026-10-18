@@ -62,8 +62,36 @@ func TestNativeWorkerArchiveDeleteProjectAndRestoreOriginalSession(t *testing.T)
 			if err := os.WriteFile(filepath.Join(project, "project.txt"), []byte("fabricated project contents"), 0640); err != nil {
 				t.Fatal(err)
 			}
+			parentSentinel := filepath.Join(workspace, "parent-sentinel.txt")
+			sibling := filepath.Join(workspace, "neighbor-project")
+			if err := os.Mkdir(sibling, 0700); err != nil {
+				t.Fatal(err)
+			}
+			for _, path := range []string{parentSentinel, filepath.Join(sibling, "keep.txt")} {
+				if err := os.WriteFile(path, []byte("outside the archived project"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			parentInfo, err := os.Stat(workspace)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertParentPreserved := func() {
+				t.Helper()
+				after, err := os.Stat(workspace)
+				if err != nil || !os.SameFile(parentInfo, after) {
+					t.Fatalf("archive replaced or removed the parent directory: %v", err)
+				}
+				for _, path := range []string{parentSentinel, filepath.Join(sibling, "keep.txt")} {
+					if data, err := os.ReadFile(path); err != nil || string(data) != "outside the archived project" {
+						t.Fatalf("archive changed a file outside the selected project: %v", err)
+					}
+				}
+			}
 			threadID := uuid.NewString()
 			writeWorkerArchiveNativeFixture(t, codexHome, project, threadID, fixture.mode)
+			ancestorID := uuid.NewString()
+			writeWorkerArchiveNativeFixture(t, codexHome, workspace, ancestorID, fixture.mode)
 			client, err := codexadapter.Start(ctx, codexadapter.Config{Command: binary, WorkingDirectory: workspace, Env: []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home, "CODEX_HOME=" + codexHome, "CODEX_SQLITE_HOME=" + codexHome}, Stderr: io.Discard, RequestTimeout: 15 * time.Second})
 			if err != nil {
 				t.Fatal(err)
@@ -150,6 +178,18 @@ func TestNativeWorkerArchiveDeleteProjectAndRestoreOriginalSession(t *testing.T)
 				t.Fatal(err)
 			}
 			a.onSession(runtime, session)
+			// A dormant session in the CODEX-like parent is independent of
+			// the subfolder being archived. Preserve both its native record
+			// and everything outside the selected project during cleanup.
+			ancestor, err := client.ReadThreadState(ctx, ancestorID)
+			if err != nil || ancestor.Status != "notLoaded" {
+				t.Fatalf("native ancestor session = %q, %v", ancestor.Status, err)
+			}
+			ancestorSession, err := store.UpsertRuntimeSession(runtime, sessionFromThread(runtime, ancestor, false))
+			if err != nil {
+				t.Fatal(err)
+			}
+			a.onSession(runtime, ancestorSession)
 			command := agentCommand(runtime, session, protocol.ArchiveSession)
 			command.Arguments.CWD, command.Arguments.SessionArchive = project, &protocol.SessionArchiveRequest{DeleteProject: true}
 			if ack, err := a.HandleCommand(ctx, command); err != nil || ack.Error != nil {
@@ -161,6 +201,10 @@ func TestNativeWorkerArchiveDeleteProjectAndRestoreOriginalSession(t *testing.T)
 			}
 			if _, err := os.Stat(project); !os.IsNotExist(err) {
 				t.Fatalf("source project remains: %v", err)
+			}
+			assertParentPreserved()
+			if archived, err := client.ThreadArchived(ctx, ancestorID); err != nil || archived {
+				t.Fatalf("archive affected the ancestor session: archived=%v error=%v", archived, err)
 			}
 			if archived.Result.Session.ID != session.ID || !archived.Result.Session.Archived || archived.Result.Session.Deleted {
 				t.Fatalf("archive changed gateway identity: %#v", archived.Result.Session)
@@ -190,6 +234,7 @@ func TestNativeWorkerArchiveDeleteProjectAndRestoreOriginalSession(t *testing.T)
 			if data, err := os.ReadFile(filepath.Join(project, "project.txt")); err != nil || string(data) != "fabricated project contents" {
 				t.Fatalf("restored project=%q %v", data, err)
 			}
+			assertParentPreserved()
 			if _, err := os.Stat(filepath.Join(home, "CODEX_Archived", archived.Result.SessionArchive.Archive.ID)); err != nil {
 				t.Fatal("restore removed verified archive")
 			}

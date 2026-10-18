@@ -62,6 +62,11 @@ Saved sessions can also be archived while unloaded. The worker verifies their
 queues, goals and idle state, and checks background terminals in every runtime
 where the session is loaded; it does not resume an old session to perform this
 check. If idle state cannot be verified, the archive is refused safely.
+Cleanup removes only the selected project directory. Its parent directory and
+neighboring projects stay in place. An idle session opened in a parent such as
+`~/CODEX` does not share the project's subdirectory for cleanup purposes;
+independent sessions in that subdirectory or below it still prevent deletion.
+Active work in an ancestor directory remains part of the archive's idle checks.
 
 To restore, press **＋** beside the worker and select **Restore archived**.
 Choose an archive; the list shows its title, original path, size, creation date

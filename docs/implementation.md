@@ -53,7 +53,9 @@ mock provider. A worker-level round trip exercises native archive, optional
 project removal and restoring the original session identity for both loaded
 and saved, unloaded sessions in both history formats. The unloaded cases
 first verify the native terminal API rejects unloaded threads, reproducing
-the archive guard regression. No account
+the archive guard regression. Each worker round trip also includes an idle
+session in the project parent and verifies the parent inode, a parent file and
+a neighboring project's file remain intact after cleanup and restoration. No account
 credentials or paid API calls are used. With that version installed locally:
 
 ```sh

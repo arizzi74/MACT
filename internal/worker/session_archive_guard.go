@@ -70,6 +70,17 @@ func pathsOverlap(left, right string) bool {
 	return left == right || strings.HasPrefix(left, right+string(filepath.Separator)) || strings.HasPrefix(right, left+string(filepath.Separator)) || left == "/" || right == "/"
 }
 
+// Removing parent would remove a CWD equal to or beneath it. A session whose
+// CWD is an ancestor does not own every project underneath that directory.
+func archivePathContains(parent, child string) bool {
+	parent, child = cleanArchivePath(parent), cleanArchivePath(child)
+	if parent == "" || child == "" {
+		return false
+	}
+	relative, err := filepath.Rel(parent, child)
+	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+}
+
 func archiveBusy(message string) error {
 	return &protocol.Error{Code: protocol.SessionBusy, Message: message, Retryable: true}
 }
@@ -505,7 +516,7 @@ func (a *Agent) verifyProjectRemoval(job sessionArchiveJob, codexHome, sqliteHom
 		return err
 	}
 	for _, session := range sessions {
-		if !session.Deleted && session.ThreadID != job.Session.ThreadID && pathsOverlap(session.CWD, path) {
+		if !session.Deleted && session.ThreadID != job.Session.ThreadID && archivePathContains(path, session.CWD) {
 			return &protocol.Error{Code: "shared_directory", Message: "Another session shares or overlaps this project directory. Archive it without removing the project."}
 		}
 	}
@@ -521,7 +532,7 @@ func (a *Agent) verifyProjectRemoval(job sessionArchiveJob, codexHome, sqliteHom
 			return err
 		}
 		for _, thread := range threads {
-			if thread.ID != job.Session.ThreadID && thread.UserSession() && pathsOverlap(thread.CWD, path) {
+			if thread.ID != job.Session.ThreadID && thread.UserSession() && archivePathContains(path, thread.CWD) {
 				return &protocol.Error{Code: "shared_directory", Message: "Another native session shares or overlaps this project directory. Archive it without removing the project."}
 			}
 		}
