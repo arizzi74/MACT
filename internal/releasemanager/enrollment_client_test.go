@@ -231,9 +231,14 @@ func TestRedeemWorkerEnrollmentCanceledAfterRequestWarnsAboutLostResponse(t *tes
 	m, l, _ := setupFixture(t)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
+	release := make(chan struct{})
+	defer close(release)
 	value := setupEnrollmentServer(t, m, func(w http.ResponseWriter, r *http.Request, _ protocol.RedeemWorkerEnrollmentRequest) {
 		cancel()
 		<-r.Context().Done()
+		// Keep the handler from sending an implicit empty 200 response before
+		// the client finishes observing cancellation.
+		<-release
 	})
 	enrollment, _ := parseWorkerEnrollmentURL(value)
 	_, err := m.redeemWorkerEnrollment(ctx, enrollment, "Worker one", l)
