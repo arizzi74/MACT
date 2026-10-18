@@ -122,6 +122,54 @@ func TestSetupTerminalShowsEnrollmentURLWithoutChangingSettings(t *testing.T) {
 	}
 }
 
+// A PTY master write queues input for asynchronous delivery. Wait for the
+// slave's line discipline to process flow-control bytes after this short input
+// before cancelling, so the test exercises flushing received canonical input.
+func setupTestWritePendingInput(t *testing.T, master, slave *os.File, input string) string {
+	t.Helper()
+	state, err := workerTerminalState(int(slave.Fd()))
+	if err != nil || state.Iflag&unix.IXON == 0 || state.Cc[unix.VSTOP] == 0 || state.Cc[unix.VSTART] == 0 {
+		t.Fatal("PTY flow control is unavailable", err)
+	}
+	if err := unix.IoctlSetPointerInt(int(master.Fd()), unix.TIOCPKT, 1); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := unix.IoctlSetPointerInt(int(master.Fd()), unix.TIOCPKT, 0); err != nil {
+			t.Error(err)
+		}
+	}()
+	bytes := append([]byte(input), state.Cc[unix.VSTOP], state.Cc[unix.VSTART])
+	if n, err := unix.Write(int(master.Fd()), bytes); err != nil || n != len(bytes) {
+		t.Fatal("could not write pending terminal input", err)
+	}
+	var output strings.Builder
+	poll := []unix.PollFd{{Fd: int32(master.Fd()), Events: unix.POLLIN}}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		remaining := int(time.Until(deadline) / time.Millisecond)
+		if remaining <= 0 {
+			t.Fatal("PTY did not acknowledge pending terminal input")
+		}
+		if ready, err := setupTestPoll(poll, remaining); err != nil || ready == 0 {
+			t.Fatal("PTY did not acknowledge pending terminal input", err)
+		}
+		var packet [1024]byte
+		n, err := unix.Read(int(master.Fd()), packet[:])
+		if errors.Is(err, unix.EINTR) || errors.Is(err, unix.EAGAIN) {
+			continue
+		}
+		if err != nil || n == 0 {
+			t.Fatal("could not read PTY input acknowledgment", err)
+		}
+		if packet[0] == unix.TIOCPKT_DATA {
+			output.Write(packet[1:n])
+		} else if packet[0]&unix.TIOCPKT_START != 0 {
+			return output.String()
+		}
+	}
+}
+
 func TestSetupTerminalHidesTokenAndRestoresEcho(t *testing.T) {
 	for _, cancelInput := range []bool{false, true} {
 		t.Run(map[bool]string{false: "answer", true: "cancel"}[cancelInput], func(t *testing.T) {
@@ -150,10 +198,9 @@ func TestSetupTerminalHidesTokenAndRestoresEcho(t *testing.T) {
 				t.Fatal("echo was not disabled before displaying the token prompt", err)
 			}
 			const token = "test-secret-never-echo"
+			var output strings.Builder
 			if cancelInput {
-				if _, err := unix.Write(int(master.Fd()), []byte(token)); err != nil {
-					t.Fatal(err)
-				}
+				output.WriteString(setupTestWritePendingInput(t, master, terminal.file, token))
 				cancel()
 			} else if _, err := unix.Write(int(master.Fd()), []byte(token+"\n")); err != nil {
 				t.Fatal(err)
@@ -190,7 +237,6 @@ func TestSetupTerminalHidesTokenAndRestoresEcho(t *testing.T) {
 					t.Fatal("partial enrollment token was left in terminal input", err)
 				}
 			}
-			var output strings.Builder
 			for {
 				ready, err := setupTestPoll(poll, 20)
 				if err != nil {
