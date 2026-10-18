@@ -45,6 +45,20 @@ installed Codex version. No model turns were submitted by live smoke tests.
 The GitHub Actions workflow runs the same local CI job on pushes and pull requests. Darwin executables were cross-built with
 CGO disabled; the LaunchAgent was not run on a Darwin host.
 
+The session archive release gate additionally downloads the supported official
+Codex 0.163.0 binary with a pinned SHA-256. Isolated legacy and paginated/forked
+fixtures prove restoration with their original native store, project and
+attachment removed, process restarts, and continued model turns against a local
+mock provider. A worker-level round trip exercises native archive, optional
+project removal and restoring the original session identity. No account
+credentials or paid API calls are used. With that version installed locally:
+
+```sh
+CODEX_NATIVE_ARCHIVE_TEST=1 CODEX_REAL_BINARY=/path/to/codex \
+  go test ./internal/sessionarchive ./internal/worker \
+  -run '^TestNative(SelfContainedResume|ContinuedTurn|WorkerArchive)' -count=1
+```
+
 ## Owner setup
 
 The first personal passkey requires the owner's authenticator. Run

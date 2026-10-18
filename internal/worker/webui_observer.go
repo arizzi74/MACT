@@ -23,6 +23,9 @@ func (a *Agent) observeWebUISession(ctx context.Context, runtime protocol.Runtim
 	if a.update != nil {
 		return ErrUpdatePrepared
 	}
+	if a.archiveBlocksCommand(protocol.Command{RuntimeID: runtime.ID, SessionID: session.ID, ThreadID: session.ThreadID, Arguments: protocol.Arguments{CWD: session.CWD}}) {
+		return archiveBusy("This project is being archived or restored.")
+	}
 	client, current, ok := a.manager.Client(runtime.ID)
 	if !ok || current.Generation != runtime.Generation || current.State != "running" {
 		return errors.New("web UI observer runtime changed")

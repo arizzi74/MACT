@@ -167,6 +167,12 @@ Workers with no sessions still appear in the sidebar. Use **＋** beside a worke
 to create a session: enter its name and edit the suggested
 `~/CODEX/session_name` project path if needed. Spaces in the name become
 underscores in the suggested path; existing project directories can also be used.
+Use the pencil beside a session to rename its display title, delete its saved
+conversation, or archive its conversation and project together. Archives are
+stored on that worker in `~/CODEX_Archived`; optional project cleanup runs only
+after the backup has been verified. Restore an archive from the worker's **＋**
+dialog. Renaming never moves the project directory. See
+[session editing and archives](docs/webui.md#session-editing-and-archives).
 Revoked workers and their sessions are hidden from the sidebar and Telegram
 session pickers, while their records remain in the admin console. Use **Delete**
 beside a revoked worker to permanently purge its gateway database records after

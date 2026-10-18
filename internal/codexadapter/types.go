@@ -36,6 +36,7 @@ type Event struct {
 	Questions []Question
 	State     string
 	Text      string
+	Name      *string
 	Thread    *Thread
 	Settings  *CurrentThreadSettings
 	RequestID string
@@ -83,6 +84,21 @@ type Choice struct{ Label, Description string }
 func newEvent(method string, params json.RawMessage) Event {
 	threadID, turnID, itemID := ids(params)
 	event := Event{Kind: eventKind(method), Method: method, Params: cloneRaw(params), Raw: cloneRaw(params), ThreadID: threadID, TurnID: turnID, ItemID: itemID, Unknown: !knownNotification(method)}
+	if method == "thread/name/updated" {
+		var update struct {
+			Name       *string         `json:"name"`
+			ThreadName json.RawMessage `json:"threadName"`
+		}
+		if json.Unmarshal(params, &update) == nil {
+			event.Name = update.Name
+			if len(update.ThreadName) != 0 {
+				var name string
+				if string(update.ThreadName) == "null" || json.Unmarshal(update.ThreadName, &name) == nil {
+					event.Name = &name
+				}
+			}
+		}
+	}
 	if method == "thread/settings/updated" {
 		event.Settings = decodeCurrentThreadSettings(params)
 	}
@@ -250,6 +266,8 @@ func eventKind(method string) string {
 		return "thread_status_changed"
 	case "thread/settings/updated":
 		return "thread_settings_updated"
+	case "thread/name/updated":
+		return "thread_name_updated"
 	case "thread/closed":
 		return "thread_closed"
 	case "thread/deleted":

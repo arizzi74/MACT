@@ -107,18 +107,7 @@ func (s *sessionActor) executeCodexCommand(ctx context.Context, client *codexada
 		s.markSpecialTurn(turn.ID)
 		return protocol.Result{Text: "Review started.", TurnID: turn.ID, State: "running"}, nil
 	case "rename":
-		if args == "" {
-			return protocol.Result{}, validationError("usage: /rename NAME")
-		}
-		if len([]rune(args)) > 120 {
-			return protocol.Result{}, validationError("thread name is too long (maximum 120 characters)")
-		}
-		if err := client.RenameThread(ctx, s.session.ThreadID, args); err != nil {
-			return protocol.Result{}, err
-		}
-		s.session.Name = args
-		s.save()
-		return protocol.Result{Text: "Thread renamed to “" + args + "”."}, nil
+		return s.renameSession(ctx, client, args)
 	case "fork":
 		if args != "" {
 			return protocol.Result{}, usageError("fork")

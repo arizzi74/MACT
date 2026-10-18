@@ -8,7 +8,7 @@
   let authRestore = null, restoringPosition = false, uncertainSend = false;
   let draftRecovery = null, recoveredDrafts = null, draftSaveTimer = null, draftDirty = false;
   const uncertainDrafts = new Set();
-  let sessionInventoryAbort = null, authRotationPending = false;
+  let sessionInventoryAbort = null, sessionInventoryEpoch = 0, authRotationPending = false;
   const sessionUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   const requestedSession = new URL(location.href).searchParams.get('session_id') || '';
   let notificationSessionID = sessionUUID.test(requestedSession) ? requestedSession.toLowerCase() : '';
@@ -26,6 +26,8 @@
   const sessionDeletions = new Map();
   let deleteSessionTarget = null;
   const sessionCreations = new Map();
+  const sessionOperations = new Map();
+  let editSessionTarget = null, sessionOperationOwner = '', sessionOperationSerial = 0, newSessionMode = 'create', selectedArchiveID = '';
   let newSessionWorkerID = '', workspaceBrowse = null, workspacePage = null, newSessionPathEdited = false;
   const maxImageBytes = 10 * 1024 * 1024, maxDraftImageBytes = 40 * 1024 * 1024;
   let imagePickerSession = null;
@@ -680,6 +682,8 @@
     state.authGeneration++;
     resetTelegramBots();
     resetInventory();
+    pauseSessionOperations(['logout', 'revoked'].includes(reason)); editSessionTarget = null;
+    if ($('edit-session-dialog').open) $('edit-session-dialog').close();
     for (const deletion of sessionDeletions.values()) { clearTimeout(deletion.timer); deletion.controller?.abort(); }
     sessionDeletions.clear(); deleteSessionTarget = null;
     if ($('delete-session-dialog').open) $('delete-session-dialog').close();
@@ -755,7 +759,7 @@
       if (unavailable) label.append(node('span', 'session-group-status', unavailable));
       const create = node('button', 'session-create'); create.type = 'button'; create.dataset.createWorkerId = worker.ID;
       create.setAttribute('aria-label', 'New session on ' + (worker.Name || worker.ID)); create.setAttribute('aria-haspopup', 'dialog'); create.setAttribute('aria-controls', 'new-session-dialog');
-      create.title = unavailable || 'New session'; create.disabled = !!unavailable && !sessionCreations.has(worker.ID);
+      create.title = unavailable || 'New session'; create.disabled = !!unavailable && !!sessionFeatureUnavailable(worker, 'SupportsSessionArchives', 'restore archived projects') && !sessionCreations.has(worker.ID) && !operationLocked(sessionOperationFor('restore', worker.ID));
       const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
       icon.setAttribute('viewBox', '0 0 24 24'); icon.setAttribute('fill', 'none'); icon.setAttribute('stroke', 'currentColor'); icon.setAttribute('stroke-width', '1.6'); icon.setAttribute('aria-hidden', 'true');
       const path = document.createElementNS('http://www.w3.org/2000/svg', 'path'); path.setAttribute('d', 'M12 4v16M4 12h16'); icon.append(path); create.append(icon);
@@ -777,19 +781,21 @@
         const status = offline ? '○ Worker ' + session.worker_connectivity : running ? '● Working' : '○ ' + (session.state || 'Saved');
         button.append(node('span', 'detail' + (running && !offline ? ' running' : ''), status + ' · ' + (session.cwd || 'Workspace unavailable')));
         button.addEventListener('click', () => selectSession(session));
-        const remove = node('button', 'session-delete'); remove.type = 'button'; remove.dataset.deleteSessionId = session.session_id;
-        remove.setAttribute('aria-label', 'Delete session ' + title(session)); remove.title = 'Delete session';
-        remove.dataset.pending = String(!!sessionDeletions.get(session.session_id)?.pending);
+        const remove = node('button', 'session-edit'); remove.type = 'button'; remove.dataset.editSessionId = session.session_id;
+        remove.setAttribute('aria-label', 'Edit session ' + title(session)); remove.title = 'Edit session';
+        remove.setAttribute('aria-haspopup', 'dialog'); remove.setAttribute('aria-controls', 'edit-session-dialog');
+        remove.dataset.pending = String(!!sessionDeletions.get(session.session_id)?.pending || !!sessionOperationFor('edit', session.session_id)?.pending || !!sessionOperationFor('archive', session.session_id)?.pending);
         const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
         icon.setAttribute('viewBox', '0 0 24 24'); icon.setAttribute('fill', 'none'); icon.setAttribute('stroke', 'currentColor'); icon.setAttribute('stroke-width', '1.6'); icon.setAttribute('aria-hidden', 'true');
-        const path = document.createElementNS('http://www.w3.org/2000/svg', 'path'); path.setAttribute('d', 'M4 7h16M9 7V4h6v3M6 7l1 14h10l1-14M10 10v7M14 10v7'); icon.append(path); remove.append(icon);
-        remove.addEventListener('click', () => openSessionDeletion(session));
+        const path = document.createElementNS('http://www.w3.org/2000/svg', 'path'); path.setAttribute('d', 'm15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15l-1 6z'); icon.append(path); remove.append(icon);
+        remove.addEventListener('click', () => openSessionEditor(session));
         row.append(button, remove); list.append(row);
       }
     }
     $('sessions-status').textContent = sessions.length ? sessions.length + (sessions.length === 1 ? ' session' : ' sessions') : query ? 'No matching sessions.' : workers.size ? 'Use + beside a worker to create a session.' : 'No workers enrolled.';
     updateSessionIndicators();
     if ($('new-session-dialog').open) renderSessionCreation();
+    if ($('edit-session-dialog').open) renderSessionEditor();
   }
   function workerCreationUnavailable(worker) {
     if (!worker || !state.authenticated) return 'Sign in to create a session.';
@@ -819,7 +825,7 @@
   }
   function openSessionCreation(workerID) {
     const worker = state.workers.find(value => value.ID === workerID);
-    if (workerCreationUnavailable(worker) && !sessionCreations.has(workerID)) return;
+    if (workerCreationUnavailable(worker) && sessionFeatureUnavailable(worker, 'SupportsSessionArchives', 'restore archived projects') && !sessionCreations.has(workerID) && !operationLocked(sessionOperationFor('restore', workerID))) return;
     blurEditable(); commandUI?.sessionChanged();
     newSessionWorkerID = workerID; cancelWorkspaceBrowse(); workspacePage = null;
     const runtimes = state.runtimes.filter(runtime => runtime.worker_id === workerID);
@@ -827,20 +833,30 @@
       const option = node('option', '', runtime.name || runtime.runtime_id); option.value = runtime.runtime_id; option.disabled = runtime.state !== 'running'; return option;
     }));
     const creation = sessionCreations.get(workerID);
-    $('new-session-runtime').value = creation?.runtimeID || runtimes.find(runtime => runtime.state === 'running')?.runtime_id || '';
+    const restoration = sessionOperationFor('restore', workerID);
+    $('new-session-runtime').value = creation?.runtimeID || (operationLocked(restoration) ? restoration.runtimeID : '') || runtimes.find(runtime => runtime.state === 'running')?.runtime_id || '';
     $('new-session-name').value = creation?.name || ''; $('new-session-cwd').value = creation?.cwd || '~/CODEX/';
     newSessionPathEdited = !!creation;
     $('new-session-runtime-field').hidden = runtimes.length < 2;
     $('new-session-browser').hidden = true; $('new-session-directories').replaceChildren();
+    newSessionMode = operationLocked(restoration) || (workerCreationUnavailable(worker) && !sessionFeatureUnavailable(worker, 'SupportsSessionArchives', 'restore archived projects')) ? 'restore' : 'create'; selectedArchiveID = restoration?.archiveID || '';
     creationMessage(); updateNewSessionPath(); renderSessionCreation();
     $('new-session-dialog').showModal();
     // Keep phone keyboards closed until the user selects a text field.
     $('new-session-close').focus({ preventScroll: true });
+    if (newSessionMode === 'restore') loadSessionArchives();
   }
   function renderSessionCreation() {
     if (!newSessionWorkerID) return;
     const worker = state.workers.find(value => value.ID === newSessionWorkerID), runtime = creationRuntime();
-    const creation = sessionCreations.get(newSessionWorkerID);
+    const creation = sessionCreations.get(newSessionWorkerID), restoration = sessionOperationFor('restore', newSessionWorkerID);
+    const restoring = newSessionMode === 'restore';
+    $('new-session-create-fields').hidden = restoring; $('new-session-project-fields').hidden = restoring; $('new-session-archives').hidden = !restoring;
+    $('new-session-name').required = !restoring; $('new-session-cwd').required = !restoring;
+    $('new-session-mode-create').setAttribute('aria-pressed', String(!restoring)); $('new-session-mode-restore').setAttribute('aria-pressed', String(restoring));
+    $('new-session-mode-create').disabled = operationLocked(restoration); $('new-session-mode-restore').disabled = !!creation && creation.phase !== 'failed';
+    if (restoring) { renderSessionRestore(worker, runtime, restoration); return; }
+    $('new-session-name').setCustomValidity(sessionNameError($('new-session-name').value));
     const unavailable = workerCreationUnavailable(worker) || (!runtime || runtime.state !== 'running' ? 'This Codex runtime is unavailable. Refresh the workers and try again.' : '');
     const locked = creation && creation.phase !== 'failed';
     $('new-session-worker').textContent = (worker?.Name || newSessionWorkerID) + (runtime ? ' · ' + (runtime.name || runtime.runtime_id) : '');
@@ -872,7 +888,7 @@
       if (response.status === 401) { expire(); throw new Error('Sign in to continue.'); }
       let result; try { result = await response.json(); } catch (_) { /* Gateway errors can be plain text. */ }
       if (!response.ok) {
-        const error = new Error(result?.message || 'Worker request failed (' + response.status + '). Refresh workers and try again.'); error.status = response.status; throw error;
+        const error = new Error(result?.message || 'Worker request failed (' + response.status + '). Refresh workers and try again.'); error.status = response.status; error.result = result; throw error;
       }
       if (!result || result.command_id !== operation.requestID || result.worker_id !== operation.workerID || result.runtime_id !== operation.runtimeID || result.runtime_generation !== operation.runtimeGeneration || typeof result.pending !== 'boolean') throw new Error('The worker returned an unexpected result.');
       return result;
@@ -974,6 +990,7 @@
   function submitSessionCreation(event) {
     event.preventDefault();
     if (!state.authenticated || !newSessionWorkerID) return;
+    if (newSessionMode === 'restore') { submitSessionRestore(); return; }
     const previous = sessionCreations.get(newSessionWorkerID);
     if (previous && previous.phase !== 'failed') { requestSessionCreation(previous, 'GET'); return; }
     const runtime = creationRuntime(), worker = state.workers.find(value => value.ID === newSessionWorkerID);
@@ -983,6 +1000,314 @@
     if (invalid) { creationMessage(invalid, true); return; }
     const creation = { ...workerOperation(runtime), name, cwd, selectedID: state.selected?.session_id || '', phase: 'submitting', message: 'Creating session on the worker…', deadline: Date.now() + 30000 };
     sessionCreations.set(newSessionWorkerID, creation); requestSessionCreation(creation, 'POST');
+  }
+  function sessionOperationKey(kind, id, runtimeID = '') { return kind + ':' + id + (kind === 'list' ? ':' + runtimeID : ''); }
+  function sessionOperationFor(kind, id, runtimeID = '') { return sessionOperations.get(sessionOperationKey(kind, id, runtimeID)); }
+  function operationLocked(operation) { return !!operation && !['failed', 'complete'].includes(operation.phase); }
+  function sessionFeatureUnavailable(worker, capability, action) {
+    if (!state.authenticated) return 'Sign in to ' + action + '.';
+    if (authRotationPending) return 'Sign-in renewal in progress.';
+    if (!worker || worker.Enabled === false) return 'This worker is unavailable.';
+    if (!['connected', 'online'].includes(worker.Connectivity)) return 'Reconnect this worker to ' + action + '.';
+    if (!worker[capability]) return 'Update this worker to ' + action + '.';
+    return '';
+  }
+  function sessionOperationMessage(result, fallback) {
+    const phases = { preparing: 'Preparing the operation on the worker…', exporting: 'Exporting the conversation…', compressing: 'Compressing the project and conversation…', recovering: 'Recovering the operation on the worker…', verifying: 'Verifying the archive…', archiving: 'Archiving the native conversation…', cleaning: 'Removing the original project directory…', extracting: 'Extracting the project files…', restoring: 'Restoring the conversation…' };
+    if (result?.pending && phases[result.phase]) return phases[result.phase];
+    const aliases = { path_exists: 'archive_conflict', archive_unsupported: 'archive_incompatible', codex_method_unsupported: 'archive_incompatible', worker_unavailable: 'worker_offline', archive_busy: 'session_busy', unsupported_operation: 'unsupported', stale_runtime: 'runtime_unavailable', codex_unavailable: 'runtime_unavailable', command_outcome_unknown: 'outcome_unknown' };
+    const messages = {
+      shared_directory: 'Other sessions share this project directory. Keep the original directory, or move those sessions before removing it.',
+      shared_workspace: 'Other sessions share this project directory. Keep the original directory, or move those sessions before removing it.',
+      archive_conflict: 'The original project path already exists. Move that directory on the worker, then explicitly retry the restore. Nothing was overwritten; the archive is kept.',
+      path_conflict: 'The original project path already exists. Move that directory on the worker, then explicitly retry the restore. Nothing was overwritten; the archive is kept.',
+      archive_incompatible: 'This archive is incompatible with the selected Codex runtime. Choose a compatible runtime and retry. The archive is kept.',
+      archive_not_found: 'This archive is no longer available. Refresh the archive list and choose another archive.',
+      archive_invalid: 'This archive failed verification. The original project and archive have been kept. Choose another archive or resolve the worker issue before retrying.',
+      archive_corrupt: 'This archive failed verification. The original project and archive have been kept. Choose another archive or resolve the worker issue before retrying.',
+      session_name_invalid: 'Enter a session name of 1–120 characters without control characters.',
+      session_busy: 'Wait for this session’s running work and pending questions to finish, then try again.',
+      runtime_unavailable: 'This Codex runtime is unavailable. Refresh the workers and choose a running runtime.',
+      invalid_workspace: 'The project directory changed, is protected, or is unavailable. Refresh sessions and reopen this editor to review its current path. Keep the project directory when archiving a protected startup folder or workspace root.',
+      busy: 'Wait for this session’s running work and pending questions to finish, then try again.',
+      worker_offline: 'Reconnect this worker, then check this request’s status.',
+      unsupported: 'Update this worker to use this feature.',
+      outcome_unknown: 'The worker has not confirmed the outcome. Check status before starting another request.'
+    };
+    if (result?.error_code) return messages[aliases[result.error_code] || result.error_code] || 'The worker could not complete this request. Resolve the worker issue, then explicitly retry.';
+    return typeof result?.message === 'string' && result.message.trim() ? result.message : fallback;
+  }
+  function persistSessionOperations() {
+    // Persist identities only. Recovery reads the durable gateway result and
+    // never reconstructs or repeats a mutation from browser storage.
+    const operations = [...sessionOperations.values()].filter(operationLocked).map(operation => ({
+      kind: operation.kind, key: operation.key, requestID: operation.requestID, workerID: operation.workerID,
+      runtimeID: operation.runtimeID, runtimeGeneration: operation.runtimeGeneration, sessionID: operation.sessionID || '', archiveID: operation.archiveID || ''
+    }));
+    try {
+      if (operations.length) sessionStorage.setItem('codex-webui-session-operations', JSON.stringify({ owner: sessionOperationOwner, operations }));
+      else sessionStorage.removeItem('codex-webui-session-operations');
+    } catch (_) { /* In-memory status recovery remains available. */ }
+  }
+  function recoverSessionOperations(owner) {
+    if (sessionOperationOwner && sessionOperationOwner !== (owner || '')) pauseSessionOperations(true);
+    sessionOperationOwner = owner || '';
+    try {
+      const saved = JSON.parse(sessionStorage.getItem('codex-webui-session-operations') || 'null');
+      if (!saved || saved.owner !== sessionOperationOwner || !Array.isArray(saved.operations)) return;
+      for (const entry of saved.operations.slice(0, 50)) {
+        if (!entry || !['edit', 'archive', 'restore', 'list'].includes(entry.kind) || !sessionUUID.test(entry.requestID) ||
+          typeof entry.workerID !== 'string' || typeof entry.runtimeID !== 'string' || !Number.isSafeInteger(entry.runtimeGeneration) ||
+          typeof entry.sessionID !== 'string' || typeof entry.archiveID !== 'string') continue;
+        const id = ['edit', 'archive'].includes(entry.kind) ? entry.sessionID : entry.workerID;
+        const key = sessionOperationKey(entry.kind, id, entry.runtimeID);
+        if (!sessionOperations.has(key)) sessionOperations.set(key, { ...entry, key, phase: 'unknown', pending: true, authGeneration: state.authGeneration,
+          deadline: Date.now() + 120000, message: 'Recovering this request’s status. It will not be submitted again.' });
+      }
+    } catch (_) { /* Invalid browser storage is ignored. */ }
+  }
+  function pauseSessionOperations(clear = false) {
+    for (const operation of sessionOperations.values()) {
+      clearTimeout(operation.timer); operation.timer = null; operation.epoch = (operation.epoch || 0) + 1; operation.controller?.abort(); operation.checking = false;
+      if (operationLocked(operation)) { operation.phase = 'unknown'; operation.message = 'Sign in, then check this request’s status. It will not be submitted again.'; }
+    }
+    if (clear) { sessionOperations.clear(); persistSessionOperations(); }
+  }
+  function resumeSessionOperations() {
+    if (!state.authenticated || authRotationPending) return;
+    for (const operation of sessionOperations.values()) {
+      operation.authGeneration = state.authGeneration;
+      if (operationLocked(operation) && !operation.checking && !operation.timer) requestSessionOperation(operation, 'GET');
+    }
+  }
+  function operationCurrent(operation) {
+    return state.authenticated && !authRotationPending && operation.authGeneration === state.authGeneration && sessionOperations.get(operation.key) === operation;
+  }
+  function updateSessionOperationView(operation) {
+    if (editSessionTarget?.session_id === operation.sessionID && $('edit-session-dialog').open) renderSessionEditor();
+    if (newSessionWorkerID === operation.workerID && $('new-session-dialog').open) renderSessionCreation();
+    const button = [...$('session-list').querySelectorAll('.session-edit')].find(value => value.dataset.editSessionId === operation.sessionID);
+    if (button) button.dataset.pending = String(operationLocked(operation));
+  }
+  async function sessionTargetRequest(operation, method) {
+    const controller = new AbortController(); operation.controller = controller;
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    const parameters = { session_id: operation.sessionID, request_id: operation.requestID };
+    const extra = operation.kind === 'edit' ? { name: operation.name } : { delete_project: operation.deleteProject, cwd: operation.cwd };
+    try {
+      const response = await fetch(api + '/sessions/' + operation.kind + (method === 'GET' ? '?' + new URLSearchParams(parameters) : ''), {
+        method, credentials: 'same-origin', cache: 'no-store', signal: controller.signal,
+        ...(method === 'POST' ? { headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': window.CodexSessionAuth.cookie('__Host-telegramgw-csrf') }, body: JSON.stringify({ ...parameters, ...extra, confirmed: true }) } : {})
+      });
+      if (!operationCurrent(operation)) throw new Error('This request’s view expired.');
+      if (response.status === 401) { expire(); throw new Error('Sign in to continue.'); }
+      let result; try { result = await response.json(); } catch (_) { /* HTTP errors can be plain text. */ }
+      if (!response.ok) { const error = new Error(sessionOperationMessage(result, 'Request failed (' + response.status + '). Check status before retrying.')); error.status = response.status; throw error; }
+      if (!result || result.command_id !== operation.requestID || result.session_id !== operation.sessionID || result.worker_id !== operation.workerID ||
+        result.runtime_id !== operation.runtimeID || result.runtime_generation !== operation.runtimeGeneration || typeof result.pending !== 'boolean') throw new Error('The worker returned an unexpected result.');
+      return result;
+    } finally { clearTimeout(timeout); if (operation.controller === controller) operation.controller = null; }
+  }
+  function applyConfirmedSession(session) {
+    sessionInventoryEpoch++;
+    const index = state.sessions.findIndex(row => row.session_id === session.session_id);
+    if (index >= 0) state.sessions[index] = { ...state.sessions[index], ...session };
+    else state.sessions.push(session);
+    if (state.selected?.session_id === session.session_id) {
+      state.selected = { ...state.selected, ...session };
+      $('session-title').textContent = title(state.selected);
+      $('session-location').textContent = [state.selected.worker_name, state.selected.runtime_name].filter(Boolean).join(' / ');
+    }
+    renderSessions();
+  }
+  async function finishSessionOperation(operation, result) {
+    if (operation.kind === 'edit') {
+      if (!result.session || result.session.session_id !== operation.sessionID || result.session.worker_id !== operation.workerID || result.session.runtime_id !== operation.runtimeID || typeof result.session.name !== 'string') throw new Error('The worker did not confirm the chosen session’s name.');
+      applyConfirmedSession(result.session);
+      if (editSessionTarget?.session_id === operation.sessionID) { editSessionTarget = { ...editSessionTarget, ...result.session }; $('edit-session-name').value = result.session.name; }
+    } else if (operation.kind === 'archive') {
+      if (result.session && (result.session.session_id !== operation.sessionID || result.session.worker_id !== operation.workerID || result.session.runtime_id !== operation.runtimeID || !result.session.archived)) throw new Error('The worker did not confirm the chosen session’s archive.');
+      forgetDeletedSession(operation.sessionID, 'Session archived · choose another session');
+    } else if (operation.kind === 'list') {
+      if (result.archives !== undefined && !Array.isArray(result.archives)) throw new Error('The worker did not return an archive list.');
+      const entries = (result.archives || []).filter(entry => entry && typeof entry.id === 'string' && typeof entry.name === 'string' && typeof entry.original_path === 'string');
+      operation.archives = [...new Map([...(operation.archives || []), ...entries].map(entry => [entry.id, entry])).values()];
+      operation.nextOffset = Number.isSafeInteger(result.next_offset) && result.next_offset > (operation.offset || 0) ? result.next_offset : null;
+    } else if (operation.kind === 'restore') {
+      if (!result.session?.session_id || result.session.worker_id !== operation.workerID || result.session.runtime_id !== operation.runtimeID || result.session.archived) throw new Error('The worker did not confirm restoration on the chosen runtime.');
+      applyConfirmedSession(result.session);
+    }
+    operation.phase = 'complete'; operation.pending = false; operation.message = sessionOperationMessage(result, operation.kind === 'edit' ? 'Session name saved.' : operation.kind === 'archive' ? 'Archive saved on the worker. The session was archived.' : operation.kind === 'restore' ? 'Project restored. The original archive was kept.' : 'Choose an archive to restore.');
+    operation.warningCode = result.warning_code || '';
+    if (operation.warningCode === 'project_cleanup_failed') operation.message = sessionOperationMessage(result, 'Session archived. Project folder cleanup could not finish; the verified archive was kept.') + ' Review the retained project files on the worker.';
+    if (result.archive_directory) operation.archiveDirectory = result.archive_directory;
+    if (result.archive) operation.archive = result.archive;
+    persistSessionOperations(); updateSessionOperationView(operation);
+    if (operation.kind !== 'list') refreshSessions();
+    if (operation.kind === 'restore') {
+      if (newSessionWorkerID === operation.workerID && newSessionMode === 'restore' && $('new-session-dialog').open && (state.selected?.session_id || '') === operation.selectedID) {
+        $('new-session-dialog').close(); selectSession(state.sessions.find(row => row.session_id === result.session.session_id) || result.session);
+      } else notice('Restored “' + title(result.session) + '”. Select it in the sidebar. The original archive was kept.');
+    } else if (operation.kind === 'archive' && (!$('edit-session-dialog').open || editSessionTarget?.session_id !== operation.sessionID)) notice(operation.message);
+  }
+  async function requestSessionOperation(operation, method) {
+    if (!operationCurrent(operation) || operation.checking) return;
+    clearTimeout(operation.timer); operation.timer = null;
+    const epoch = operation.epoch = (operation.epoch || 0) + 1;
+    const current = () => operationCurrent(operation) && operation.epoch === epoch;
+    operation.checking = true; updateSessionOperationView(operation);
+    try {
+      const result = ['edit', 'archive'].includes(operation.kind) ? await sessionTargetRequest(operation, method) :
+        await workerSessionRequest(operation, operation.kind === 'list' ? '/session-archives' : '/sessions/restore', method, method === 'POST' ? operation.kind === 'restore' ? { archive_id: operation.archiveID, confirmed: true } : { offset: operation.offset || 0 } : {});
+      if (!current()) return;
+      operation.pending = result.pending; operation.archiveDirectory = result.archive_directory || operation.archiveDirectory;
+      if (result.pending) operation.deadline = Date.now() + 120000;
+      operation.progress = result.phase || '';
+      if (!result.pending && result.status === 'completed') { await finishSessionOperation(operation, result); return; }
+      operation.phase = result.pending ? 'pending' : result.status === 'outcome_unknown' || result.error_code === 'outcome_unknown' ? 'unknown' : 'failed';
+      operation.message = sessionOperationMessage(result, result.pending ? 'Waiting for the worker…' : 'The worker could not complete this request.');
+    } catch (error) {
+      if (!current()) return;
+      operation.phase = method === 'POST' && error.status >= 400 && error.status < 500 ? 'failed' : 'unknown';
+      operation.pending = operation.phase !== 'failed';
+      operation.message = operation.phase === 'failed' ? error.result ? sessionOperationMessage(error.result?.error_code ? error.result : null, 'The worker rejected this request. Refresh workers and try again.') : error.message : 'The result has not been confirmed. This request may still be running. Check status; it will not be submitted again.';
+    } finally {
+      if (current()) {
+        operation.checking = false; persistSessionOperations(); updateSessionOperationView(operation);
+        if (operationLocked(operation) && Date.now() < operation.deadline) operation.timer = setTimeout(() => { operation.timer = null; requestSessionOperation(operation, 'GET'); }, 1500);
+      }
+    }
+  }
+  function startSessionOperation(kind, target, extra = {}) {
+    const session = ['edit', 'archive'].includes(kind) ? target : null;
+    const runtime = session ? state.runtimes.find(row => row.runtime_id === session.runtime_id && row.worker_id === session.worker_id) : target;
+    if (!runtime) return;
+    const workerID = session?.worker_id || runtime.worker_id;
+    const key = sessionOperationKey(kind, session?.session_id || workerID, runtime.runtime_id);
+    const operation = { kind, key, workerID, runtimeID: runtime.runtime_id, runtimeGeneration: runtime.generation,
+      sessionID: session?.session_id || '', requestID: crypto.randomUUID(), authGeneration: state.authGeneration,
+      selectedID: state.selected?.session_id || '', serial: ++sessionOperationSerial, phase: 'submitting', pending: true, message: kind === 'archive' ? 'Archiving project and conversation on the worker…' : kind === 'edit' ? 'Saving session name…' : kind === 'list' ? 'Loading archives from the worker…' : 'Restoring project and conversation on the worker…', deadline: Date.now() + 120000, ...extra };
+    sessionOperations.set(key, operation); persistSessionOperations(); requestSessionOperation(operation, 'POST'); return operation;
+  }
+  function openSessionEditor(session) {
+    const current = state.sessions.find(row => row.session_id === session.session_id && !row.archived && !row.deleted);
+    if (!current || !state.authenticated) return;
+    blurEditable(); editSessionTarget = { ...current };
+    $('edit-session-name').value = current.name || title(current); $('edit-session-name').setCustomValidity('');
+    $('edit-session-delete-project').checked = false;
+    renderSessionEditor(); $('edit-session-dialog').showModal(); $('edit-session-close').focus({ preventScroll: true });
+  }
+  function renderSessionEditor() {
+    if (!editSessionTarget) return;
+    const session = editSessionTarget, worker = state.workers.find(row => row.ID === session.worker_id);
+    const editing = sessionOperationFor('edit', session.session_id), archiving = sessionOperationFor('archive', session.session_id);
+    const deletion = sessionDeletions.get(session.session_id), deleting = !!deletion && !['failed', 'complete', 'retry'].includes(deletion.phase);
+    const locked = operationLocked(editing) || operationLocked(archiving) || deleting;
+    const removed = archiving?.phase === 'complete' || deletion?.deleted || !state.sessions.some(row => row.session_id === session.session_id && !row.archived && !row.deleted);
+    const runtime = state.runtimes.find(row => row.worker_id === session.worker_id && row.runtime_id === session.runtime_id);
+    const runtimeUnavailable = !runtime || runtime.state !== 'running' ? 'This Codex runtime is unavailable. Refresh workers and try again.' : '';
+    const editUnavailable = sessionFeatureUnavailable(worker, 'SupportsSessionEditing', 'edit session names') || runtimeUnavailable;
+    const archiveUnavailable = sessionFeatureUnavailable(worker, 'SupportsSessionArchives', 'archive and restore projects') || runtimeUnavailable;
+    $('edit-session-worker').textContent = worker?.Name || session.worker_name || session.worker_id;
+    $('edit-session-path').textContent = session.cwd || 'Project path unavailable';
+    $('edit-session-name').disabled = locked || removed || !!editUnavailable;
+    $('edit-session-editing-help').textContent = editUnavailable; $('edit-session-editing-help').hidden = !editUnavailable;
+    $('edit-session-archive-help').textContent = archiveUnavailable; $('edit-session-archive-help').hidden = !archiveUnavailable;
+    $('edit-session-delete-project').disabled = locked || removed || !!archiveUnavailable;
+    const archiveDirectory = archiving?.archiveDirectory || worker?.ArchiveDirectory || worker?.archive_directory || '';
+    const destination = archiving?.archive?.path || (archiveDirectory && archiving?.archive?.name ? archiveDirectory.replace(/\/$/, '') + '/' + archiving.archive.name : archiveDirectory);
+    $('edit-session-archive-destination').textContent = destination ? 'Archive destination on this worker: ' + destination : 'Archive folder on this worker: ~/CODEX_Archived';
+    for (const [kind, operation, unavailable] of [['edit', editing, editUnavailable], ['archive', archiving, archiveUnavailable]]) {
+      const button = $(kind === 'edit' ? 'edit-session-save' : 'edit-session-archive');
+      button.disabled = (removed && !operationLocked(operation)) || deleting || !!operation?.checking || (locked && !operationLocked(operation)) || (!!unavailable && !operationLocked(operation));
+      button.textContent = operation?.checking ? operation.phase === 'submitting' ? kind === 'edit' ? 'Saving…' : 'Archiving…' : 'Checking…' : operationLocked(operation) ? 'Check status' : kind === 'edit' ? 'Save' : 'Archive';
+    }
+    $('edit-session-delete').disabled = locked || removed || !!authRotationPending;
+    const latest = [editing, archiving].filter(Boolean).sort((a, b) => (b.serial || 0) - (a.serial || 0))[0];
+    $('edit-session-message').textContent = latest?.message || ''; $('edit-session-message').hidden = !latest?.message;
+    $('edit-session-message').dataset.error = String(['failed', 'unknown'].includes(latest?.phase) || !!latest?.warningCode);
+    $('edit-session-cancel').textContent = locked || removed ? 'Close' : 'Cancel';
+  }
+  function submitSessionEdit(event) {
+    event.preventDefault();
+    if (!editSessionTarget || !state.authenticated) return;
+    const existing = sessionOperationFor('edit', editSessionTarget.session_id);
+    if (operationLocked(existing)) { existing.deadline = Date.now() + 120000; requestSessionOperation(existing, 'GET'); return; }
+    const worker = state.workers.find(row => row.ID === editSessionTarget.worker_id);
+    if ($('edit-session-save').disabled || sessionFeatureUnavailable(worker, 'SupportsSessionEditing', 'edit session names')) return;
+    const name = $('edit-session-name').value.trim();
+    const invalid = !name || [...name].length > 120 || /\p{Cc}/u.test(name) ? 'Enter a session name of 1–120 characters without control characters.' : ''; $('edit-session-name').setCustomValidity(invalid);
+    if (invalid) { $('edit-session-name').reportValidity(); return; }
+    startSessionOperation('edit', editSessionTarget, { name });
+  }
+  function archiveEditorSession() {
+    if (!editSessionTarget || !state.authenticated || $('edit-session-archive').disabled) return;
+    const existing = sessionOperationFor('archive', editSessionTarget.session_id);
+    if (operationLocked(existing)) { existing.deadline = Date.now() + 120000; requestSessionOperation(existing, 'GET'); return; }
+    startSessionOperation('archive', editSessionTarget, { deleteProject: $('edit-session-delete-project').checked, cwd: editSessionTarget.cwd });
+  }
+  function currentArchiveList() {
+    const runtime = creationRuntime(), operation = runtime ? sessionOperationFor('list', newSessionWorkerID, runtime.runtime_id) : null;
+    return operation?.runtimeGeneration === runtime?.generation ? operation : null;
+  }
+  function archiveBytes(bytes) {
+    if (!Number.isFinite(bytes) || bytes < 0) return 'Size unavailable';
+    if (bytes < 1024) return bytes + ' B';
+    const power = Math.min(3, Math.floor(Math.log(bytes) / Math.log(1024)));
+    return (bytes / 1024 ** power).toFixed(1) + ' ' + ['B', 'KiB', 'MiB', 'GiB'][power];
+  }
+  function renderSessionRestore(worker, runtime, restoration) {
+    const unavailable = sessionFeatureUnavailable(worker, 'SupportsSessionArchives', 'archive and restore projects') || (!runtime || runtime.state !== 'running' ? 'Choose a running Codex runtime.' : '');
+    const locked = operationLocked(restoration), listing = currentArchiveList();
+    $('new-session-worker').textContent = (worker?.Name || newSessionWorkerID) + (runtime ? ' · ' + (runtime.name || runtime.runtime_id) : '');
+    $('new-session-runtime').disabled = locked; $('new-session-name').setCustomValidity('');
+    $('new-session-archives-refresh').disabled = locked || !!listing?.checking || !!unavailable;
+    $('new-session-archives-more').hidden = !Number.isSafeInteger(listing?.nextOffset);
+    $('new-session-archives-more').disabled = locked || operationLocked(listing) || !!unavailable;
+    $('new-session-archive-directory').textContent = 'Archive folder on this worker: ' + (listing?.archiveDirectory || '~/CODEX_Archived');
+    const archives = listing?.archives || [];
+    // Preserve the focused radio while progress updates arrive.
+    const list = $('new-session-archive-list'), signature = JSON.stringify([archives, selectedArchiveID, locked]);
+    if (list.dataset.signature !== signature) {
+      list.dataset.signature = signature;
+      list.replaceChildren(...archives.map(entry => {
+        const label = node('label', 'session-archive-choice'), radio = document.createElement('input'), body = node('span');
+        radio.type = 'radio'; radio.name = 'session-archive'; radio.value = entry.id; radio.checked = entry.id === selectedArchiveID; radio.disabled = locked;
+        const date = new Date(entry.created_at); const created = Number.isFinite(date.getTime()) ? date.toLocaleString() : 'Date unavailable';
+        const version = typeof entry.codex_version === 'string' ? entry.codex_version.trim().replace(/^codex-cli\s+/i, '') : '';
+        body.append(node('strong', '', entry.session_name || entry.name), node('small', '', entry.name), node('small', '', created + ' · ' + archiveBytes(entry.bytes) + ' · ' + (version ? 'Codex ' + version : 'Codex version unavailable')), node('small', '', 'Original path: ' + entry.original_path));
+        radio.addEventListener('change', () => {
+          selectedArchiveID = entry.id;
+          if (restoration?.phase === 'failed') sessionOperations.delete(restoration.key);
+          creationMessage(); renderSessionCreation();
+        });
+        label.append(radio, body); return label;
+      }));
+    }
+    $('new-session-archives-message').textContent = unavailable || (listing && listing.phase !== 'complete' ? listing.message : archives.length ? '' : listing ? 'No .tar.xz archives found on this worker.' : 'Load the archive list to choose a project.');
+    $('new-session-submit').disabled = !!authRotationPending || !!restoration?.checking || (!locked && (!!unavailable || !archives.some(entry => entry.id === selectedArchiveID)));
+    $('new-session-submit').textContent = restoration?.checking ? restoration.phase === 'submitting' ? 'Restoring…' : 'Checking…' : locked ? 'Check status' : 'Restore archive';
+    $('new-session-cancel').textContent = locked ? 'Close' : 'Cancel';
+    if (restoration) creationMessage(restoration.message, ['failed', 'unknown'].includes(restoration.phase));
+    else if (unavailable) creationMessage(unavailable, true);
+  }
+  function loadSessionArchives(refresh = false, more = false) {
+    if (newSessionMode !== 'restore' || !newSessionWorkerID || !$('new-session-dialog').open) return;
+    const runtime = creationRuntime(), worker = state.workers.find(row => row.ID === newSessionWorkerID);
+    if (!runtime || runtime.state !== 'running' || sessionFeatureUnavailable(worker, 'SupportsSessionArchives', 'archive and restore projects')) { renderSessionCreation(); return; }
+    const existing = currentArchiveList();
+    if (operationLocked(existing)) { existing.deadline = Date.now() + 120000; requestSessionOperation(existing, 'GET'); return; }
+    if (more && Number.isSafeInteger(existing?.nextOffset)) startSessionOperation('list', runtime, { offset: existing.nextOffset, archives: existing.archives });
+    else if (!existing || refresh) { selectedArchiveID = ''; startSessionOperation('list', runtime); }
+    else renderSessionCreation();
+  }
+  function submitSessionRestore() {
+    if ($('new-session-submit').disabled) return;
+    const existing = sessionOperationFor('restore', newSessionWorkerID);
+    if (operationLocked(existing)) { existing.deadline = Date.now() + 120000; requestSessionOperation(existing, 'GET'); return; }
+    const runtime = creationRuntime(), entry = currentArchiveList()?.archives?.find(row => row.id === selectedArchiveID);
+    if (!runtime || !entry) return;
+    startSessionOperation('restore', runtime, { archiveID: entry.id });
   }
   function openSessionDeletion(session) {
     const current = state.sessions.find(value => value.session_id === session.session_id);
@@ -1013,7 +1338,7 @@
   }
   function updateDeletionView(deletion) {
     if (deleteSessionTarget?.session_id === deletion.session.session_id) renderSessionDeletion();
-    const button = [...$('session-list').querySelectorAll('.session-delete')].find(value => value.dataset.deleteSessionId === deletion.session.session_id);
+    const button = [...$('session-list').querySelectorAll('.session-edit')].find(value => value.dataset.editSessionId === deletion.session.session_id);
     if (button) button.dataset.pending = String(!!deletion.pending);
   }
   async function deletionRequest(deletion, method) {
@@ -1039,13 +1364,16 @@
       if (deletion.controller === controller) deletion.controller = null;
     }
   }
-  function forgetDeletedSession(id) {
+  function forgetDeletedSession(id, statusMessage = 'Session deleted · choose another session', refresh = true) {
+    sessionInventoryEpoch++;
     state.drafts.delete(id); state.positions.delete(id);
     const image = imageDrafts.get(id); if (image) { URL.revokeObjectURL(image.url); imageDrafts.delete(id); }
     state.sessions = state.sessions.filter(session => session.session_id !== id);
     activity.sessions.delete(id);
     sessionSettings.delete(id); activitySettingsRevisions.delete(id);
     if (state.selected?.session_id === id) {
+      notificationLocation();
+      if (authRestore?.id === id) authRestore = null;
       window.CodexDiagrams?.clear();
       commandUI?.sessionChanged(); state.generation++; state.stopped = true; closeSocket(); state.selected = null;
       state.items.clear(); state.questions.clear(); state.models = []; state.turn = null; state.cursor = null; state.queuedEvents = [];
@@ -1053,9 +1381,9 @@
       for (const name of ['transcript', 'composer', 'disconnect', 'jump-latest']) $(name).hidden = true;
       $('empty').hidden = false; $('session-title').textContent = 'Codex'; $('session-location').textContent = 'Choose a session to continue';
       $('workspace-path').textContent = ''; $('usage').textContent = '';
-      connection('connected', 'Session deleted · choose another session'); updateControls();
+      connection('connected', statusMessage); updateControls();
     }
-    renderSessions(); refreshSessions();
+    renderSessions(); if (refresh) refreshSessions();
   }
   function applyDeletionResult(deletion, result) {
     deletion.pending = result.pending; deletion.deleted = result.deleted;
@@ -1123,15 +1451,24 @@
     if (!state.authenticated) return;
     if (state.refreshing) { state.refreshAgain = true; return; }
     state.refreshAgain = false; state.refreshing = true;
-    const authGeneration = state.authGeneration;
+    const authGeneration = state.authGeneration, inventoryEpoch = sessionInventoryEpoch;
     const controller = new AbortController(); sessionInventoryAbort = controller;
     const timeout = setTimeout(() => controller.abort(), 15000);
     $('refresh-sessions').disabled = true;
     try {
       const data = await fetchJSON(api + '/sessions', controller.signal);
       if (authGeneration !== state.authGeneration || !state.authenticated) return;
+      // A confirmed edit/archive/restore can finish while an older inventory
+      // response is in flight. Re-read before replacing that confirmed state.
+      if (inventoryEpoch !== sessionInventoryEpoch) { state.refreshAgain = true; return; }
       state.sessions = (data.sessions || []).filter(session => !sessionDeletions.get(session.session_id)?.deleted);
-      if (state.selected && !state.sessions.some(session => session.session_id === state.selected.session_id && !session.archived && !session.deleted)) clearGoal();
+      if (state.selected && !state.sessions.some(session => session.session_id === state.selected.session_id && !session.archived && !session.deleted)) {
+        forgetDeletedSession(state.selected.session_id, 'Session is no longer active · choose another session', false);
+        notice('This session is no longer active. Choose another session.');
+      }
+      const selectedSnapshot = state.sessions.find(session => session.session_id === state.selected?.session_id && !session.archived && !session.deleted);
+      if (selectedSnapshot) { state.selected = { ...state.selected, ...selectedSnapshot }; $('session-title').textContent = title(state.selected); }
+
       state.workers = Array.isArray(data.workers) ? data.workers : [];
       state.runtimes = Array.isArray(data.runtimes) ? data.runtimes : [];
       for (const session of state.sessions) {
@@ -2095,8 +2432,16 @@
   $('new-session-runtime').addEventListener('change', () => {
     cancelWorkspaceBrowse(); workspacePage = null; $('new-session-browser').hidden = true;
     if (sessionCreations.get(newSessionWorkerID)?.phase === 'failed') sessionCreations.delete(newSessionWorkerID);
-    creationMessage(); renderSessionCreation();
+    selectedArchiveID = ''; creationMessage(); renderSessionCreation();
+    if (newSessionMode === 'restore') loadSessionArchives();
   });
+  for (const mode of ['create', 'restore']) $('new-session-mode-' + mode).addEventListener('click', () => {
+    if ($('new-session-mode-' + mode).disabled) return;
+    cancelWorkspaceBrowse(); newSessionMode = mode; creationMessage(); renderSessionCreation();
+    if (mode === 'restore') loadSessionArchives();
+  });
+  $('new-session-archives-refresh').addEventListener('click', () => loadSessionArchives(true));
+  $('new-session-archives-more').addEventListener('click', () => loadSessionArchives(false, true));
   $('new-session-browse').addEventListener('click', () => browseSessionWorkspace(newSessionPathEdited ? $('new-session-cwd').value.trim() : ''));
   $('new-session-parent').addEventListener('click', () => { if (workspacePage?.parent) browseSessionWorkspace(workspacePage.parent); });
   $('new-session-default').addEventListener('click', () => browseSessionWorkspace());
@@ -2110,11 +2455,26 @@
     if (button && !button.disabled && button.getClientRects().length) button.focus({ preventScroll: true });
     else if (matchMedia('(max-width:650px)').matches && $('show-sessions').getClientRects().length) $('show-sessions').focus({ preventScroll: true });
   });
+  $('edit-session-form').addEventListener('submit', submitSessionEdit);
+  $('edit-session-name').addEventListener('input', () => $('edit-session-name').setCustomValidity(''));
+  $('edit-session-archive').addEventListener('click', archiveEditorSession);
+  $('edit-session-delete').addEventListener('click', () => {
+    if (!editSessionTarget || $('edit-session-delete').disabled) return;
+    const target = { ...editSessionTarget }; $('edit-session-dialog').close(); openSessionDeletion(target);
+  });
+  for (const id of ['edit-session-close', 'edit-session-cancel']) $(id).addEventListener('click', () => $('edit-session-dialog').close());
+  $('edit-session-dialog').addEventListener('close', () => {
+    const id = editSessionTarget?.session_id; editSessionTarget = null;
+    $('edit-session-name').value = ''; $('edit-session-path').textContent = ''; $('edit-session-worker').textContent = '';
+    const button = [...$('session-list').querySelectorAll('.session-edit')].find(value => value.dataset.editSessionId === id);
+    if (button && button.getClientRects().length) button.focus({ preventScroll: true });
+    else if (matchMedia('(max-width:650px)').matches && $('show-sessions').getClientRects().length) $('show-sessions').focus({ preventScroll: true });
+  });
   $('delete-session-confirm').addEventListener('click', confirmSessionDeletion);
   $('delete-session-cancel').addEventListener('click', () => $('delete-session-dialog').close());
   $('delete-session-dialog').addEventListener('close', () => {
     const id = deleteSessionTarget?.session_id; deleteSessionTarget = null;
-    const button = [...$('session-list').querySelectorAll('.session-delete')].find(value => value.dataset.deleteSessionId === id);
+    const button = [...$('session-list').querySelectorAll('.session-edit')].find(value => value.dataset.editSessionId === id);
     if (button && button.getClientRects().length) button.focus({ preventScroll: true });
     else if (matchMedia('(max-width:650px)').matches && $('show-sessions').getClientRects().length) $('show-sessions').focus({ preventScroll: true });
   });
@@ -2261,7 +2621,7 @@
         // Let the server confirm it before restoring either transport.
         sessionAuth.verify('renewal-recovery').then(value => {
           if (!value || !state.authenticated) return;
-          resumeSessionCreationRequests();
+          resumeSessionCreationRequests(); resumeSessionOperations();
           connectActivity();
           if (state.selected && !state.connected && !state.loading && !state.stopped) reconnect();
         }).catch(error => notice(error.message, 'connection'));
@@ -2278,13 +2638,13 @@
       authRotationPending = true;
       state.authGeneration++; state.generation++; resetInventory();
       resetTelegramBots();
-      pauseSessionCreationRequests();
+      pauseSessionCreationRequests(); pauseSessionOperations();
       closeSocket(); closeActivity(); disableQuestions();
       connection('reconnecting', 'Renewing sign-in… Your running work continues.'); updateControls();
     },
     onStatus: text => { $('auth-status').textContent = text; },
     onWarning: warning => { if (warning) flushRecoveryDrafts(); },
-    onAuthenticated: async () => {
+    onAuthenticated: async (authenticatedSession) => {
       authRotationPending = false;
       const previouslyAuthenticated = state.authenticated;
       const authEpoch = state.authGeneration + 1;
@@ -2292,10 +2652,11 @@
       captureAuthPosition();
       state.authGeneration++; state.generation++;
       resetTelegramBots();
-      pauseSessionCreationRequests();
+      pauseSessionCreationRequests(); pauseSessionOperations();
       resetInventory();
       closeSocket(); closeActivity();
       state.authenticated = true; state.stopped = false;
+      recoverSessionOperations(authenticatedSession?.owner_id || '');
       resumeSessionCreationRequests();
       $('auth').hidden = true;
       // selectSession performs a fresh native bootstrap with the new login.
@@ -2304,6 +2665,7 @@
       state.selected = null;
       await refreshSessions();
       if (authEpoch !== state.authGeneration || !state.authenticated) return;
+      resumeSessionOperations();
       if (previouslyAuthenticated) syncRecoveryDrafts();
       else if (draftRecovery?.enabled()) {
         const recovered = await draftRecovery.recover();
@@ -2313,7 +2675,7 @@
     },
     onVerified: (_session, { reason }) => {
       if (reason !== 'foreground' || !state.authenticated) return;
-      refreshSessions(); connectActivity();
+      refreshSessions(); connectActivity(); resumeSessionOperations();
       if (state.selected && !state.connected && !state.loading && !state.stopped && (!state.socket || state.socket.readyState === 3)) reconnect();
     },
   });

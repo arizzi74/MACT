@@ -49,11 +49,23 @@ func (m *RuntimeManager) openAttachment(runtime protocol.Runtime, backend string
 	if err := prepareAttachmentSocket(path); err != nil {
 		return nil, "", err
 	}
-	proxy, err := newAttachmentProxy(path, backend)
+	m.mu.Lock()
+	fences := map[string]*nativeArchiveFence{}
+	for commandID, scopes := range m.archiveScopes {
+		if fence := scopes[runtime.ID]; fence != nil {
+			fences[commandID] = fence
+		} else {
+			for _, existing := range scopes {
+				fences[commandID] = &nativeArchiveFence{project: existing.project, defaultCWD: runtime.DefaultCWD, known: map[string]bool{}, threads: map[string]bool{}}
+				break
+			}
+		}
+	}
+	proxy, err := newAttachmentProxy(path, backend, fences)
 	if err != nil {
+		m.mu.Unlock()
 		return nil, "", err
 	}
-	m.mu.Lock()
 	m.attachments[runtime.ID] = proxy
 	m.mu.Unlock()
 	return proxy, path, nil

@@ -17,6 +17,7 @@ import (
 )
 
 type EffectiveConfig struct {
+	SQLiteHome         string
 	Model              string
 	ReasoningEffort    string
 	ReasoningSummary   string
@@ -31,6 +32,7 @@ type EffectiveConfig struct {
 func (c *Client) ReadEffectiveConfig(ctx context.Context, cwd string) (EffectiveConfig, error) {
 	var reply struct {
 		Config struct {
+			SQLiteHome         string          `json:"sqlite_home"`
 			Model              string          `json:"model"`
 			ReasoningEffort    string          `json:"model_reasoning_effort"`
 			ReasoningSummary   string          `json:"model_reasoning_summary"`
@@ -51,7 +53,8 @@ func (c *Client) ReadEffectiveConfig(ctx context.Context, cwd string) (Effective
 	}
 	approval := stringScalar(reply.Config.ApprovalPolicy)
 	return EffectiveConfig{
-		Model: reply.Config.Model, ReasoningEffort: reply.Config.ReasoningEffort,
+		SQLiteHome: reply.Config.SQLiteHome,
+		Model:      reply.Config.Model, ReasoningEffort: reply.Config.ReasoningEffort,
 		ReasoningSummary: reply.Config.ReasoningSummary, ApprovalPolicy: approval,
 		ApprovalsReviewer: reply.Config.ApprovalsReviewer, SandboxMode: reply.Config.SandboxMode,
 		ServiceTier: reply.Config.ServiceTier, ModelContextWindow: reply.Config.ModelContextWindow,
@@ -597,6 +600,13 @@ func (c *Client) CleanBackgroundTerminals(ctx context.Context, threadID string) 
 
 func (c *Client) ArchiveThread(ctx context.Context, threadID string) error {
 	return c.request(ctx, "thread/archive", map[string]any{"threadId": threadID}, nil, false)
+}
+
+func (c *Client) UnarchiveThread(ctx context.Context, threadID string) error {
+	if strings.TrimSpace(threadID) == "" {
+		return errors.New("thread id is required")
+	}
+	return c.request(ctx, "thread/unarchive", map[string]any{"threadId": threadID}, nil, false)
 }
 
 type HookInfo struct {

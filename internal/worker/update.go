@@ -199,6 +199,9 @@ func (a *Agent) prepareUpdate(ctx context.Context, ttl time.Duration) (UpdateLea
 	if a.update != nil {
 		return UpdateLease{}, errors.New("worker update: another update is already prepared")
 	}
+	if len(a.archiveAdmissions) != 0 {
+		return UpdateLease{}, errors.New("worker update: a session archive or restore job is running")
+	}
 	if !a.manager.lifecycle.TryLock() {
 		return UpdateLease{}, errors.New("worker update: runtime startup or discovery is in progress")
 	}

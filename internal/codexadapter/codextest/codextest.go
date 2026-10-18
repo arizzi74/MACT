@@ -24,22 +24,23 @@ type Response struct {
 	Error  json.RawMessage
 }
 type Server struct {
-	in            *bufio.Scanner
-	out           *json.Encoder
-	raw           io.Writer
-	writeMu       sync.Mutex
-	close         func()
-	mu            sync.Mutex
-	calls         []Call
-	responses     []Response
-	next          int
-	threads       []map[string]any
-	loaded        []string
-	unavailable   map[string]bool
-	rpcErrors     map[string]rpcError
-	methodResults map[string]json.RawMessage
-	threadResults map[string]map[string]json.RawMessage
-	delays        map[string]time.Duration
+	in              *bufio.Scanner
+	out             *json.Encoder
+	raw             io.Writer
+	writeMu         sync.Mutex
+	close           func()
+	mu              sync.Mutex
+	calls           []Call
+	responses       []Response
+	next            int
+	threads         []map[string]any
+	archivedThreads []map[string]any
+	loaded          []string
+	unavailable     map[string]bool
+	rpcErrors       map[string]rpcError
+	methodResults   map[string]json.RawMessage
+	threadResults   map[string]map[string]json.RawMessage
+	delays          map[string]time.Duration
 }
 
 type rpcError struct {
@@ -54,6 +55,12 @@ func (s *Server) SetThreads(threads []map[string]any, loaded []string) {
 	defer s.mu.Unlock()
 	s.threads = append([]map[string]any(nil), threads...)
 	s.loaded = append([]string(nil), loaded...)
+}
+
+func (s *Server) SetArchivedThreads(threads []map[string]any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.archivedThreads = append([]map[string]any{}, threads...)
 }
 
 // SetMethodUnavailable makes one RPC method return JSON-RPC -32601.
@@ -325,8 +332,15 @@ func (s *Server) serve() {
 		case "turn/steer":
 			result = map[string]any{"turnId": "turn-steered"}
 		case "thread/list":
+			var p struct {
+				Archived bool `json:"archived"`
+			}
+			_ = json.Unmarshal(request.Params, &p)
 			s.mu.Lock()
-			threads := append([]map[string]any(nil), s.threads...)
+			threads := append([]map[string]any{}, s.threads...)
+			if p.Archived {
+				threads = append([]map[string]any{}, s.archivedThreads...)
+			}
 			s.mu.Unlock()
 			result = map[string]any{"data": threads}
 		case "thread/loaded/list":

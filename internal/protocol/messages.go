@@ -59,6 +59,8 @@ type Hello struct {
 	SupportsSessionWorkspaces    bool      `json:"supports_session_workspaces,omitempty"`
 	SupportsWebUISessionCreation bool      `json:"supports_webui_session_creation,omitempty"`
 	SupportsSessionDeletion      bool      `json:"supports_session_deletion,omitempty"`
+	SupportsSessionEditing       bool      `json:"supports_session_editing,omitempty"`
+	SupportsSessionArchives      bool      `json:"supports_session_archives,omitempty"`
 	SupportsConversationHistory  bool      `json:"supports_conversation_history,omitempty"`
 	ProtocolMin                  int       `json:"protocol_min"`
 	ProtocolMax                  int       `json:"protocol_max"`
@@ -82,6 +84,8 @@ type Heartbeat struct {
 	SupportsSessionWorkspaces    bool      `json:"supports_session_workspaces,omitempty"`
 	SupportsWebUISessionCreation bool      `json:"supports_webui_session_creation,omitempty"`
 	SupportsSessionDeletion      bool      `json:"supports_session_deletion,omitempty"`
+	SupportsSessionEditing       bool      `json:"supports_session_editing,omitempty"`
+	SupportsSessionArchives      bool      `json:"supports_session_archives,omitempty"`
 	SupportsConversationHistory  bool      `json:"supports_conversation_history,omitempty"`
 	UptimeSeconds                int64     `json:"uptime_seconds"`
 	Runtimes                     []Runtime `json:"runtimes"`
@@ -90,17 +94,21 @@ type Heartbeat struct {
 type Operation string
 
 const (
-	StartTurn        Operation = "start_turn"
-	StoreFiles       Operation = "store_files"
-	NewSession       Operation = "new_session"
-	Steer            Operation = "steer"
-	Interrupt        Operation = "interrupt"
-	ApprovalResponse Operation = "approval_response"
-	InputResponse    Operation = "input_response"
-	CodexCommand     Operation = "codex_command"
-	ReadHistory      Operation = "read_history"
-	BrowseWorkspace  Operation = "browse_workspace"
-	DeleteSession    Operation = "delete_session"
+	StartTurn           Operation = "start_turn"
+	StoreFiles          Operation = "store_files"
+	NewSession          Operation = "new_session"
+	Steer               Operation = "steer"
+	Interrupt           Operation = "interrupt"
+	ApprovalResponse    Operation = "approval_response"
+	InputResponse       Operation = "input_response"
+	CodexCommand        Operation = "codex_command"
+	ReadHistory         Operation = "read_history"
+	BrowseWorkspace     Operation = "browse_workspace"
+	DeleteSession       Operation = "delete_session"
+	RenameSession       Operation = "rename_session"
+	ArchiveSession      Operation = "archive_session"
+	ListSessionArchives Operation = "list_session_archives"
+	RestoreSession      Operation = "restore_session"
 )
 
 // Command contains an immutable execution target. No dispatch path may consult a
@@ -120,22 +128,23 @@ type Command struct {
 }
 
 type Arguments struct {
-	Workspace         *WorkspaceRequest    `json:"workspace,omitempty"`
-	SessionName       string               `json:"session_name,omitempty"`
-	CreateDirectory   bool                 `json:"create_directory,omitempty"`
-	HistoryMode       string               `json:"history_mode,omitempty"`
-	EnsureWorkspace   bool                 `json:"ensure_workspace,omitempty"`
-	History           *HistoryRequest      `json:"history,omitempty"`
-	SelectionRevision *uint64              `json:"selection_revision,omitempty"`
-	Codex             *CodexCommandPayload `json:"codex,omitempty"`
-	CWD               string               `json:"cwd,omitempty"`
-	Text              string               `json:"text,omitempty"`
-	Images            []Image              `json:"images,omitempty"`
-	Files             []File               `json:"files,omitempty"`
-	ApprovalID        string               `json:"approval_id,omitempty"`
-	RequestID         string               `json:"request_id,omitempty"`
-	Decision          string               `json:"decision,omitempty"`
-	Answers           map[string][]string  `json:"answers,omitempty"`
+	SessionArchive    *SessionArchiveRequest `json:"session_archive,omitempty"`
+	Workspace         *WorkspaceRequest      `json:"workspace,omitempty"`
+	SessionName       string                 `json:"session_name,omitempty"`
+	CreateDirectory   bool                   `json:"create_directory,omitempty"`
+	HistoryMode       string                 `json:"history_mode,omitempty"`
+	EnsureWorkspace   bool                   `json:"ensure_workspace,omitempty"`
+	History           *HistoryRequest        `json:"history,omitempty"`
+	SelectionRevision *uint64                `json:"selection_revision,omitempty"`
+	Codex             *CodexCommandPayload   `json:"codex,omitempty"`
+	CWD               string                 `json:"cwd,omitempty"`
+	Text              string                 `json:"text,omitempty"`
+	Images            []Image                `json:"images,omitempty"`
+	Files             []File                 `json:"files,omitempty"`
+	ApprovalID        string                 `json:"approval_id,omitempty"`
+	RequestID         string                 `json:"request_id,omitempty"`
+	Decision          string                 `json:"decision,omitempty"`
+	Answers           map[string][]string    `json:"answers,omitempty"`
 }
 
 // CodexCommandPayload names a client command, never an arbitrary RPC method.
@@ -157,11 +166,11 @@ func (c Command) Validate() error {
 		return errors.New("invalid command lifetime")
 	}
 	switch c.Operation {
-	case NewSession, BrowseWorkspace:
+	case NewSession, BrowseWorkspace, ListSessionArchives, RestoreSession:
 		if c.SessionID != "" || c.ThreadID != "" {
 			return errors.New("new session cannot target an existing thread")
 		}
-	case StartTurn, StoreFiles, Steer, Interrupt, ApprovalResponse, InputResponse, CodexCommand, ReadHistory, DeleteSession:
+	case StartTurn, StoreFiles, Steer, Interrupt, ApprovalResponse, InputResponse, CodexCommand, ReadHistory, DeleteSession, RenameSession, ArchiveSession:
 		if _, err := uuid.Parse(c.SessionID); err != nil || c.ThreadID == "" {
 			return errors.New("missing session target")
 		}
@@ -220,15 +229,29 @@ func (c Command) Validate() error {
 		return errors.New("workspace browser arguments require browse_workspace")
 	}
 	if c.Arguments.CreateDirectory || c.Arguments.SessionName != "" {
-		if c.Operation != NewSession {
+		if c.Operation != NewSession && c.Operation != RenameSession {
 			return errors.New("session creation arguments require new_session")
 		}
-		if _, err := NormalizeSessionName(c.Arguments.SessionName); err != nil {
+		var err error
+		if c.Operation == RenameSession {
+			_, err = NormalizeSessionTitle(c.Arguments.SessionName)
+		} else {
+			_, err = NormalizeSessionName(c.Arguments.SessionName)
+		}
+		if err != nil {
 			return err
 		}
 		if c.Arguments.CreateDirectory && strings.TrimSpace(c.Arguments.CWD) == "" {
 			return errors.New("directory creation requires a selected parent folder")
 		}
+	}
+	if c.Operation == RenameSession {
+		if _, err := NormalizeSessionTitle(c.Arguments.SessionName); err != nil || c.Arguments.CreateDirectory || strings.TrimSpace(c.Arguments.CWD) == "" {
+			return errors.New("invalid session rename")
+		}
+	}
+	if err := validateSessionArchiveCommand(c); err != nil {
+		return err
 	}
 	if c.Arguments.HistoryMode != "" && (c.Operation != NewSession || c.Arguments.HistoryMode != "legacy") {
 		return errors.New("unsupported new session history mode")
@@ -271,17 +294,18 @@ type EventAck struct {
 }
 
 type Result struct {
-	UsageMenu   *UsageMenu      `json:"usage_menu,omitempty"`
-	ModelMenu   *ModelMenu      `json:"model_menu,omitempty"`
-	Permissions *PermissionMenu `json:"permissions,omitempty"`
-	Workspace   *WorkspacePage  `json:"workspace,omitempty"`
-	History     *HistoryPage    `json:"history,omitempty"`
-	CommandID   string          `json:"command_id,omitempty"`
-	TurnID      string          `json:"turn_id,omitempty"`
-	Text        string          `json:"text,omitempty"`
-	State       string          `json:"state,omitempty"`
-	Error       *Error          `json:"error,omitempty"`
-	Session     *Session        `json:"session,omitempty"`
+	SessionArchive *SessionArchiveResult `json:"session_archive,omitempty"`
+	UsageMenu      *UsageMenu            `json:"usage_menu,omitempty"`
+	ModelMenu      *ModelMenu            `json:"model_menu,omitempty"`
+	Permissions    *PermissionMenu       `json:"permissions,omitempty"`
+	Workspace      *WorkspacePage        `json:"workspace,omitempty"`
+	History        *HistoryPage          `json:"history,omitempty"`
+	CommandID      string                `json:"command_id,omitempty"`
+	TurnID         string                `json:"turn_id,omitempty"`
+	Text           string                `json:"text,omitempty"`
+	State          string                `json:"state,omitempty"`
+	Error          *Error                `json:"error,omitempty"`
+	Session        *Session              `json:"session,omitempty"`
 }
 
 // PermissionMenu contains choices resolved by the worker for this session.

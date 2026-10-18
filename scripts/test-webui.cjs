@@ -497,8 +497,8 @@ itemTimes['timestamp-older-completed'] = { startedAtMs: null, completedAtMs: tim
     assert.equal(await newDialog.isVisible(), true);
     assert.equal(await page.locator('#new-session-close').evaluate(element => element === document.activeElement), true, 'Opening the modal keeps the keyboard closed');
     assert.equal(await page.locator('#new-session-name').evaluate(element => element.compareDocumentPosition(document.querySelector('#new-session-cwd')) & Node.DOCUMENT_POSITION_FOLLOWING), 4, 'Session name precedes its generated path');
-    await page.keyboard.press('Tab');
-    assert.equal(await page.locator('#new-session-name').evaluate(element => element === document.activeElement), true, 'Name is the first form field in keyboard order');
+    for (let step = 0; step < 3; step++) await page.keyboard.press('Tab');
+    assert.equal(await page.locator('#new-session-name').evaluate(element => element === document.activeElement), true, 'Name follows the source choices in keyboard order');
     await page.locator('#new-session-name').fill('My first session');
     assert.equal(await page.locator('#new-session-cwd').inputValue(), '~/CODEX/My_first_session', 'The name immediately populates the full worker-home destination');
     await creationScreenshot('webui-new-session-desktop.png');
@@ -2749,9 +2749,10 @@ itemTimes['timestamp-older-completed'] = { startedAtMs: null, completedAtMs: tim
     const deleteUnknown = deletable('delete-unknown');
     sessions.push(deletedOther, deleteFailure, deletedActive, deleteUnknown);
     await page.locator('#refresh-sessions').click();
-    await page.waitForSelector('[data-delete-session-id="delete-other"]');
-    const deleteButton = id => page.locator('.session-delete[data-delete-session-id="' + id + '"]');
+    await page.waitForSelector('[data-edit-session-id="delete-other"]');
+    const deleteButton = id => page.locator('.session-edit[data-edit-session-id="' + id + '"]');
     const dialog = page.locator('#delete-session-dialog');
+    const openDelete = async id => { await deleteButton(id).click(); await page.locator('#edit-session-delete').click(); };
     const confirmDelete = async () => {
       const reply = page.waitForResponse(response => response.url().includes('/webui/sessions/delete') && response.request().method() === 'POST');
       await page.locator('#delete-session-confirm').click();
@@ -2764,12 +2765,12 @@ itemTimes['timestamp-older-completed'] = { startedAtMs: null, completedAtMs: tim
       await page.clock.fastForward(2100);
       await page.waitForSelector('[data-session-id="' + request.session_id + '"]', { state: 'detached' });
     };
-    assert.equal(await page.locator('.session-delete').count(), sessions.length, 'Every desktop session row has its own delete button');
-    assert.equal(await deleteButton('delete-other').getAttribute('aria-label'), 'Delete session ' + deletedOther.name, 'The delete icon has a complete accessible session name');
+    assert.equal(await page.locator('.session-edit').count(), sessions.length, 'Every desktop session row has its own edit button');
+    assert.equal(await deleteButton('delete-other').getAttribute('aria-label'), 'Edit session ' + deletedOther.name, 'The edit icon has a complete accessible session name');
     assert.equal(await deleteButton('delete-other').evaluate(button => Boolean(button.closest('.session-button'))), false, 'Delete buttons are siblings of selection buttons, never nested interactive controls');
     const socketsBeforeDelete = await page.evaluate(() => window.testSockets.length);
     const deletesBeforeCancel = sessionDeletes.length;
-    await deleteButton('delete-other').click();
+    await openDelete('delete-other');
     await dialog.waitFor({ state: 'visible' });
     assert.equal(await page.locator('#delete-session-name').textContent(), deletedOther.name);
     assert.match(await page.locator('#delete-session-cwd').textContent(), /\/projects\/keep-delete-other/);
@@ -2783,14 +2784,14 @@ itemTimes['timestamp-older-completed'] = { startedAtMs: null, completedAtMs: tim
     assert.equal(await deleteButton('delete-other').isVisible(), true, 'Cancelling preserves the session row');
 
     rejectNextDelete = true;
-    await deleteButton('delete-failure').click();
+    await openDelete('delete-failure');
     await confirmDelete();
     await page.waitForFunction(() => document.querySelector('#delete-session-message').textContent.toLowerCase().includes('offline'));
     assert.equal(await page.locator('[data-session-id="delete-failure"]').count(), 1, 'A rejected offline deletion retains the session in the list');
     assert.equal(await page.locator('[data-session-id="d"]').getAttribute('aria-current'), 'true', 'Rejected deletion leaves the selected session untouched');
     await page.locator('#delete-session-cancel').click();
 
-    await deleteButton('delete-other').click();
+    await openDelete('delete-other');
     const deletingOther = await confirmDelete();
     assert.deepEqual({ session_id: deletingOther.session_id, confirmed: deletingOther.confirmed, csrf: deletingOther.csrf }, { session_id: 'delete-other', confirmed: true, csrf: 'browser-test-csrf' }, 'Confirmed deletion targets the chosen row with CSRF protection');
     assert.match(deletingOther.request_id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i, 'Deletion is identified by a stable UUID for status lookup');
@@ -2803,7 +2804,7 @@ itemTimes['timestamp-older-completed'] = { startedAtMs: null, completedAtMs: tim
     assert.equal(await page.evaluate(() => window.testSockets.length), afterDeleteSwitch, 'Completing background deletion never opens a replacement transcript');
     assert.equal(sessionDeletes.filter(request => request.request_id === deletingOther.request_id).length, 1, 'Closing the dialog and changing sessions does not replay the delete POST');
 
-    await deleteButton('delete-failure').click();
+    await openDelete('delete-failure');
     const failingDelete = await confirmDelete();
     Object.assign(deleteStatuses.get(failingDelete.request_id), { status: 'failed', pending: false, deleted: false, error_code: 'session_busy', message: 'The session has an active turn. Wait for it to finish before deleting.' });
     await page.clock.fastForward(2100);
@@ -2815,7 +2816,7 @@ itemTimes['timestamp-older-completed'] = { startedAtMs: null, completedAtMs: tim
     // A failed HTTP response does not prove the durable command was rejected.
     // Recover with status reads, never a second destructive POST.
     dropNextDeleteAcknowledgement = true;
-    await deleteButton('delete-failure').click();
+    await openDelete('delete-failure');
     const lostDeleteReply = page.waitForEvent('requestfailed', request => request.url().includes('/webui/sessions/delete') && request.method() === 'POST');
     await page.locator('#delete-session-confirm').click();
     await lostDeleteReply;
@@ -2827,7 +2828,7 @@ itemTimes['timestamp-older-completed'] = { startedAtMs: null, completedAtMs: tim
     assert.equal(await page.locator('[data-session-id="a"]').getAttribute('aria-current'), 'true', 'Recovering an uncertain deletion does not disturb the active session');
     await page.locator('#delete-session-cancel').click();
 
-    await deleteButton('delete-unknown').click();
+    await openDelete('delete-unknown');
     const unknownDelete = await confirmDelete();
     Object.assign(deleteStatuses.get(unknownDelete.request_id), { status: 'outcome_unknown', pending: false, deleted: false, message: 'The worker could not confirm the deletion outcome. Check status before retrying.' });
     await page.clock.fastForward(2100);
@@ -2847,14 +2848,14 @@ itemTimes['timestamp-older-completed'] = { startedAtMs: null, completedAtMs: tim
     await deleteButton('delete-active').scrollIntoViewIfNeeded();
     const deleteBounds = await deleteButton('delete-active').boundingBox();
     assert.ok(deleteBounds.width >= 40 && deleteBounds.height >= 40, 'Mobile delete icons have a usable touch target');
-    await deleteButton('delete-active').click();
+    await openDelete('delete-active');
     assert.equal(await dialog.isVisible(), true, 'Mobile deletion opens the same explicit confirmation');
     assert.equal(await page.evaluate(() => document.activeElement?.matches('input,textarea,[contenteditable=true]') || false), false, 'Mobile deletion does not open a text keyboard');
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'Long malicious session names cannot overflow the mobile confirmation');
     await page.locator('#delete-session-cancel').click();
     await choose('delete-active');
     await page.locator('#show-sessions').click();
-    await deleteButton('delete-active').click();
+    await openDelete('delete-active');
     const deletingActive = await confirmDelete();
     await completeDelete(deletingActive);
     assert.equal(await page.evaluate(() => window.testSockets.at(-1).readyState), 3, 'Confirmed deletion of the selected session detaches its transcript');

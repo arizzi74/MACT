@@ -26,6 +26,7 @@ type attachmentProxy struct {
 	server            *http.Server
 	backend           string
 	paused            bool
+	archiveFences     map[string]*nativeArchiveFence
 	resumed           chan struct{}
 	closed            bool
 	uncertain         bool
@@ -58,7 +59,7 @@ type attachmentSession struct {
 
 type attachmentConnectionKey struct{}
 
-func newAttachmentProxy(path, backend string) (*attachmentProxy, error) {
+func newAttachmentProxy(path, backend string, archiveFences ...map[string]*nativeArchiveFence) (*attachmentProxy, error) {
 	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
 	if err != nil {
 		return nil, err
@@ -68,6 +69,9 @@ func newAttachmentProxy(path, backend string) (*attachmentProxy, error) {
 		return nil, err
 	}
 	p := &attachmentProxy{listener: listener, backend: backend, sessions: make(map[*attachmentSession]struct{}), done: make(chan struct{})}
+	if len(archiveFences) > 0 {
+		p.archiveFences = archiveFences[0]
+	}
 	p.server = &http.Server{
 		Handler: http.HandlerFunc(p.accept), ReadHeaderTimeout: 5 * time.Second, MaxHeaderBytes: 16 << 10,
 		ConnContext: func(ctx context.Context, connection net.Conn) context.Context {
@@ -243,6 +247,10 @@ func (s *attachmentSession) forwardClient(payload []byte) bool {
 			p.mu.Unlock()
 			return false
 		}
+		if p.archiveBlocksLocked(payload) {
+			p.mu.Unlock()
+			return s.rejectDuringArchive(payload)
+		}
 		if p.paused {
 			resumed := p.resumed
 			p.mu.Unlock()
@@ -338,6 +346,7 @@ func (s *attachmentSession) fromBackend() {
 		p.mu.Lock()
 		s.forwarding++
 		p.observationEpoch++
+		p.observeArchiveBackendThreadLocked(payload)
 		s.activity.serverMessage(payload)
 		if s.activity.deletedThread != "" {
 			p.forgetQueuedThreadLocked(s.activity.deletedThread)

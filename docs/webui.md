@@ -25,6 +25,58 @@ sending the creation request again. Upgrade older workers with
 
 The existing Go gateway serves the interface and relays its authenticated connection to the selected worker. The worker attaches to the existing Codex app-server. No additional Codex CLI, pseudo-terminal, Python service, Node.js service, CDN, or public worker port is needed. Browser JavaScript and CSS are embedded in the gateway binary.
 
+## Session editing and archives
+
+Use the pencil beside any session in the sidebar on desktop or mobile. The
+editor shows its worker and project directory and offers **Save**, **Delete**,
+**Archive** and **Cancel**. Renaming changes the session's display title in the
+gateway, Codex and Telegram session lists; a bot configured to inherit its
+session name follows the change. It does not move or rename the project folder
+or rewrite paths inside files. Titles can contain spaces and punctuation.
+
+**Delete** asks for confirmation and uses the same permanent session deletion
+as `/tgdeletesession`, including child conversations. Project files stay on
+disk. **Archive** instead saves a resumable native conversation and the project
+directory in one checksummed `.tar.xz` file, then hides the session. It preserves
+native archived state rather than permanently deleting it.
+
+Archives live in `~/CODEX_Archived` on the **worker**, under the account running
+its worker service. For example, a service running as `ubuntu` on iaiabox uses
+`/home/ubuntu/CODEX_Archived`; one running as `antonio` on my.rischioclinico.it
+uses `/home/antonio/CODEX_Archived`. These are not gateway-side downloads. Each
+archive includes its title, original project path, creation date, Codex version,
+native session state and file checksums. Treat it as a private backup: it can
+contain project secrets and conversation content.
+File contents, basic permissions and symbolic links are preserved; ownership,
+ACLs and extended attributes are not captured. The archive manifest is bounded
+to 16 MiB; a project with more file metadata is rejected before source cleanup.
+
+**Delete original project directory after successful archive** is optional and
+unchecked initially. The worker verifies the archive and an isolated native
+resume before cleanup, then checks that the project still matches the backup.
+Active turns, native queues, goals, terminals and shared or protected project
+paths can prevent archival or cleanup. If backup succeeds but cleanup cannot
+finish, the operation reports the cleanup warning and keeps the verified
+archive. Unrelated projects can continue running during the backup.
+
+To restore, press **＋** beside the worker and select **Restore archived**.
+Choose an archive; the list shows its title, original path, size, creation date
+and native version, with **More archives** for further pages. Restoration uses
+the original project path and resumes the original conversation. An unchanged
+existing project/native session can be reused; different existing data causes a
+conflict instead of being overwritten. The archive remains available after
+restoring. A compatible worker and an allowed original project path are
+required; the initial native format supports **Codex 0.163.0** exactly. Older
+workers show an update instruction instead of accepting unsupported requests.
+
+Archive and restore run as durable background worker jobs. Closing the dialog,
+switching sessions, losing the network or reloading the page does not repeat or
+cancel an accepted operation. The browser checks its original request ID for
+progress and its confirmed result; worker restarts recover the saved job.
+Worker updates wait while a backup or restore is active. The existing `/archive`
+slash command still performs Codex's native archive action; it does not create
+this project backup.
+
 ## Sign-in and recovery
 
 Browser logins expire eight hours after the last successful sign-in.
@@ -66,7 +118,7 @@ check the conversation before submitting again.
 - Saved subagent interactions and completions also recover **Recorded** dates through their exact event identities, including completions received after the parent turn ends. Timestamp parser upgrades rebuild affected indexes incrementally, so already cached sessions gain newly supported dates without repeated full log scans.
 - Recognized image and audio inputs preserve message timestamp matching. When a running turn grows during pagination, matching uses the original snapshot's verified saved prefix; later messages cannot supply dates for earlier occurrences of repeated text. Unknown or malformed input projections retain the explicit fallback.
 - Opening the session menu on a phone closes an existing keyboard and leaves search unfocused. Tap the search field when you want to type.
-- Every sidebar session has a delete button on desktop and mobile. Confirmation names the conversation and explains that its child conversations are also removed, while its working directory and all files are kept. Deletion uses the same worker operation and idle checks as **/tgdeletesession**, including checks for running child sessions. Deleting another session keeps your current session selected. A row remains until deletion is confirmed; a lost acknowledgment triggers read-only status checks, never an automatic repeat of the deletion request.
+- Every sidebar session has an edit button on desktop and mobile for renaming, deleting or archiving it. Deletion asks for confirmation, including its child conversations, and keeps project files. Editing another session keeps your current session selected. Rows change only after worker confirmation; a lost acknowledgment triggers read-only status checks without automatically repeating a mutation. See [session editing and archives](#session-editing-and-archives).
 - Send a prompt with **Send**, or desktop Enter. Shift+Enter inserts a newline. Touch keyboards use Enter for a newline; use the send button to submit. During a running turn, **Steer** submits follow-up input to that turn and **Stop** interrupts it. On mobile, **Stop** sits immediately left of **Steer**, keeping an empty composer the same height as when idle. Typed multiline text still expands the input.
 - Paste an image into the prompt, drop one onto the composer, or tap **＋** to choose an image on desktop or mobile. A thumbnail appears before sending; **×** removes it. You can send the image by itself or with text. Each message supports one PNG, JPEG or GIF up to 10 MiB, 16 million pixels and 8,192 pixels per side. If a mobile clipboard does not expose image files to the browser, use **＋** and the photo/file picker. Image drafts stay with their session in browser memory and are cleared only after acknowledgment; they are never resent automatically. Reloading or signing out clears them. Saved conversation and Telegram history show an **[Image]** placeholder.
 - With an image attached, **/tgsteer** optionally followed by instructions sends both to the active turn, just like **Steer**. An image-only **/tgsteer** is also supported. With no running turn, the image and text stay in the composer for editing. Other slash commands require removing the image first.

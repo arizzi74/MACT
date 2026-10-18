@@ -52,6 +52,7 @@ type CommandRecord struct {
 	State       CommandState       `json:"state"`
 	Result      *protocol.Result   `json:"result,omitempty"`
 	InboundFile *inboundFileRecord `json:"inbound_file,omitempty"`
+	ArchiveJob  *sessionArchiveJob `json:"archive_job,omitempty"`
 }
 
 // ReceiveResult reports whether a command was written by this call. A
@@ -450,6 +451,9 @@ func (s *Store) upsertSession(session protocol.Session, generation uint64) (prot
 			return errors.New("worker store: session_id must be a UUID")
 		}
 		saved.WorkerID = s.workerID
+		if tx.Bucket(bucketMeta).Get(archiveVisibilityKey(session.RuntimeID, session.ThreadID)) != nil {
+			saved.Archived, saved.Loaded, saved.ActiveTurnID, saved.State = true, false, "", "not_loaded"
+		}
 		saved.UpdatedAt = time.Now().UTC()
 		encoded, err := json.Marshal(saved)
 		if err != nil {
@@ -509,6 +513,9 @@ func (s *Store) changeDiscoveredSessionVisibility(runtime protocol.Runtime, expe
 		if current.Deleted || (current.Settings != nil && current.Settings.RuntimeGeneration > runtime.Generation) {
 			return nil
 		}
+		if !candidate.Archived && tx.Bucket(bucketMeta).Get(archiveVisibilityKey(runtime.ID, expected.ThreadID)) != nil {
+			return nil
+		}
 		previous := expected
 		current.UpdatedAt, previous.UpdatedAt = time.Time{}, time.Time{}
 		if saved.Archived == candidate.Archived || !reflect.DeepEqual(current, previous) || !saved.UpdatedAt.Equal(expected.UpdatedAt) {
@@ -565,6 +572,11 @@ func recoverExecuting(tx *workerdb.Tx) error {
 			return err
 		}
 		if record.State != CommandExecuting {
+			return nil
+		}
+		// Archive/import jobs persist their filesystem phase and are resumed by
+		// the worker, rather than replaying an uncertain ordinary Codex RPC.
+		if record.ArchiveJob != nil {
 			return nil
 		}
 		record.State = CommandOutcomeUnknown

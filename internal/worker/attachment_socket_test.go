@@ -85,6 +85,46 @@ func TestAttachmentRebindJoinsPreviousProxy(t *testing.T) {
 	t.Cleanup(third.close)
 }
 
+func TestAttachmentRestartInheritsProjectArchiveFenceBeforeAdmission(t *testing.T) {
+	dir := attachmentTestDir(t)
+	fence := &nativeArchiveFence{project: "/projects/archive", defaultCWD: "/projects/other", known: map[string]bool{"selected": true, "other": true}, threads: map[string]bool{"selected": true}}
+	m := &RuntimeManager{cfg: config.WorkerConfig{StateFile: filepath.Join(dir, "worker.db")}, attachments: map[string]*attachmentProxy{}, archiveScopes: map[string]map[string]*nativeArchiveFence{"job": {"runtime": fence}}}
+	runtime := protocol.Runtime{ID: "runtime", ProfileID: "main", DefaultCWD: "/projects/other", Generation: 1}
+	first, _, err := m.openAttachment(runtime, filepath.Join(dir, "first-backend.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(first.close)
+	runtime.Generation++
+	second, _, err := m.openAttachment(runtime, filepath.Join(dir, "second-backend.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(second.close)
+	second.mu.Lock()
+	blocked := second.archiveBlocksLocked([]byte(`{"id":1,"method":"turn/start","params":{"threadId":"selected"}}`))
+	otherBlocked := second.archiveBlocksLocked([]byte(`{"id":2,"method":"turn/start","params":{"threadId":"other"}}`))
+	second.mu.Unlock()
+	if !blocked || otherBlocked {
+		t.Fatalf("restart fence target=%v unrelated=%v", blocked, otherBlocked)
+	}
+	// A newly started profile has no validated thread inventory yet. Its
+	// explicit unrelated CWD still works; unknown thread mutations are fenced.
+	newRuntime := protocol.Runtime{ID: "new-runtime", ProfileID: "new", DefaultCWD: "/projects/other", Generation: 1}
+	third, _, err := m.openAttachment(newRuntime, filepath.Join(dir, "third-backend.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(third.close)
+	third.mu.Lock()
+	blocked = third.archiveBlocksLocked([]byte(`{"id":3,"method":"thread/start","params":{"cwd":"/projects/archive"}}`))
+	otherBlocked = third.archiveBlocksLocked([]byte(`{"id":4,"method":"thread/start","params":{"cwd":"/projects/other"}}`))
+	third.mu.Unlock()
+	if !blocked || otherBlocked {
+		t.Fatalf("new runtime fence target=%v unrelated=%v", blocked, otherBlocked)
+	}
+}
+
 func TestAttachmentSocketRefusesForeignPaths(t *testing.T) {
 	for _, kind := range []string{"file", "symlink", "live socket", "public directory", "symlink directory"} {
 		t.Run(kind, func(t *testing.T) {

@@ -148,6 +148,9 @@ func (a *Agent) dispatchWebUIActor(request webUIActorCommand) (webUICommandReply
 	if a.update != nil {
 		return webUICommandReply{}, ErrUpdatePrepared
 	}
+	if a.archiveBlocksCommand(protocol.Command{RuntimeID: runtime.ID, SessionID: session.ID, ThreadID: session.ThreadID, Arguments: protocol.Arguments{CWD: session.CWD}}) {
+		return webUICommandReply{}, archiveBusy("This project is being archived or restored.")
+	}
 	a.mu.RLock()
 	actor := a.sessions[session.ID]
 	a.mu.RUnlock()
@@ -295,6 +298,9 @@ func (s *sessionActor) webUINewSession(ctx context.Context, client *codexadapter
 	cwd, err := auth.CanonicalWorkspace(options.CWD, s.agent.cfg.AllowedWorkspaceRoots)
 	if err != nil {
 		return protocol.Result{}, validationError("Choose an existing working directory under this worker's allowed roots.")
+	}
+	if s.agent.archiveBlocksCommand(protocol.Command{Operation: protocol.NewSession, RuntimeID: s.runtime.ID, Arguments: protocol.Arguments{CWD: cwd}}) {
+		return protocol.Result{}, archiveBusy("This project is being archived or restored.")
 	}
 	// Official 0.156 cannot rejoin an empty paginated thread until its first
 	// prompt materializes the source rollout. Its supported legacy contract

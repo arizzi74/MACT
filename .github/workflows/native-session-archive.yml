@@ -1,0 +1,34 @@
+name: Native session archive proof
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  native-session-archive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.26.x'
+          check-latest: true
+      - name: Fetch the supported official native runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          proof_dir=$(mktemp -d "$RUNNER_TEMP/codex-archive-proof.XXXXXX")
+          curl --fail --location --retry 3 --proto '=https' --tlsv1.2 \
+            https://github.com/openai/codex/releases/download/rust-v0.163.0/codex-x86_64-unknown-linux-musl.tar.gz \
+            --output "$proof_dir/codex.tar.gz"
+          printf '%s  %s\n' beb339e8ecd9ba057a6bb2dc81ad8ca474812edfbf0fc5056ca818797648dde4 "$proof_dir/codex.tar.gz" | sha256sum --check --strict
+          tar -xzf "$proof_dir/codex.tar.gz" -C "$proof_dir" codex-x86_64-unknown-linux-musl
+          test "$("$proof_dir/codex-x86_64-unknown-linux-musl" --version)" = 'codex-cli 0.163.0'
+          printf 'CODEX_REAL_BINARY=%s\n' "$proof_dir/codex-x86_64-unknown-linux-musl" >> "$GITHUB_ENV"
+      - name: Prove self-contained restoration and continuation
+        env:
+          CODEX_NATIVE_ARCHIVE_TEST: '1'
+        run: go test ./internal/sessionarchive ./internal/worker -run '^TestNative(SelfContainedResume|ContinuedTurn|WorkerArchive)' -count=1 -timeout=10m

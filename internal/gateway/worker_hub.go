@@ -51,6 +51,8 @@ type peer struct {
 	supportsFileInput            bool // guarded by Hub.mu after publication
 	supportsSessionWorkspaces    bool
 	supportsWebUISessionCreation bool
+	supportsSessionEditing       bool
+	supportsSessionArchives      bool
 	supportsSessionDeletion      bool
 	supportsConversationHistory  bool
 	supportsWebUI                bool
@@ -136,6 +138,8 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		supportsWorkerUpdate:         hello.SupportsWorkerUpdate,
 		supportsSessionWorkspaces:    hello.SupportsSessionWorkspaces || legacySessionSupport,
 		supportsWebUISessionCreation: hello.SupportsWebUISessionCreation,
+		supportsSessionEditing:       hello.SupportsSessionEditing,
+		supportsSessionArchives:      hello.SupportsSessionArchives,
 		supportsSessionDeletion:      hello.SupportsSessionDeletion || legacySessionSupport,
 		supportsConversationHistory:  hello.SupportsConversationHistory,
 		supportsWebUI:                hello.SupportsWebUI,
@@ -416,7 +420,8 @@ func (h *Hub) SendCommand(ctx context.Context, c protocol.Command) error {
 	}
 	needsWorkspaces := c.Operation == protocol.BrowseWorkspace || (c.Operation == protocol.NewSession && (c.Arguments.CreateDirectory || c.Arguments.SessionName != ""))
 	needsConversationHistory := c.Operation == protocol.ReadHistory && c.Arguments.History != nil && c.Arguments.History.Messages
-	if (needsWorkspaces && !p.supportsSessionWorkspaces) || (c.Arguments.EnsureWorkspace && !p.supportsWebUISessionCreation) || (c.Operation == protocol.DeleteSession && !p.supportsSessionDeletion) || (needsConversationHistory && !p.supportsConversationHistory) {
+	needsArchives := c.Operation == protocol.ArchiveSession || c.Operation == protocol.ListSessionArchives || c.Operation == protocol.RestoreSession
+	if (needsWorkspaces && !p.supportsSessionWorkspaces) || (c.Arguments.EnsureWorkspace && !p.supportsWebUISessionCreation) || (c.Operation == protocol.DeleteSession && !p.supportsSessionDeletion) || (c.Operation == protocol.RenameSession && !p.supportsSessionEditing) || (needsArchives && !p.supportsSessionArchives) || (needsConversationHistory && !p.supportsConversationHistory) {
 		// Old workers disconnect before acknowledging unknown operations. A
 		// transport error here would just replay the command until expiry.
 		// Record a terminal rejection through the same durable path as a worker

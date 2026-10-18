@@ -22,6 +22,8 @@ type AdminWorker struct {
 	Connectivity                 string
 	SupportsSessionWorkspaces    bool
 	SupportsWebUISessionCreation bool
+	SupportsSessionEditing       bool
+	SupportsSessionArchives      bool
 	ConnectionID                 *uuid.UUID
 	ConnectedAt                  *time.Time
 	LastSeenAt                   *time.Time
@@ -114,7 +116,9 @@ func (s *Store) adminWorkerSnapshot(ctx context.Context) ([]AdminWorker, error) 
         COALESCE(worker_version, ''), enabled, connectivity, connection_id,
         connected_at, last_seen_at, created_at, updated_at,
         COALESCE(json_extract(heartbeat_metadata,'$.supports_session_workspaces')=1 OR worker_version IN ('0.5.19','v0.5.19'),FALSE),
-        COALESCE(json_extract(heartbeat_metadata,'$.supports_webui_session_creation')=1,FALSE)
+        COALESCE(json_extract(heartbeat_metadata,'$.supports_webui_session_creation')=1,FALSE),
+        COALESCE(json_extract(heartbeat_metadata,'$.supports_session_editing')=1,FALSE),
+        COALESCE(json_extract(heartbeat_metadata,'$.supports_session_archives')=1,FALSE)
         FROM workers ORDER BY name, worker_id`)
 	if err != nil {
 		return nil, fmt.Errorf("registry: list admin workers: %w", err)
@@ -125,7 +129,7 @@ func (s *Store) adminWorkerSnapshot(ctx context.Context) ([]AdminWorker, error) 
 		var w AdminWorker
 		if err := rows.Scan(&w.ID, &w.Name, &w.Hostname, &w.OS, &w.Arch, &w.Version,
 			&w.Enabled, &w.Connectivity, &w.ConnectionID, &w.ConnectedAt, &w.LastSeenAt,
-			&w.CreatedAt, &w.UpdatedAt, &w.SupportsSessionWorkspaces, &w.SupportsWebUISessionCreation); err != nil {
+			&w.CreatedAt, &w.UpdatedAt, &w.SupportsSessionWorkspaces, &w.SupportsWebUISessionCreation, &w.SupportsSessionEditing, &w.SupportsSessionArchives); err != nil {
 			return nil, fmt.Errorf("registry: scan admin worker: %w", err)
 		}
 		result = append(result, w)

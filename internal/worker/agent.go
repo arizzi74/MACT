@@ -22,22 +22,24 @@ import (
 // Agent joins runtime supervision, independent session actors, and the durable
 // transport. The network context never owns a runtime or an accepted turn.
 type Agent struct {
-	historySource func(context.Context, string) (webUIHistorySource, error)
-	webHistory    webUIHistoryCache
-	updateMu      sync.Mutex
-	update        *updateState
-	cfg           config.WorkerConfig
-	store         *Store
-	log           *slog.Logger
-	manager       *RuntimeManager
-	ctx           context.Context
-	mu            sync.RWMutex
-	group         sync.WaitGroup
-	sessions      map[string]*sessionActor
-	creates       map[string]chan protocol.Command
-	fatal         chan error
-	redactor      *auth.Redactor
-	newConnection func(config.WorkerConfig, *Store, *slog.Logger, func() []protocol.Runtime, func(context.Context, protocol.Command) (protocol.CommandAck, error)) (*Connection, error)
+	historySource     func(context.Context, string) (webUIHistorySource, error)
+	webHistory        webUIHistoryCache
+	updateMu          sync.Mutex
+	update            *updateState
+	archiveAdmissions map[string]*archiveAdmission
+	archiveOperations *sessionArchiveOperations
+	cfg               config.WorkerConfig
+	store             *Store
+	log               *slog.Logger
+	manager           *RuntimeManager
+	ctx               context.Context
+	mu                sync.RWMutex
+	group             sync.WaitGroup
+	sessions          map[string]*sessionActor
+	creates           map[string]chan protocol.Command
+	fatal             chan error
+	redactor          *auth.Redactor
+	newConnection     func(config.WorkerConfig, *Store, *slog.Logger, func() []protocol.Runtime, func(context.Context, protocol.Command) (protocol.CommandAck, error)) (*Connection, error)
 }
 
 func NewAgent(cfg config.WorkerConfig, store *Store, logger *slog.Logger) (*Agent, error) {
@@ -77,11 +79,22 @@ func (a *Agent) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if err := a.recoverArchiveJobs(); err != nil {
+		return err
+	}
 	// A worker restart changes every live runtime generation; recovered commands
 	// are routed through the same stale-generation validation as new delivery.
 	for _, record := range pending {
-		if _, err := a.dispatch(ctx, record.Command); err != nil {
-			return err
+		a.updateMu.Lock()
+		var dispatchErr error
+		if a.archiveBlocksCommand(record.Command) {
+			_, dispatchErr = a.reject(record.Command, protocol.SessionBusy, "This project has an archive or restore job recovering.")
+		} else {
+			_, dispatchErr = a.dispatch(ctx, record.Command)
+		}
+		a.updateMu.Unlock()
+		if dispatchErr != nil {
+			return dispatchErr
 		}
 	}
 	conn, err := a.newConnection(a.cfg, a.store, a.log, a.manager.Snapshot, a.HandleCommand)
@@ -137,6 +150,9 @@ func (a *Agent) HandleCommand(ctx context.Context, c protocol.Command) (protocol
 		}
 		return ack, nil
 	}
+	if a.archiveBlocksCommand(c) {
+		return a.reject(c, protocol.SessionBusy, "This project is being archived or restored. Retry when the operation finishes.")
+	}
 	return a.dispatch(ctx, c)
 }
 
@@ -164,6 +180,9 @@ func (a *Agent) dispatch(ctx context.Context, c protocol.Command) (protocol.Comm
 	}
 	if c.Operation == protocol.BrowseWorkspace {
 		return a.browseWorkspace(c)
+	}
+	if c.Operation == protocol.ArchiveSession || c.Operation == protocol.RestoreSession || c.Operation == protocol.ListSessionArchives {
+		return a.dispatchSessionArchive(c)
 	}
 	if c.Operation == protocol.NewSession {
 		a.mu.Lock()
@@ -265,6 +284,7 @@ func (a *Agent) onSessionContext(ctx context.Context, runtime protocol.Runtime, 
 		return err
 	}
 	s.Settings = currentSessionSettings(s.Settings, nil, runtime.Generation)
+	a.manager.observeArchiveSession(runtime, s)
 	a.mu.Lock()
 	actor := a.sessions[s.ID]
 	if actor == nil {
@@ -336,6 +356,9 @@ func (a *Agent) onEvent(runtime protocol.Runtime, event codexadapter.Event) {
 	if actor == nil {
 		if event.Kind == "thread_deleted" {
 			a.observeDeletedThread(runtime, event.ThreadID)
+		}
+		if event.Kind == "thread_name_updated" && event.Name != nil {
+			a.observeSessionName(runtime, event.ThreadID, *event.Name)
 		}
 		return
 	}
@@ -817,6 +840,17 @@ func (s *sessionActor) command(req actorCommand) {
 		s.agent.report(err)
 		return
 	}
+	if c.Operation == protocol.RenameSession {
+		result, err := s.renameSession(s.agent.ctx, client, c.Arguments.SessionName)
+		if err != nil {
+			s.agent.report(s.agent.executionError(c, err))
+			return
+		}
+		result.CommandID, result.State = c.ID, "completed"
+		_, err = s.agent.record(c, CommandCompleted, &result, "command_completed")
+		s.agent.report(err)
+		return
+	}
 	if c.Operation == protocol.ReadHistory {
 		page, err := s.readHistory(client, c.Arguments.History)
 		if err != nil {
@@ -1072,6 +1106,14 @@ func (s *sessionActor) event(event codexadapter.Event) {
 		return
 	}
 	switch event.Kind {
+	case "thread_name_updated":
+		if event.Name != nil {
+			saved, err := s.agent.store.ConfirmSessionName(s.runtime, s.session, *event.Name)
+			if err == nil {
+				s.session = saved
+			}
+			s.agent.report(err)
+		}
 	case "thread_settings_updated":
 		s.observeThreadSettings(event)
 	case "thread_status_changed":

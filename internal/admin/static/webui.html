@@ -97,6 +97,24 @@
     </section>
     <div class="settings-console"><a href="/tgw/admin/">Open operations console ↗</a></div>
   </dialog>
+  <dialog id="edit-session-dialog" aria-labelledby="edit-session-title" aria-describedby="edit-session-description">
+    <div class="settings-heading"><h2 id="edit-session-title">Edit session</h2><button id="edit-session-close" type="button" class="quiet" aria-label="Close session editor" autofocus>×</button></div>
+    <p id="edit-session-description" class="muted small">Change the session name, delete its conversation, or archive the project and conversation on its worker.</p>
+    <form id="edit-session-form">
+      <label for="edit-session-name">Session name</label><input id="edit-session-name" type="text" maxlength="240" required autocomplete="off">
+      <dl class="session-editor-details"><dt>Worker</dt><dd id="edit-session-worker"></dd><dt>Project path</dt><dd id="edit-session-path"></dd></dl>
+      <p id="edit-session-editing-help" class="muted small" hidden></p>
+      <section class="session-archive-options" aria-labelledby="edit-session-archive-title">
+        <h3 id="edit-session-archive-title">Archive project</h3>
+        <p id="edit-session-archive-destination" class="muted small"></p>
+        <p class="muted small">Archives include the project and conversation. Archiving removes the session after the archive succeeds.</p>
+        <label class="session-archive-checkbox"><input id="edit-session-delete-project" type="checkbox"> <span>Delete original project directory after successful archive</span></label>
+        <p id="edit-session-archive-help" class="muted small" hidden></p>
+      </section>
+      <p id="edit-session-message" role="status" aria-live="polite" hidden></p>
+      <div class="session-editor-actions"><button id="edit-session-delete" type="button" class="delete-confirm">Delete</button><button id="edit-session-archive" type="button" class="quiet">Archive</button><button id="edit-session-cancel" type="button" class="quiet">Cancel</button><button id="edit-session-save" type="submit" class="primary">Save</button></div>
+    </form>
+  </dialog>
   <dialog id="delete-session-dialog" aria-labelledby="delete-session-title" aria-describedby="delete-session-description">
     <h2 id="delete-session-title">Delete session?</h2>
     <p id="delete-session-name"></p>
@@ -108,9 +126,13 @@
   <dialog id="new-session-dialog" aria-labelledby="new-session-title" aria-describedby="new-session-worker">
     <div class="settings-heading"><h2 id="new-session-title">New session</h2><button id="new-session-close" type="button" class="quiet" aria-label="Close new session" autofocus>×</button></div>
     <p id="new-session-worker" class="muted small"></p>
+    <div class="new-session-mode" role="group" aria-label="New session source"><button id="new-session-mode-create" type="button" class="quiet" aria-pressed="true">Create new</button><button id="new-session-mode-restore" type="button" class="quiet" aria-pressed="false">Restore archived</button></div>
     <form id="new-session-form">
+      <div id="new-session-create-fields">
       <label for="new-session-name">Session name</label><input id="new-session-name" type="text" maxlength="120" required autocomplete="off" aria-describedby="new-session-preview">
+      </div>
       <div id="new-session-runtime-field"><label for="new-session-runtime">Codex runtime</label><select id="new-session-runtime"></select></div>
+      <div id="new-session-project-fields">
       <label for="new-session-cwd">Working-directory path on this worker</label>
       <div class="new-session-path-row"><input id="new-session-cwd" type="text" maxlength="4096" required autocomplete="off" spellcheck="false" aria-describedby="new-session-path-help"><button id="new-session-browse" type="button" class="quiet">Browse</button></div>
       <p id="new-session-path-help" class="muted small">Edit the full path to choose another folder on this worker. Existing folders are reused; missing folders are created.</p>
@@ -122,6 +144,15 @@
         <button id="new-session-more" type="button" class="quiet" hidden>More folders</button>
       </section>
       <p id="new-session-preview" class="muted small"></p>
+      </div>
+      <section id="new-session-archives" aria-labelledby="new-session-archives-title" hidden>
+        <div class="session-archive-heading"><h3 id="new-session-archives-title">Archived projects</h3><button id="new-session-archives-refresh" type="button" class="quiet">Refresh</button></div>
+        <p id="new-session-archive-directory" class="muted small">Archive folder on this worker: ~/CODEX_Archived</p>
+        <p class="muted small">Restore a .tar.xz archive to its original project path. The archive is kept. If that path already exists, choose another archive or move the existing directory on the worker before retrying.</p>
+        <div id="new-session-archive-list" role="radiogroup" aria-label="Choose an archived project"></div>
+        <button id="new-session-archives-more" type="button" class="quiet" hidden>More archives</button>
+        <p id="new-session-archives-message" class="muted small" role="status" aria-live="polite"></p>
+      </section>
       <p id="new-session-message" role="status" aria-live="polite" hidden></p>
       <div class="new-session-actions"><button id="new-session-cancel" type="button" class="quiet">Cancel</button><button id="new-session-submit" type="submit" class="primary">Create session</button></div>
     </form>

@@ -11,6 +11,9 @@ permissions:
   contents: read
 
 jobs:
+  native-session-archive:
+    uses: ./.github/workflows/native-session-archive.yml
+
   native-whisper:
     if: github.event_name != 'schedule'
     uses: ./.github/workflows/native-whisper.yml

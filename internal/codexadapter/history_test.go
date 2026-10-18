@@ -133,7 +133,9 @@ func TestUserPromptsPagesLargeImagesWithoutClosingTransport(t *testing.T) {
 	initialize(t, client, fake)
 	// The small-message fake defaults to a one-second RPC deadline, which is
 	// too short for decoding maximum-size images under the race detector.
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	// Leave enough room for shared ARM/CI runners; this checks pagination and
+	// transport correctness rather than imposing a decoding speed threshold.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	type outcome struct {
 		prompts []UserPrompt

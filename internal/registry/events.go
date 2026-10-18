@@ -408,6 +408,9 @@ func (s *Store) applyEvent(ctx context.Context, tx *dbTx, workerID uuid.UUID, ev
 	if event.Kind == "worker_update_result" {
 		return false, nil, applyWorkerUpdateEvent(ctx, tx, workerID, event)
 	}
+	if handled, err := applySessionArchiveEvent(ctx, tx, workerID, event, target); handled || err != nil {
+		return false, nil, err
+	}
 	if handled, notify, commandID, err := applySettingsMenuEvent(ctx, tx, workerID, event, target); handled || err != nil {
 		return notify, commandID, err
 	}

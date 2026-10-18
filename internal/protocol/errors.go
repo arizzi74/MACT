@@ -9,6 +9,8 @@ type Error struct {
 func (e *Error) Error() string { return e.Code + ": " + e.Message }
 
 const (
+	ArchiveInvalid         = "archive_invalid"
+	ArchiveConflict        = "archive_conflict"
 	Unauthorized           = "unauthorized"
 	UnsupportedProtocol    = "unsupported_protocol"
 	UnsupportedOperation   = "unsupported_operation"

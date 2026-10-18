@@ -40,6 +40,7 @@ type RuntimeHooks struct {
 type RuntimeManager struct {
 	lifecycle     sync.RWMutex
 	attachments   map[string]*attachmentProxy
+	archiveScopes map[string]map[string]*nativeArchiveFence
 	cfg           config.WorkerConfig
 	store         *Store
 	log           *slog.Logger
