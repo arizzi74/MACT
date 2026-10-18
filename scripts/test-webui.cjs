@@ -2551,22 +2551,42 @@ itemTimes['timestamp-older-completed'] = { startedAtMs: null, completedAtMs: tim
       // Hold the reply so the anchor is captured before a fast mock can prepend.
       await page.evaluate(() => { window.testHoldOlderItems = true; });
       await page.locator('#transcript').focus();
+      await page.locator('#transcript').evaluate(scroller => {
+        window.historyHomeScrollEnd = null;
+        const home = event => {
+          if (event.key !== 'Home') return;
+          scroller.removeEventListener('keydown', home);
+          const ended = () => {
+            if (scroller.scrollTop !== 0) return;
+            window.historyHomeScrollEnd = { top: scroller.scrollTop };
+            scroller.removeEventListener('scrollend', ended);
+          };
+          scroller.addEventListener('scrollend', ended);
+        };
+        scroller.addEventListener('keydown', home);
+      });
       await page.keyboard.press('Home');
       await page.waitForFunction(() => Boolean(window.testSockets.at(-1).heldOlderItems)).catch(async error => {
         await historyDiagnostics(count); throw error;
       });
       // The real Home gesture above must trigger the request. Finish its
       // native compositor scroll before measuring the anchor: browser keyboard
-      // scrolling is not controlled by Playwright's mocked animation clock and
-      // can stop short when layout and CPU scheduling overlap. Pagination is
-      // already held; this only makes the geometry assertion deterministic.
-      await page.locator('#transcript').evaluate(scroller => scroller.scrollTo({ top: 0, behavior: 'instant' }));
-      await page.waitForFunction(() => document.querySelector('#transcript').scrollTop === 0).catch(async error => { await historyDiagnostics(count); throw error; });
-      await page.locator('#transcript').evaluate(scroller => {
+      // scrolling is not controlled by Playwright's mocked animation clock.
+      // Record scrollend even if it arrives before the held request is observed.
+      await page.waitForFunction(() => window.historyHomeScrollEnd?.top === 0).catch(async error => { await historyDiagnostics(count); throw error; });
+      // Capture and release in the same browser task so the expected anchor
+      // cannot become stale before the reply.
+      const capturedScrollTop = await page.locator('#transcript').evaluate(scroller => {
+        scroller.scrollTo({ top: 0, behavior: 'instant' });
         const first = document.querySelector('#messages article');
         window.historyAnchor = { id: first.dataset.itemId, top: first.getBoundingClientRect().top };
+        const top = scroller.scrollTop;
+        const socket = window.testSockets.at(-1), reply = socket.heldOlderItems;
+        window.testHoldOlderItems = false; socket.heldOlderItems = null;
+        socket.emit({ id: reply.frame.id, result: reply.result });
+        return top;
       });
-      await page.evaluate(() => { const socket = window.testSockets.at(-1), reply = socket.heldOlderItems; window.testHoldOlderItems = false; socket.heldOlderItems = null; socket.emit({ id: reply.frame.id, result: reply.result }); });
+      assert.equal(capturedScrollTop, 0, 'The history anchor is captured at the top before the held reply');
       await waitHistoryCount(count);
       assert.deepEqual(await historyIDs(), Array.from({ length: count }, (_, index) => 'history-' + (index + 85 - count)), 'Scrolling to the top adds exactly 20 older items without reordering or duplicates');
       const drift = await page.evaluate(() => document.querySelector('[data-item-id="' + window.historyAnchor.id + '"]').getBoundingClientRect().top - window.historyAnchor.top);
