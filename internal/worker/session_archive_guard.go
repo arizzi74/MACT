@@ -403,8 +403,15 @@ func (a *Agent) projectArchiveGuard(ctx context.Context, command protocol.Comman
 			if err := target.client.VerifyThreadQueueIdle(ctx, id); err != nil {
 				return fail(archiveBusy("This project has queued native input or its queue cannot be verified."))
 			}
-			if err := target.client.VerifyThreadBackgroundTerminalsIdle(ctx, id); err != nil {
-				return fail(archiveBusy("This project has a native background terminal or it cannot be verified."))
+			// Codex keeps background terminals in its live thread manager;
+			// this RPC rejects persisted threads which are not loaded. The
+			// complete inventory above was read behind the project fence.
+			// A skipped live-only check still needs fresh cold-thread proof
+			// below, after the queue and goal checks.
+			if loaded[id] {
+				if err := target.client.VerifyThreadBackgroundTerminalsIdle(ctx, id); err != nil {
+					return fail(archiveBusy("This project has a native background terminal or it cannot be verified."))
+				}
 			}
 			goal, err := target.client.ReadGoal(ctx, id)
 			if err != nil {
@@ -416,6 +423,9 @@ func (a *Agent) projectArchiveGuard(ctx context.Context, command protocol.Comman
 			thread, err := target.client.ReadThreadState(ctx, id)
 			if err != nil {
 				return fail(err)
+			}
+			if !loaded[id] && thread.Status != "notLoaded" && thread.Status != "not_loaded" {
+				return fail(archiveBusy("A native project session changed during archive idle verification. Retry when it has settled."))
 			}
 			if thread.ActiveTurnID != "" || (thread.Status != "idle" && thread.Status != "notLoaded" && thread.Status != "not_loaded" && thread.Status != "systemError") {
 				return fail(archiveBusy("This project has an active native session."))

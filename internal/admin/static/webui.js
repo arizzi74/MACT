@@ -1026,10 +1026,10 @@
       archive_invalid: 'This archive failed verification. The original project and archive have been kept. Choose another archive or resolve the worker issue before retrying.',
       archive_corrupt: 'This archive failed verification. The original project and archive have been kept. Choose another archive or resolve the worker issue before retrying.',
       session_name_invalid: 'Enter a session name of 1–120 characters without control characters.',
-      session_busy: 'Wait for this session’s running work and pending questions to finish, then try again.',
+      session_busy: 'The project or Codex runtime has pending activity, or its idle state could not be verified. Check running work, questions and background terminals, then refresh sessions and try again.',
       runtime_unavailable: 'This Codex runtime is unavailable. Refresh the workers and choose a running runtime.',
       invalid_workspace: 'The project directory changed, is protected, or is unavailable. Refresh sessions and reopen this editor to review its current path. Keep the project directory when archiving a protected startup folder or workspace root.',
-      busy: 'Wait for this session’s running work and pending questions to finish, then try again.',
+      busy: 'The project or Codex runtime has pending activity, or its idle state could not be verified. Check running work, questions and background terminals, then refresh sessions and try again.',
       worker_offline: 'Reconnect this worker, then check this request’s status.',
       unsupported: 'Update this worker to use this feature.',
       outcome_unknown: 'The worker has not confirmed the outcome. Check status before starting another request.'

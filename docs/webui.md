@@ -58,6 +58,10 @@ Active turns, native queues, goals, terminals and shared or protected project
 paths can prevent archival or cleanup. If backup succeeds but cleanup cannot
 finish, the operation reports the cleanup warning and keeps the verified
 archive. Unrelated projects can continue running during the backup.
+Saved sessions can also be archived while unloaded. The worker verifies their
+queues, goals and idle state, and checks background terminals in every runtime
+where the session is loaded; it does not resume an old session to perform this
+check. If idle state cannot be verified, the archive is refused safely.
 
 To restore, press **＋** beside the worker and select **Restore archived**.
 Choose an archive; the list shows its title, original path, size, creation date

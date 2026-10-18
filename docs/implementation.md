@@ -50,7 +50,10 @@ Codex 0.163.0 binary with a pinned SHA-256. Isolated legacy and paginated/forked
 fixtures prove restoration with their original native store, project and
 attachment removed, process restarts, and continued model turns against a local
 mock provider. A worker-level round trip exercises native archive, optional
-project removal and restoring the original session identity. No account
+project removal and restoring the original session identity for both loaded
+and saved, unloaded sessions in both history formats. The unloaded cases
+first verify the native terminal API rejects unloaded threads, reproducing
+the archive guard regression. No account
 credentials or paid API calls are used. With that version installed locally:
 
 ```sh

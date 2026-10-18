@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -32,8 +33,16 @@ func TestNativeWorkerArchiveDeleteProjectAndRestoreOriginalSession(t *testing.T)
 			t.Fatal(err)
 		}
 	}
-	for _, mode := range []string{"legacy", "paginated"} {
-		t.Run(mode, func(t *testing.T) {
+	for _, fixture := range []struct {
+		mode, state string
+		loaded      bool
+	}{
+		{"legacy", "loaded", true},
+		{"legacy", "unloaded", false},
+		{"paginated", "loaded", true},
+		{"paginated", "unloaded", false},
+	} {
+		t.Run(fixture.mode+"/"+fixture.state, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
 			home := t.TempDir()
@@ -54,36 +63,56 @@ func TestNativeWorkerArchiveDeleteProjectAndRestoreOriginalSession(t *testing.T)
 				t.Fatal(err)
 			}
 			threadID := uuid.NewString()
-			writeWorkerArchiveNativeFixture(t, codexHome, project, threadID, mode)
+			writeWorkerArchiveNativeFixture(t, codexHome, project, threadID, fixture.mode)
 			client, err := codexadapter.Start(ctx, codexadapter.Config{Command: binary, WorkingDirectory: workspace, Env: []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home, "CODEX_HOME=" + codexHome, "CODEX_SQLITE_HOME=" + codexHome}, Stderr: io.Discard, RequestTimeout: 15 * time.Second})
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer client.Close()
-			thread, err := client.ResumeThread(ctx, threadID, codexadapter.ThreadOptions{})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := client.RenameThread(ctx, threadID, "Worker archive native proof"); err != nil {
-				t.Fatal(err)
-			}
-			nameConfirmed := false
-			nameDeadline := time.NewTimer(5 * time.Second)
-		nameEvents:
-			for {
-				select {
-				case event := <-client.Events():
-					if event.Method == "thread/name/updated" {
-						nameConfirmed = event.Name != nil && *event.Name == "Worker archive native proof"
+			var thread codexadapter.Thread
+			if fixture.loaded {
+				thread, err = client.ResumeThread(ctx, threadID, codexadapter.ThreadOptions{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := client.RenameThread(ctx, threadID, "Worker archive native proof"); err != nil {
+					t.Fatal(err)
+				}
+				nameConfirmed := false
+				nameDeadline := time.NewTimer(5 * time.Second)
+			nameEvents:
+				for {
+					select {
+					case event := <-client.Events():
+						if event.Method == "thread/name/updated" {
+							nameConfirmed = event.Name != nil && *event.Name == "Worker archive native proof"
+							break nameEvents
+						}
+					case <-nameDeadline.C:
 						break nameEvents
 					}
-				case <-nameDeadline.C:
-					break nameEvents
 				}
-			}
-			nameDeadline.Stop()
-			if !nameConfirmed {
-				t.Fatal("native rename notification did not confirm the session title")
+				nameDeadline.Stop()
+				if !nameConfirmed {
+					t.Fatal("native rename notification did not confirm the session title")
+				}
+			} else {
+				thread, err = client.ReadThreadState(ctx, threadID)
+				if err != nil || thread.Status != "notLoaded" || thread.ActiveTurnID != "" {
+					t.Fatalf("persisted session must be unloaded and idle: status=%q active=%q err=%v", thread.Status, thread.ActiveTurnID, err)
+				}
+				loaded, complete, err := loadedThreadIDs(ctx, client)
+				if err != nil || !complete || loaded[threadID] {
+					t.Fatalf("persisted session unexpectedly loaded: loaded=%v complete=%v err=%v", loaded[threadID], complete, err)
+				}
+				// The native terminal RPC only accepts loaded threads. Preserve
+				// this regression precondition instead of silently resuming the
+				// saved session before the worker's idle proof runs.
+				_, err = client.ListBackgroundTerminals(ctx, threadID)
+				var rpc *codexadapter.RPCError
+				if !errors.As(err, &rpc) || rpc.Code != -32600 || rpc.Message != "thread not found: "+threadID {
+					t.Fatalf("expected native unloaded-thread terminal error, got %v", err)
+				}
 			}
 			thread.Name = "Worker archive native proof"
 			workerID := uuid.NewString()
@@ -116,7 +145,7 @@ func TestNativeWorkerArchiveDeleteProjectAndRestoreOriginalSession(t *testing.T)
 			}
 			runtime.State, runtime.CodexVersion = "running", "0.163.0"
 			a.manager.install(runtime, client)
-			session, err := store.UpsertRuntimeSession(runtime, sessionFromThread(runtime, thread, true))
+			session, err := store.UpsertRuntimeSession(runtime, sessionFromThread(runtime, thread, fixture.loaded))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -128,7 +157,7 @@ func TestNativeWorkerArchiveDeleteProjectAndRestoreOriginalSession(t *testing.T)
 			}
 			archived := waitNativeArchiveRecord(t, ctx, store, command.ID)
 			if archived.State != CommandCompleted || archived.Result.SessionArchive == nil || !archived.Result.SessionArchive.ProjectDeleted || archived.Result.SessionArchive.WarningCode != "" {
-				t.Fatalf("native worker archive = %#v", archived.Result)
+				t.Fatalf("native worker archive = %#v error=%+v", archived.Result, archived.Result.Error)
 			}
 			if _, err := os.Stat(project); !os.IsNotExist(err) {
 				t.Fatalf("source project remains: %v", err)

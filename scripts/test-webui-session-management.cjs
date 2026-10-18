@@ -20,7 +20,7 @@ const hostile = '<img src=x onerror="window.injected=true">';
   let sessions = ['a', 'b', 'c', 'd'].map(makeSession);
   sessions.push({ ...makeSession('old'), worker_id: 'old', runtime_id: 'old' });
   const archive = { id: 'project-20261018.tar.xz', name: 'project-20261018.tar.xz', session_name: 'Archived ' + hostile, original_path: '/home/demo/CODEX/' + 'long-project-'.repeat(18), created_at: '2026-10-18T10:00:00Z', bytes: 2048, codex_version: 'codex-cli 0.163.0' };
-  const behaviors = {}; let emptyArchiveList = false;
+  const behaviors = {}, heldReplies = new Map(); let emptyArchiveList = false;
   await page.route('https://webui.test/**', async route => {
     const url = new URL(route.request().url()), method = route.request().method();
     const reply = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
@@ -42,6 +42,7 @@ const hostile = '<img src=x onerror="window.injected=true">';
           if (!body.offset) status.next_offset = 1;
         }
         statuses.set(body.request_id, status);
+        if (behaviors[kind] === 'hold') { delete behaviors[kind]; heldReplies.set(body.request_id, { route, status }); return; }
         if (behaviors[kind] === 'drop') { delete behaviors[kind]; return route.abort('failed'); }
         return reply(status, kind === 'list' ? 200 : 202);
       }
@@ -184,12 +185,47 @@ const hostile = '<img src=x onerror="window.injected=true">';
     assert.match(await page.locator('#delete-session-description').textContent(), /working directory.*all files.*kept/is);
     await page.locator('#delete-session-cancel').click();
 
+    const mobileEditorActionsFit = async context => {
+      const geometry = await page.locator('.session-editor-actions').evaluate(element => {
+        const bounds = element.getBoundingClientRect();
+        return [...element.querySelectorAll('button')].map(button => {
+          const box = button.getBoundingClientRect(), text = document.createRange(); text.selectNodeContents(button);
+          return { label: button.textContent, top: box.top, bottom: box.bottom, left: box.left, right: box.right, width: box.width, height: box.height,
+            lines: text.getClientRects().length, containerLeft: bounds.left, containerRight: bounds.right };
+        });
+      });
+      for (const button of geometry) {
+        assert.equal(button.lines, 1, context + ': ' + button.label + ' stays on one line');
+        assert.ok(button.width >= 44 && button.height >= 44, context + ': ' + button.label + ' keeps its tap target');
+        assert.ok(button.left >= button.containerLeft - 1 && button.right <= button.containerRight + 1, context + ': ' + button.label + ' fits the dialog');
+      }
+      assert.ok(Math.abs(geometry[0].top - geometry[1].top) < 1 && Math.abs(geometry[2].top - geometry[3].top) < 1, context + ': actions form two complete rows');
+      assert.ok(geometry[0].right < geometry[1].left && geometry[2].right < geometry[3].left && geometry[2].top >= geometry[0].bottom, context + ': action targets do not overlap');
+    };
     for (const width of [390, 320]) {
       await page.setViewportSize({ width, height: 844 }); await choose('a'); await page.locator('#show-sessions').click();
       await openEditor('d');
       assert.equal(await page.evaluate(() => document.activeElement.matches('input,textarea')), false, 'Mobile editor keeps the keyboard closed');
       assert.equal(await page.locator('#edit-session-name').evaluate(element => getComputedStyle(element).fontSize), '16px');
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+      await mobileEditorActionsFit(width + 'px idle');
+      behaviors.archive = 'hold';
+      const busyArchive = await waitPost('archive', () => page.locator('#edit-session-archive').click());
+      await page.waitForFunction(() => document.querySelector('#edit-session-archive').textContent === 'Archiving…');
+      await mobileEditorActionsFit(width + 'px submitting');
+      const held = heldReplies.get(busyArchive.request_id);
+      await held.route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify(held.status) }); heldReplies.delete(busyArchive.request_id);
+      await page.waitForFunction(() => document.querySelector('#edit-session-archive').textContent === 'Check status');
+      await mobileEditorActionsFit(width + 'px pending');
+      Object.assign(statuses.get(busyArchive.request_id), { pending: false, status: 'failed', error_code: width === 390 ? 'session_busy' : 'busy', message: 'SECRET arbitrary native backend error' });
+      await page.clock.fastForward(1800);
+      await page.waitForFunction(() => document.querySelector('#edit-session-message').textContent.includes('idle state could not be verified'));
+      const busyMessage = await page.locator('#edit-session-message').textContent();
+      assert.match(busyMessage, /project or Codex runtime.*pending activity/);
+      assert.doesNotMatch(busyMessage, /this session’s running|SECRET|arbitrary native/);
+      assert.equal(await selected('d').count(), 1, 'An unverified idle state leaves the original session available');
+      assert.equal(posts('archive').filter(row => row.request_id === busyArchive.request_id).length, 1, 'A rejected archive is not replayed automatically');
+      await mobileEditorActionsFit(width + 'px rejected');
       await page.locator('#edit-session-cancel').click();
       await page.locator('[data-create-worker-id="w"]').click(); await page.locator('#new-session-mode-restore').click();
       assert.equal(await page.evaluate(() => document.activeElement.matches('input,textarea')), false, 'Mobile archive picker keeps the keyboard closed');

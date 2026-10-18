@@ -216,6 +216,9 @@ func TestArchiveIdleProofRejectsNativeQueueTerminalAndGoal(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			a, runtime, server, session, _ := archiveJobFixture(t)
+			if test.method == "thread/backgroundTerminals/list" {
+				server.SetThreads([]map[string]any{{"id": session.ThreadID, "cwd": session.CWD, "status": "idle"}}, []string{session.ThreadID})
+			}
 			if err := server.SetThreadMethodResult(test.method, session.ThreadID, test.reply); err != nil {
 				t.Fatal(err)
 			}
