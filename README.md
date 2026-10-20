@@ -13,6 +13,9 @@ worker inventory while keeping independent chat selections. See
 
 The browser interface displays Markdown and Mermaid diagrams on desktop and
 mobile, with local rendering, zoom controls and access to the diagram source.
+It also accepts images and file attachments up to 10 MiB. Other files are saved
+in the selected session's `inbound/` folder, with optional instructions sent to
+Codex. See [Web UI file uploads](docs/webui.md#uploading-files).
 
 [Explore the website](https://arizzi74.github.io/Codex-Telegram-Gateway/) ·
 [Installation guide](docs/installation.md) ·

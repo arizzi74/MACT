@@ -21,6 +21,7 @@ import (
 // It has no durable command/outbox record: reconnecting cannot replay a mutation
 // or deliver a browser-only result to a selected Telegram conversation.
 type webUIActorCommand struct {
+	upload    *protocol.WebUIUpload
 	history   *webUIHistoryRequest
 	questions bool
 	answer    *webUIQuestionAnswer
@@ -33,6 +34,7 @@ type webUIActorCommand struct {
 }
 
 type webUICommandReply struct {
+	upload    protocol.WebUIUploadResult
 	history   json.RawMessage
 	questions []webUIQuestion
 	result    protocol.Result

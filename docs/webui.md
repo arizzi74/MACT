@@ -107,7 +107,7 @@ of 256 KiB per recovery copy and a 30-minute expiry after its latest save. The
 encryption key stays in this tab's session storage; no plaintext draft or
 conversation is written to browser storage. Recovery requires signing in as the
 same account and retaining this tab's key. Closing the tab can lose the key.
-Image attachments are excluded and remain in memory only.
+Image and file attachments are excluded and remain in memory only until sent.
 
 Recovered copies are cleared after recovery; disabling recovery or explicitly
 signing out clears the associated recovery state. Expired copies are removed
@@ -133,6 +133,7 @@ check the conversation before submitting again.
 - Every sidebar session has an edit button on desktop and mobile for renaming, deleting or archiving it. Deletion asks for confirmation, including its child conversations, and keeps project files. Editing another session keeps your current session selected. Rows change only after worker confirmation; a lost acknowledgment triggers read-only status checks without automatically repeating a mutation. See [session editing and archives](#session-editing-and-archives).
 - Send a prompt with **Send**, or desktop Enter. Shift+Enter inserts a newline. Touch keyboards use Enter for a newline; use the send button to submit. During a running turn, **Steer** submits follow-up input to that turn and **Stop** interrupts it. On mobile, **Stop** sits immediately left of **Steer**, keeping an empty composer the same height as when idle. Typed multiline text still expands the input.
 - Paste an image into the prompt, drop one onto the composer, or tap **＋** to choose an image on desktop or mobile. A thumbnail appears before sending; **×** removes it. You can send the image by itself or with text. Each message supports one PNG, JPEG or GIF up to 10 MiB, 16 million pixels and 8,192 pixels per side. If a mobile clipboard does not expose image files to the browser, use **＋** and the photo/file picker. Image drafts stay with their session in browser memory and are cleared only after acknowledgment; they are never resent automatically. Reloading or signing out clears them. Saved conversation and Telegram history show an **[Image]** placeholder.
+- The same **＋** control accepts other files, including PDFs, text files, spreadsheets and archives, up to **10 MiB** each. Files are saved in the selected session's `inbound/` directory. Sending a file without text only saves it; sending it with text includes its saved path in the prompt or steers the current turn. See [uploading files](#uploading-files).
 - With an image attached, **/tgsteer** optionally followed by instructions sends both to the active turn, just like **Steer**. An image-only **/tgsteer** is also supported. With no running turn, the image and text stay in the composer for editing. Other slash commands require removing the image first.
 - Prompts sent through Telegram appear live in an open web UI for the same session when Codex accepts them; prompts queued behind a running turn appear when that queued turn starts. Prompts sent through the web UI or Codex CLI appear in Telegram as a bot message labeled **You · Codex**, following the selected session or multisession mode. Accepted Telegram prompts are not echoed back, and replayed native events do not duplicate prompts. The worker subscribes before enabling a newly opened web session, including sessions restored from disk.
 - Model and reasoning names in the status bar are plain text. Use **/model** to choose a model and then its reasoning effort, or **/reasoning** to change effort. These settings apply to subsequent turns; changes require an idle session. Confirmed model and effort changes from a browser, Telegram or attached native client update other open web views of the same session through WebSocket notifications. Historical usage data and delayed command acknowledgments cannot overwrite the confirmed selection. Missing runtime model metadata leaves the session defaults available.
@@ -277,6 +278,51 @@ The interface follows new output only while you are near the bottom. Selecting a
 Embedded stylesheet and script URLs include a content fingerprint so a page reload after deployment loads a matching set of assets. An already open tab needs a browser refresh to use the new interface.
 
 The web UI uses the admin authentication boundary and therefore grants the same trusted operator access. HTTPS, secure session cookies, exact WebSocket Origin checks, selected-session authorization, and the worker's existing execution permissions apply. Message rendering builds DOM text nodes rather than accepting HTML. Remote image embeds are not fetched. HTTP, HTTPS, and mail links open normally. Links to worker project files open the download dialog described below; unsupported schemes remain text. Assets are served by the gateway; no third-party hosts are contacted. Mermaid's separate sandbox permits diagram styles without relaxing the application or admin console's content security policy.
+
+## Uploading files
+
+On desktop or mobile, press **＋** beside the prompt to choose a file, or drop
+one onto the composer. Pasting a file also works when the browser exposes it
+through the clipboard. Each message accepts one attachment of at most
+**10 MiB (10,485,760 bytes)**. PNG, JPEG and GIF images keep their existing image
+preview and Codex image-input behavior; other files show their name and size.
+Use **×** to remove an attachment before sending.
+
+The owning worker creates `<session working directory>/inbound/` when needed
+and saves the file there. For example, a session in `~/CODEX/Session_name` uses
+`~/CODEX/Session_name/inbound/`. Filenames are sanitized and receive a unique
+suffix; existing files are not overwritten. Empty files are accepted, and file
+contents are never executed or unpacked automatically.
+
+- **Without text:** the interface confirms `File saved in <absolute path>`.
+  No Codex prompt is submitted and no turn starts or is steered.
+- **With text:** the saved path is appended as `File: <absolute path>` and sent
+  with your instructions. A running turn is steered; an idle session starts a
+  new turn. `/tgsteer` can explicitly target an active turn, with optional
+  instructions; `/tgsteer` alone sends the saved file path to that turn.
+
+Uploads stay bound to their original session and project directory. Switching
+sessions while a file is being read or saved cannot submit it to the new
+session. The worker checks the current session identity, allowed workspace and
+native project directory before saving. Archive and update admission fences
+also apply.
+
+An uncertain save keeps the attachment's upload identity for a manual retry.
+Retrying the same upload reuses its verified saved file; a changed file or
+session target is rejected. If saving succeeds but sending the prompt fails,
+the composer retains the saved path so another attempt does not upload a second
+copy. The browser never automatically resends a file or prompt on reconnect.
+Attachment drafts are held only in tab memory, are excluded from encrypted text
+draft recovery, and disappear on reload or sign-out. Files already saved on the
+worker remain on disk.
+
+The transfer uses the existing authenticated WebSocket connection and needs no
+additional service or public worker port. Both gateway and worker must support
+Web UI uploads; older workers show an update instruction. The gateway does not
+store uploaded file contents in its command database. The worker keeps private
+upload metadata for retry checks, separate from Telegram commands and results.
+Saved-file acknowledgments preserve the exact, validated destination path for
+the next prompt; ordinary response text keeps the existing secret redaction.
 
 ## Downloading project files
 

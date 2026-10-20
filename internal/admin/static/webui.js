@@ -21,16 +21,16 @@
   let questionRevision = 0, questionSnapshotSequence = 0;
   let questionRefresh = null;
   let selectedGoal = null, goalRevision = 0, goalSnapshotSequence = 0, goalDialogSessionID = '';
-  let turnTimes = new Map(), turnCursor = null;
-  const imageDrafts = new Map();
+  let turnTimes = new Map(), turnCursor = null, resumedThread = null;
+  const attachmentDrafts = new Map();
   const sessionDeletions = new Map();
   let deleteSessionTarget = null;
   const sessionCreations = new Map();
   const sessionOperations = new Map();
   let editSessionTarget = null, sessionOperationOwner = '', sessionOperationSerial = 0, newSessionMode = 'create', selectedArchiveID = '';
   let newSessionWorkerID = '', workspaceBrowse = null, workspacePage = null, newSessionPathEdited = false;
-  const maxImageBytes = 10 * 1024 * 1024, maxDraftImageBytes = 40 * 1024 * 1024;
-  let imagePickerSession = null;
+  const maxAttachmentBytes = 10 * 1024 * 1024, maxDraftAttachmentBytes = 40 * 1024 * 1024, maxDraftAttachments = 16;
+  let attachmentPickerSession = null;
   let followLatest = true, bottomFrame = null;
   const fileUI = window.CodexFiles.create({
     getContext: () => ({ sessionId: state.selected?.session_id || '', authGeneration: state.authGeneration, authenticated: state.authenticated, connected: state.connected }),
@@ -522,14 +522,16 @@
   function updateControls() {
     if (steerNoticeTurn && (!state.connected || state.turn !== steerNoticeTurn)) clearSteerNotice();
     const available = state.connected && !state.loading && !state.submitting && !commandUI?.pending;
-    const image = imageDrafts.get(state.selected?.session_id);
-    const gatewayAllowed = !image && commandUI?.gatewayAllowed($('prompt').value);
+    const attachment = attachmentDrafts.get(state.selected?.session_id);
+    const gatewayAllowed = !attachment && commandUI?.gatewayAllowed($('prompt').value);
+    const fileOnly = attachment?.kind === 'file' && !$('prompt').value.trim();
     const sendAvailable = available || (gatewayAllowed && !state.submitting && !commandUI.pending);
-    $('send').disabled = !sendAvailable || (!image && !$('prompt').value.trim()) || !!image?.loading;
-    $('send').textContent = state.submitting ? 'Sending…' : state.turn && !gatewayAllowed ? 'Steer ↑' : 'Send ↑';
+    $('send').disabled = !sendAvailable || (!attachment && !$('prompt').value.trim()) || !!attachment?.loading;
+    $('send').textContent = state.submitting ? 'Sending…' : fileOnly ? 'Upload ↑' : state.turn && !gatewayAllowed ? 'Steer ↑' : 'Send ↑';
     $('stop').hidden = !state.turn;
     $('stop').disabled = !available;
-    $('attach-image').disabled = !state.selected || state.submitting || !!image;
+    $('attach-image').disabled = !state.selected || state.submitting || !!attachment;
+    $('remove-file').disabled = state.submitting;
     $('remove-image').disabled = state.submitting;
     $('activity').hidden = !state.turn;
     $('turn-state').textContent = !state.connected ? 'Disconnected' : state.loading ? 'Loading' : state.turn ? 'Working' : 'Ready';
@@ -578,8 +580,10 @@
     resizePrompt();
     updateControls();
   }
-  function renderImageDraft() {
-    const image = imageDrafts.get(state.selected?.session_id);
+  function renderAttachmentDraft() {
+    const attachment = attachmentDrafts.get(state.selected?.session_id);
+    const image = attachment?.kind === 'image' ? attachment : null;
+    const file = attachment?.kind === 'file' ? attachment : null;
     $('image-preview').hidden = !image;
     if (image) {
       $('image-thumbnail').src = image.url;
@@ -587,41 +591,54 @@
     } else {
       $('image-thumbnail').removeAttribute('src'); $('image-description').textContent = '';
     }
+    $('file-preview').hidden = !file;
+    $('file-description').textContent = file ? file.name + ' · ' + attachmentSize(file.file.size) + (file.uploadedPath ? ' · Uploaded' : '') : '';
     updateControls(); settleBottom();
   }
-  function removeImage(sessionId, expected) {
-    const image = imageDrafts.get(sessionId);
-    if (!image || (expected && image !== expected)) return;
-    imageDrafts.delete(sessionId); URL.revokeObjectURL(image.url);
-    if (state.selected?.session_id === sessionId) renderImageDraft();
+  function attachmentSize(bytes) {
+    if (bytes < 1024) return bytes.toLocaleString() + (bytes === 1 ? ' byte' : ' bytes');
+    if (bytes < 1024 * 1024) return (bytes / 1024).toLocaleString(undefined, { maximumFractionDigits: 1 }) + ' KiB';
+    return (bytes / (1024 * 1024)).toLocaleString(undefined, { maximumFractionDigits: 1 }) + ' MiB';
   }
-  function attachImage(file, sessionId = state.selected?.session_id) {
+  function removeAttachment(sessionId, expected) {
+    const attachment = attachmentDrafts.get(sessionId);
+    if (!attachment || (expected && attachment !== expected)) return;
+    attachmentDrafts.delete(sessionId);
+    attachment.reader?.abort();
+    if (attachment.url) URL.revokeObjectURL(attachment.url);
+    if (state.selected?.session_id === sessionId) renderAttachmentDraft();
+  }
+  function attachFile(file, sessionId = state.selected?.session_id) {
     if (!sessionId || !state.authenticated || !file || state.submitting) return;
-    if (imageDrafts.has(sessionId)) { notice('One image per message. Remove the attached image before choosing another.'); return; }
-    if (!['image/png', 'image/jpeg', 'image/gif'].includes(file.type)) { notice('Choose a PNG, JPEG or GIF image.'); return; }
-    if (!file.size || file.size > maxImageBytes) { notice('Images must be no larger than 10 MB.'); return; }
-    if ([...imageDrafts.values()].reduce((sum, image) => sum + image.file.size, 0) + file.size > maxDraftImageBytes) { notice('Send or remove an image draft from another session before attaching more images.'); return; }
-    const image = { file, url: URL.createObjectURL(file), loading: true };
-    imageDrafts.set(sessionId, image); notice();
-    const probe = new Image();
-    const timer = setTimeout(() => finish('The image could not be opened. Try another PNG, JPEG or GIF.'), 15000);
-    function finish(error = '') {
-      clearTimeout(timer); probe.onload = null; probe.onerror = null;
-      if (imageDrafts.get(sessionId) !== image) return;
-      if (error) { removeImage(sessionId, image); if (state.selected?.session_id === sessionId) notice(error); }
-      else { image.loading = false; if (state.selected?.session_id === sessionId) renderImageDraft(); }
+    if (attachmentDrafts.has(sessionId)) { notice('One attachment per message. Remove the attached file or image before choosing another.'); return; }
+    const isImage = ['image/png', 'image/jpeg', 'image/gif'].includes(file.type);
+    if (file.size > maxAttachmentBytes || (isImage && !file.size)) { notice('Files and images must be no larger than 10 MiB.'); return; }
+    if (attachmentDrafts.size >= maxDraftAttachments || [...attachmentDrafts.values()].reduce((sum, attachment) => sum + attachment.file.size, 0) + file.size > maxDraftAttachmentBytes) { notice('Send or remove an attachment draft from another session before attaching more files.'); return; }
+    const attachment = isImage ? { kind: 'image', file, url: URL.createObjectURL(file), loading: true } :
+      { kind: 'file', file, name: file.name.split(/[\\/]/).pop() || 'attachment', uploadId: crypto.randomUUID(), uploadedPath: '' };
+    attachmentDrafts.set(sessionId, attachment); notice();
+    if (isImage) {
+      const probe = new Image();
+      const timer = setTimeout(() => finish('The image could not be opened. Try another PNG, JPEG or GIF.'), 15000);
+      function finish(error = '') {
+        clearTimeout(timer); probe.onload = null; probe.onerror = null;
+        if (attachmentDrafts.get(sessionId) !== attachment) return;
+        if (error) { removeAttachment(sessionId, attachment); if (state.selected?.session_id === sessionId) notice(error); }
+        else { attachment.loading = false; if (state.selected?.session_id === sessionId) renderAttachmentDraft(); }
+      }
+      probe.onload = () => finish(probe.naturalWidth > 8192 || probe.naturalHeight > 8192 || probe.naturalWidth * probe.naturalHeight > 16000000 ? 'Choose an image up to 16 megapixels and 8,192 pixels per side.' : '');
+      probe.onerror = () => finish('The image could not be opened. Try another PNG, JPEG or GIF.');
+      probe.src = attachment.url;
     }
-    probe.onload = () => finish(probe.naturalWidth > 8192 || probe.naturalHeight > 8192 || probe.naturalWidth * probe.naturalHeight > 16000000 ? 'Choose an image up to 16 megapixels and 8,192 pixels per side.' : '');
-    probe.onerror = () => finish('The image could not be opened. Try another PNG, JPEG or GIF.');
-    probe.src = image.url;
-    if (state.selected?.session_id === sessionId) renderImageDraft();
+    if (state.selected?.session_id === sessionId) renderAttachmentDraft();
   }
-  function imageDataURL(file) {
+  function attachmentDataURL(attachment) {
     return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result);
-      reader.onerror = reader.onabort = () => reject(new Error('The image could not be read. Your draft has been kept.'));
-      reader.readAsDataURL(file);
+      const reader = new FileReader(); attachment.reader = reader;
+      const finish = () => { if (attachment.reader === reader) delete attachment.reader; reader.onload = reader.onerror = reader.onabort = null; };
+      reader.onload = () => { const result = reader.result; finish(); resolve(result); };
+      reader.onerror = reader.onabort = () => { finish(); reject(new Error('The attachment could not be read. Your draft has been kept.')); };
+      reader.readAsDataURL(attachment.file);
     });
   }
   function rejectPending(message) {
@@ -630,6 +647,7 @@
   }
   function closeSocket() {
     fileUI.clear();
+    resumedThread = null;
     clearSteerNotice();
     clearGoal();
     loadingOlder = false; suppressHistoryScroll = false;
@@ -701,8 +719,8 @@
     state.sessions = [];
     state.workers = []; state.runtimes = [];
     state.drafts.clear();
-    for (const image of imageDrafts.values()) URL.revokeObjectURL(image.url);
-    imageDrafts.clear(); renderImageDraft(); imagePickerSession = null;
+    for (const id of attachmentDrafts.keys()) removeAttachment(id);
+    renderAttachmentDraft(); attachmentPickerSession = null;
     state.positions.clear();
     state.items.clear();
     state.questions.clear();
@@ -1367,7 +1385,7 @@
   function forgetDeletedSession(id, statusMessage = 'Session deleted · choose another session', refresh = true) {
     sessionInventoryEpoch++;
     state.drafts.delete(id); state.positions.delete(id);
-    const image = imageDrafts.get(id); if (image) { URL.revokeObjectURL(image.url); imageDrafts.delete(id); }
+    removeAttachment(id);
     state.sessions = state.sessions.filter(session => session.session_id !== id);
     activity.sessions.delete(id);
     sessionSettings.delete(id); activitySettingsRevisions.delete(id);
@@ -1377,7 +1395,7 @@
       window.CodexDiagrams?.clear();
       commandUI?.sessionChanged(); state.generation++; state.stopped = true; closeSocket(); state.selected = null;
       state.items.clear(); state.questions.clear(); state.models = []; state.turn = null; state.cursor = null; state.queuedEvents = [];
-      $('messages').replaceChildren(); $('questions').replaceChildren(); $('questions').hidden = true; $('prompt').value = ''; renderImageDraft();
+      $('messages').replaceChildren(); $('questions').replaceChildren(); $('questions').hidden = true; $('prompt').value = ''; renderAttachmentDraft();
       for (const name of ['transcript', 'composer', 'disconnect', 'jump-latest']) $(name).hidden = true;
       $('empty').hidden = false; $('session-title').textContent = 'Codex'; $('session-location').textContent = 'Choose a session to continue';
       $('workspace-path').textContent = ''; $('usage').textContent = '';
@@ -1531,7 +1549,7 @@
     $('older').disabled = false;
     $('jump-latest').hidden = true;
     $('prompt').value = state.drafts.get(session.session_id) || '';
-    renderImageDraft();
+    renderAttachmentDraft();
     $('session-title').textContent = title(session);
     $('session-location').textContent = [session.worker_name, session.runtime_name].filter(Boolean).join(' / ');
     $('workspace-path').textContent = session.cwd || '';
@@ -1567,6 +1585,7 @@
       if (message.method === 'item/started' || message.method === 'item/completed') message._observedAtMs = Date.now();
       if (message.type === 'ready') {
         clearTimeout(handshakeTimer);
+        if (message.session?.session_id === state.selected?.session_id) state.selected = { ...state.selected, ...message.session };
         state.connected = true;
         state.attempts = 0;
         connection('loading', 'Connected · Restoring session…');
@@ -1654,6 +1673,7 @@
     const resume = await rpc('thread/resume', { threadId });
     if (!current()) return;
     const thread = resume?.thread || {};
+    resumedThread = { id: thread.id || threadId, cwd: typeof resume.cwd === 'string' ? resume.cwd : typeof thread.cwd === 'string' ? thread.cwd : state.selected.cwd };
     if (permissionRevision === permissionsBeforeResume) applyPermissions(resume, 'sandbox');
     if (resume?.model && settingsCheckpoint() === settingsBeforeResume && sessionSettings.get(state.selected.session_id)?.source !== 'activity') {
       applySessionSettings(state.selected.session_id, resume.model, resume.reasoningEffort || '', 'resume');
@@ -2204,43 +2224,84 @@
   }
   function renderModels() { $('model').textContent = currentModel() || 'Session model'; renderEfforts(); }
   function renderEfforts() { const settings = sessionSettings.get(state.selected?.session_id); $('effort').textContent = currentEffort() || (settings && settings.source !== 'unconfirmed' ? 'Default' : 'Session effort'); settleBottom(); }
+  function attachmentTarget() {
+    const session = state.selected || {};
+    const runtime = state.runtimes.find(row => row.runtime_id === session.runtime_id && row.worker_id === session.worker_id);
+    return JSON.stringify([session.session_id, session.worker_id, session.runtime_id, session.runtime_generation ?? runtime?.generation,
+      session.codex_thread_id, session.cwd, resumedThread?.id, resumedThread?.cwd]);
+  }
   async function send(event) {
     event.preventDefault();
     let text = $('prompt').value.trim();
-    const image = imageDrafts.get(state.selected?.session_id);
-    const imageSteer = image && /^\/tgsteer(?:\s|$)/i.test(text);
-    if (imageSteer) {
-      if (!state.turn) { notice('There is no running turn to steer. Your image and message are kept.'); return; }
+    const attachment = attachmentDrafts.get(state.selected?.session_id);
+    const image = attachment?.kind === 'image' ? attachment : null;
+    const file = attachment?.kind === 'file' ? attachment : null;
+    const attachmentSteer = attachment && /^\/tgsteer(?:\s|$)/i.test(text);
+    if (attachmentSteer) {
+      if (!state.turn) { notice('There is no running turn to steer. Your attachment and message are kept.'); return; }
       text = text.replace(/^\/tgsteer(?:\s+|$)/i, '').trim();
-    } else if (image && text.startsWith('/')) { notice('Send the image with a message, or use /tgsteer during a running turn. Remove the image before using other / commands.'); return; }
-    if (!imageSteer && text && commandUI?.handle(text)) return;
-    if ((!text && !image) || image?.loading || !state.connected || state.loading || state.submitting) return;
+    } else if (attachment && text.startsWith('/')) { notice('Send the attachment with a message, or use /tgsteer during a running turn. Remove the attachment before using other / commands.'); return; }
+    if (!attachmentSteer && text && commandUI?.handle(text)) return;
+    if ((!text && !attachment) || attachment?.loading || !state.connected || state.loading || state.submitting) return;
     if (new TextEncoder().encode(text).length > 256 * 1024) { notice('This prompt is too long. Shorten it before sending.'); return; }
-    const generation = state.generation;
-    const sessionId = state.selected.session_id;
+    const target = attachmentTarget();
+    const changedTargetMessage = 'The session workspace or runtime changed. Remove and reattach this file before sending.';
+    if (file?.target && file.target !== target) { notice(changedTargetMessage); return; }
+    if (file) file.target = target;
+    const generation = state.generation, authGeneration = state.authGeneration, socket = state.socket;
+    const sessionId = state.selected.session_id, threadId = state.selected.codex_thread_id;
     const original = $('prompt').value, steerTurn = state.turn;
+    const sameDraft = () => generation === state.generation && authGeneration === state.authGeneration && state.authenticated &&
+      state.socket === socket && state.selected?.session_id === sessionId && attachmentDrafts.get(sessionId) === attachment;
+    const current = () => {
+      if (!sameDraft() || !state.connected) return false;
+      if (file && target !== attachmentTarget()) { notice(changedTargetMessage); return false; }
+      return true;
+    };
+    const clearSentText = () => {
+      if ($('prompt').value !== original) return;
+      $('prompt').value = ''; state.drafts.delete(sessionId); uncertainDrafts.delete(sessionId); syncRecoveryDrafts(); resizePrompt();
+      if (attachmentSteer) commandUI?.close();
+    };
     state.submitting = true; updateControls(); notice();
     try {
-      const input = text ? [{ type: 'text', text }] : [];
-      if (image) input.push({ type: 'image', url: await imageDataURL(image.file) });
-      if (generation !== state.generation || !state.connected) return;
+      if (file && !file.uploadedPath) {
+        const dataURL = await attachmentDataURL(file);
+        if (!current()) return;
+        const result = await rpc('gateway/upload', { uploadId: file.uploadId, name: file.name, data: dataURL.slice(dataURL.indexOf(',') + 1) }, 120000);
+        if (result?.uploadId !== file.uploadId || typeof result?.path !== 'string' || !result.path) throw new Error('The upload acknowledgement was incomplete. Your attachment has been kept; retry to check the same upload.');
+        // Remember an acknowledged upload only on its original draft, even if
+        // navigation interrupts the following native prompt.
+        if (authGeneration === state.authGeneration && attachmentDrafts.get(sessionId) === file) file.uploadedPath = result.path;
+        if (!current()) return;
+        renderAttachmentDraft();
+      }
+      if (file && !text && !attachmentSteer) {
+        if (!current()) return;
+        clearSteerNotice();
+        clearSentText(); removeAttachment(sessionId, file); notice('File saved in ' + file.uploadedPath);
+        return;
+      }
+      const input = file ? [{ type: 'text', text: (text ? text + '\n\n' : '') + 'File: ' + file.uploadedPath }] : text ? [{ type: 'text', text }] : [];
+      if (image) input.push({ type: 'image', url: await attachmentDataURL(image) });
+      if (!current()) return;
       // Forget the old recovery key synchronously before dispatch. Even if
       // this send loses its acknowledgement, its text cannot be recovered
       // later as an apparently unsent draft. Other drafts get a fresh copy.
       uncertainDrafts.add(sessionId);
       if (draftRecovery?.enabled()) { draftRecovery.clear(); syncRecoveryDrafts(true); }
-      const params = { threadId: state.selected.codex_thread_id, input };
+      const params = { threadId, input };
       let result;
       if (steerTurn) result = await rpc('turn/steer', { ...params, expectedTurnId: steerTurn });
       else result = await rpc('turn/start', params);
-      if (generation !== state.generation) return;
-      if ($('prompt').value === original) { $('prompt').value = ''; state.drafts.delete(sessionId); uncertainDrafts.delete(sessionId); syncRecoveryDrafts(); resizePrompt(); if (imageSteer) commandUI?.close(); }
-      if (image) removeImage(sessionId, image);
+      if (!current()) return;
+      clearSentText();
+      if (attachment) removeAttachment(sessionId, attachment);
       if (result?.turn?.id) { state.turn = result.turn.id; ingestTurn(result.turn); }
       if (steerTurn) queuedSteer(steerTurn);
       jump();
-    } catch (error) { if (generation === state.generation) notice(error.message); }
-    finally { if (generation === state.generation) { state.submitting = false; updateControls(); } }
+    } catch (error) { if (sameDraft()) notice(error.message + (file?.uploadedPath ? ' The file is already uploaded. Retrying this draft will reuse it.' : '')); }
+    finally { if (generation === state.generation && state.socket === socket) { state.submitting = false; updateControls(); } }
   }
   async function loadOlder() {
     if (!state.cursor || !state.connected || state.loading || loadingOlder) return;
@@ -2483,26 +2544,27 @@
   $('prompt').addEventListener('input', () => { uncertainDrafts.delete(state.selected?.session_id); saveDraft(); commandUI.changed(); });
   $('prompt').addEventListener('keydown', event => { if (commandUI.keydown(event)) return; if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && !matchMedia('(pointer: coarse)').matches) { event.preventDefault(); if (!$('send').disabled) $('composer').requestSubmit(); } });
   $('composer').addEventListener('submit', send);
-  $('attach-image').addEventListener('click', () => { imagePickerSession = state.selected?.session_id; $('image-file').click(); });
+  $('attach-image').addEventListener('click', () => { attachmentPickerSession = { id: state.selected?.session_id, generation: state.generation }; $('image-file').click(); });
   $('image-file').addEventListener('change', () => {
     const file = $('image-file').files[0]; $('image-file').value = '';
-    if (imagePickerSession === state.selected?.session_id) attachImage(file, imagePickerSession);
-    imagePickerSession = null;
+    if (attachmentPickerSession?.id === state.selected?.session_id && attachmentPickerSession.generation === state.generation) attachFile(file, attachmentPickerSession.id);
+    attachmentPickerSession = null;
   });
-  $('remove-image').addEventListener('click', () => { if (!state.submitting) removeImage(state.selected?.session_id); });
+  $('remove-image').addEventListener('click', () => { if (!state.submitting) removeAttachment(state.selected?.session_id); });
+  $('remove-file').addEventListener('click', () => { if (!state.submitting) removeAttachment(state.selected?.session_id); });
   $('prompt').addEventListener('paste', event => {
     const files = [...(event.clipboardData?.items || [])].filter(item => item.kind === 'file').map(item => item.getAsFile()).filter(Boolean);
     if (!files.length) return;
     event.preventDefault();
-    if (files.length !== 1) { notice('Paste one image per message.'); return; }
-    attachImage(files[0]);
+    if (files.length !== 1) { notice('Paste one attachment per message.'); return; }
+    attachFile(files[0]);
   });
   $('composer').addEventListener('dragover', event => { if ([...(event.dataTransfer?.types || [])].includes('Files')) event.preventDefault(); });
   $('composer').addEventListener('drop', event => {
     if (!event.dataTransfer?.files.length) return;
     event.preventDefault();
-    if (event.dataTransfer.files.length !== 1) { notice('Attach one image per message.'); return; }
-    attachImage(event.dataTransfer.files[0]);
+    if (event.dataTransfer.files.length !== 1) { notice('Attach one file or image per message.'); return; }
+    attachFile(event.dataTransfer.files[0]);
   });
   $('stop').addEventListener('click', () => { const generation = state.generation; if (state.turn) rpc('turn/interrupt', { threadId: state.selected.codex_thread_id, turnId: state.turn }).catch(error => { if (generation === state.generation) notice(error.message); }); });
   $('older').addEventListener('click', loadOlder);

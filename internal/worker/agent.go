@@ -103,6 +103,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 	conn.observeWebUI = a.observeWebUISession
 	conn.commandWebUI = a.executeWebUICommand
+	conn.uploadWebUI = a.saveWebUIUpload
 	conn.questionsWebUI = a.webUIQuestions
 	conn.historyWebUI = a.webUIHistory
 	stopUpdateControl, err := a.startUpdateControl(ctx)
@@ -703,6 +704,11 @@ func (s *sessionActor) run() {
 		case request := <-s.commands:
 			s.command(request)
 		case request := <-s.webCommands:
+			if request.upload != nil {
+				upload, err := s.webUIUpload(request)
+				request.reply <- webUICommandReply{upload: upload, err: err}
+				continue
+			}
 			if request.history != nil {
 				history, err := s.webUIHistory(request)
 				request.reply <- webUICommandReply{history: history, err: err}

@@ -13,10 +13,11 @@ import (
 )
 
 var (
-	ErrWebUIUnavailable      = errors.New("worker is disconnected; reconnect when it is online")
-	ErrWebUIUnsupported      = errors.New("update this worker to enable the web interface")
-	ErrWebUILimit            = errors.New("too many open web sessions; disconnect another tab first")
-	ErrWebUIFilesUnsupported = errors.New("update this worker to enable file downloads")
+	ErrWebUIUnavailable        = errors.New("worker is disconnected; reconnect when it is online")
+	ErrWebUIUnsupported        = errors.New("update this worker to enable the web interface")
+	ErrWebUILimit              = errors.New("too many open web sessions; disconnect another tab first")
+	ErrWebUIFilesUnsupported   = errors.New("update this worker to enable file downloads")
+	ErrWebUIUploadsUnsupported = errors.New("update this worker to enable Web UI file uploads")
 )
 
 // WebUIStream is a transient, connection-fenced app-server relay. Its messages
@@ -165,6 +166,28 @@ func (s *WebUIStream) Send(ctx context.Context, data json.RawMessage) error {
 		s.inputBytes -= len(data)
 		s.hub.webuiInputBytes -= len(data)
 		s.hub.mu.Unlock()
+	}
+	// Reserve encoded bytes before decoding a file; concurrent validation is
+	// covered by the same per-viewer/global limits as queued socket writes.
+	var method struct {
+		Method string `json:"method"`
+	}
+	if json.Unmarshal(data, &method) == nil && method.Method == "gateway/upload" {
+		if !s.peer.supportsWebUIUploads {
+			release()
+			return ErrWebUIUploadsUnsupported
+		}
+		var request struct {
+			Params map[string]json.RawMessage `json:"params"`
+		}
+		if err := json.Unmarshal(data, &request); err != nil {
+			release()
+			return errors.New("invalid web upload request")
+		}
+		if _, err := protocol.DecodeWebUIUploadParams(request.Params); err != nil {
+			release()
+			return err
+		}
 	}
 	return s.peer.sendWithCompletion(ctx, "webui", protocol.WebUIFrame{ID: s.id, Action: "input", Data: data}, release)
 }

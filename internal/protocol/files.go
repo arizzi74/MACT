@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"errors"
+	"path/filepath"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -31,4 +32,31 @@ func ValidateFiles(files []File) error {
 		}
 	}
 	return nil
+}
+
+// InboundFilename derives the worker-owned destination basename after the
+// original basename and UUID have been validated. It never accepts a path.
+func InboundFilename(name, commandID string) string {
+	clean := strings.Map(func(ch rune) rune {
+		if unicode.IsLetter(ch) || unicode.IsDigit(ch) || ch == '.' || ch == '-' || ch == '_' {
+			return ch
+		}
+		return '_'
+	}, name)
+	clean = strings.Trim(clean, "._-")
+	if clean == "" {
+		clean = "file"
+	}
+	ext := filepath.Ext(clean)
+	if len(ext) > 32 {
+		ext = ""
+	}
+	stem := strings.TrimSuffix(clean, ext)
+	if len(stem) > 150 {
+		stem = stem[:150]
+		for !utf8.ValidString(stem) {
+			stem = stem[:len(stem)-1]
+		}
+	}
+	return stem + "-" + commandID + ext
 }

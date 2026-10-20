@@ -10,8 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/iaia/telegramgw/internal/auth"
@@ -84,28 +82,7 @@ func (s *Store) recordInboundFile(commandID string, file *inboundFileRecord) err
 }
 
 func inboundFilename(name, commandID string) string {
-	clean := strings.Map(func(ch rune) rune {
-		if unicode.IsLetter(ch) || unicode.IsDigit(ch) || ch == '.' || ch == '-' || ch == '_' {
-			return ch
-		}
-		return '_'
-	}, name)
-	clean = strings.Trim(clean, "._-")
-	if clean == "" {
-		clean = "file"
-	}
-	ext := filepath.Ext(clean)
-	if len(ext) > 32 {
-		ext = ""
-	}
-	stem := strings.TrimSuffix(clean, ext)
-	if len(stem) > 150 {
-		stem = stem[:150]
-		for !utf8.ValidString(stem) {
-			stem = stem[:len(stem)-1]
-		}
-	}
-	return stem + "-" + commandID + ext
+	return protocol.InboundFilename(name, commandID)
 }
 
 // fileWorkspace checks the frozen execution target even when a queued command
@@ -146,6 +123,23 @@ func storeInboundFile(store *Store, c protocol.Command, cwd string, roots []stri
 	if _, err := uuid.Parse(c.ID); err != nil {
 		return "", "", errors.New("The file command identity is invalid.")
 	}
+	record, found, err := store.LoadCommand(c.ID)
+	if err != nil || !found {
+		return "", "", errors.New("The worker cannot read the file command record.")
+	}
+	prompt := ""
+	if c.Operation != protocol.StoreFiles {
+		prompt = c.Arguments.Text + "\nFile: " + filepath.Join(cwd, "inbound", inboundFilename(c.Arguments.Files[0].Name, c.ID))
+	}
+	return publishInboundFile(c.Arguments.Files[0], c.ID, cwd, roots, record.InboundFile, prompt,
+		func(file *inboundFileRecord) error { return store.recordInboundFile(c.ID, file) },
+		func() error { return store.markInboundFileSaved(c.ID) })
+}
+
+// Both Telegram commands and browser uploads publish through the same secured
+// directory descriptors and durable inode identity. Each caller supplies its
+// own metadata ledger; browser uploads never become replayable commands.
+func publishInboundFile(input protocol.File, identity, cwd string, roots []string, meta *inboundFileRecord, prompt string, recordFile func(*inboundFileRecord) error, markSaved func() error) (string, string, error) {
 	workspace, err := openWebUIFileDirectory(cwd, roots)
 	if err != nil {
 		return "", "", errors.New("The worker cannot open this session's workspace.")
@@ -187,15 +181,9 @@ func storeInboundFile(store *Store, c protocol.Command, cwd string, roots []stri
 	if err := fence(); err != nil {
 		return "", "", err
 	}
-	input := c.Arguments.Files[0]
 	digest := sha256.Sum256(input.Data)
-	name := inboundFilename(input.Name, c.ID)
+	name := inboundFilename(input.Name, identity)
 	path := filepath.Join(cwd, "inbound", name)
-	record, found, err := store.LoadCommand(c.ID)
-	if err != nil || !found {
-		return "", "", errors.New("The worker cannot read the file command record.")
-	}
-	meta := record.InboundFile
 	if meta == nil {
 		var existing unix.Stat_t
 		if err := unix.Fstatat(fd, name, &existing, unix.AT_SYMLINK_NOFOLLOW); !errors.Is(err, unix.ENOENT) {
@@ -222,10 +210,8 @@ func storeInboundFile(store *Store, c protocol.Command, cwd string, roots []stri
 			return "", "", errors.New("The worker cannot persist the uploaded file.")
 		}
 		meta = &inboundFileRecord{Directory: cwd, Name: name, Temporary: temporary, Device: uint64(stat.Dev), Inode: stat.Ino, Digest: hex.EncodeToString(digest[:])}
-		if c.Operation != protocol.StoreFiles {
-			meta.Prompt = c.Arguments.Text + "\nFile: " + path
-		}
-		if err := store.recordInboundFile(c.ID, meta); err != nil {
+		meta.Prompt = prompt
+		if err := recordFile(meta); err != nil {
 			return "", "", errors.New("The worker cannot record the uploaded file.")
 		}
 		owned = true
@@ -288,7 +274,7 @@ func storeInboundFile(store *Store, c protocol.Command, cwd string, roots []stri
 	if err := fence(); err != nil {
 		return "", "", err
 	}
-	if err := store.markInboundFileSaved(c.ID); err != nil {
+	if err := markSaved(); err != nil {
 		return "", "", errors.New("The worker cannot record the completed file save.")
 	}
 	return path, meta.Prompt, nil

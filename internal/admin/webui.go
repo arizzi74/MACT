@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"path/filepath"
 	"time"
 
 	"github.com/coder/websocket"
@@ -160,6 +161,10 @@ func (s *Server) webuiConnect(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	// Dashboard redaction below changes its session projection. Upload paths
+	// are checked against the original selected workspace, never that text.
+	uploadCWD := selected.CWD
+	uploads := make(webUIUploadRequests)
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{CompressionMode: websocket.CompressionDisabled})
@@ -273,11 +278,29 @@ func (s *Server) webuiConnect(w http.ResponseWriter, r *http.Request) {
 				failStream("Your session expired. Sign in again.", websocket.StatusCode(4001))
 				return
 			}
+			if err := uploads.remember(body, uploadCWD); err != nil {
+				failStream("Too many pending file uploads. Reconnect before uploading another file.", websocket.StatusPolicyViolation)
+				return
+			}
 			sendCtx, done := context.WithTimeout(ctx, 10*time.Second)
 			err := stream.Send(sendCtx, body)
 			done()
 			if err != nil {
-				failStream("Request could not be delivered. Check the conversation before retrying.", websocket.StatusTryAgainLater)
+				if errors.Is(err, gateway.ErrWebUIUploadsUnsupported) {
+					var request struct {
+						ID json.RawMessage `json:"id"`
+					}
+					if json.Unmarshal(body, &request) == nil && webUIUploadRPCID(request.ID) != "" {
+						delete(uploads, webUIUploadRPCID(request.ID))
+						if !write(map[string]any{"id": request.ID, "error": map[string]any{"code": -32000, "message": err.Error()}}) {
+							return
+						}
+						continue
+					}
+					failStream(err.Error(), websocket.StatusPolicyViolation)
+				} else {
+					failStream("Request could not be delivered. Check the conversation before retrying.", websocket.StatusTryAgainLater)
+				}
 				return
 			}
 		case frame := <-stream.Frames():
@@ -291,7 +314,7 @@ func (s *Server) webuiConnect(w http.ResponseWriter, r *http.Request) {
 					readyTimer.Stop()
 					return write(map[string]any{"type": "ready", "session": selected})
 				case "output":
-					data, err := s.redactWebUI(frame.Data)
+					data, err := s.redactWebUIUploadResponse(frame.Data, uploads)
 					if err != nil {
 						failStream("Invalid worker response.", websocket.StatusInternalError)
 						return false
@@ -317,6 +340,116 @@ func (s *Server) webuiConnect(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+}
+
+type webUIUploadRequest struct {
+	uploadID string
+	path     string
+}
+
+// Only identities and the expected destination survive request processing;
+// file bytes never enter this connection-local correlation map.
+type webUIUploadRequests map[string]webUIUploadRequest
+
+func webUIUploadRPCID(raw json.RawMessage) string {
+	if len(raw) == 0 || len(raw) > 256 {
+		return ""
+	}
+	var value any
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if decoder.Decode(&value) != nil {
+		return ""
+	}
+	switch value := value.(type) {
+	case string:
+		if value != "" {
+			return "s:" + value
+		}
+	case json.Number:
+		if _, err := value.Int64(); err == nil {
+			return "n:" + string(value)
+		}
+	}
+	return ""
+}
+
+func (pending webUIUploadRequests) remember(raw json.RawMessage, cwd string) error {
+	var request struct {
+		ID     json.RawMessage            `json:"id"`
+		Method string                     `json:"method"`
+		Params map[string]json.RawMessage `json:"params"`
+	}
+	if json.Unmarshal(raw, &request) != nil || request.Method != "gateway/upload" {
+		return nil
+	}
+	id := webUIUploadRPCID(request.ID)
+	var upload protocol.WebUIUpload
+	// The hub validates encoded file bytes within its global byte reservation.
+	// Correlation needs only the basename and identity, so do not decode a
+	// second maximum-size attachment outside that reservation.
+	if len(request.Params) != 3 || json.Unmarshal(request.Params["uploadId"], &upload.UploadID) != nil ||
+		json.Unmarshal(request.Params["name"], &upload.Name) != nil || len(request.Params["data"]) == 0 ||
+		id == "" || upload.Validate() != nil || !filepath.IsAbs(cwd) || filepath.Clean(cwd) != cwd {
+		return nil // The worker owns validation and returns the ordinary RPC error.
+	}
+	if _, exists := pending[id]; exists || len(pending) >= 64 {
+		return errors.New("upload request limit reached")
+	}
+	pending[id] = webUIUploadRequest{uploadID: upload.UploadID, path: filepath.Join(cwd, "inbound", protocol.InboundFilename(upload.Name, upload.UploadID))}
+	return nil
+}
+
+func (s *Server) redactWebUIUploadResponse(raw json.RawMessage, pending webUIUploadRequests) (json.RawMessage, error) {
+	var response map[string]json.RawMessage
+	if json.Unmarshal(raw, &response) != nil {
+		return s.redactWebUI(raw)
+	}
+	id := webUIUploadRPCID(response["id"])
+	upload, exists := pending[id]
+	if !exists || len(response["method"]) != 0 {
+		return s.redactWebUI(raw)
+	}
+	delete(pending, id)
+	// A success must have only the local reply envelope and exactly the typed
+	// result fields. Its path must be the deterministic direct child selected
+	// before the request. Arbitrary native payloads cannot opt out of redaction.
+	for key := range response {
+		if key != "id" && key != "jsonrpc" && key != "result" {
+			return s.redactWebUI(raw)
+		}
+	}
+	var resultFields map[string]json.RawMessage
+	var result protocol.WebUIUploadResult
+	if json.Unmarshal(response["result"], &resultFields) != nil || len(resultFields) != 3 ||
+		json.Unmarshal(response["result"], &result) != nil || result.UploadID != upload.uploadID || result.Path != upload.path {
+		return s.redactWebUI(raw)
+	}
+	for _, key := range []string{"uploadId", "path", "text"} {
+		var field *string
+		if json.Unmarshal(resultFields[key], &field) != nil || field == nil {
+			return s.redactWebUI(raw)
+		}
+	}
+	data, err := s.redactWebUI(raw)
+	if err != nil {
+		return nil, err
+	}
+	var visible map[string]json.RawMessage
+	if err := json.Unmarshal(data, &visible); err != nil {
+		return nil, err
+	}
+	var visibleResult protocol.WebUIUploadResult
+	if err := json.Unmarshal(visible["result"], &visibleResult); err != nil {
+		return nil, err
+	}
+	visibleResult.UploadID, visibleResult.Path = upload.uploadID, upload.path
+	visible["id"] = response["id"]
+	visible["result"], err = json.Marshal(visibleResult)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(visible)
 }
 
 // Redact strings without altering JSON numbers (JSON-RPC IDs can be large).

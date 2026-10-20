@@ -47,6 +47,7 @@ type Session struct {
 type Hello struct {
 	SupportsWebUI                bool      `json:"supports_webui,omitempty"`
 	SupportsWebUIFiles           bool      `json:"supports_webui_files,omitempty"`
+	SupportsWebUIUploads         bool      `json:"supports_webui_uploads,omitempty"`
 	SupportsWorkerUpdate         bool      `json:"supports_worker_update,omitempty"`
 	WorkerID                     string    `json:"worker_id"`
 	WorkerName                   string    `json:"worker_name"`
@@ -77,6 +78,7 @@ type HelloAck struct {
 type Heartbeat struct {
 	SupportsWebUI                bool      `json:"supports_webui,omitempty"`
 	SupportsWebUIFiles           bool      `json:"supports_webui_files,omitempty"`
+	SupportsWebUIUploads         bool      `json:"supports_webui_uploads,omitempty"`
 	SupportsWorkerUpdate         bool      `json:"supports_worker_update,omitempty"`
 	WorkerID                     string    `json:"worker_id"`
 	SupportsImageInput           bool      `json:"supports_image_input,omitempty"`

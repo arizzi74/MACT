@@ -41,6 +41,7 @@ type Connection struct {
 	snapshot       func() []protocol.Runtime
 	onCommand      func(context.Context, protocol.Command) (protocol.CommandAck, error)
 	observeWebUI   func(context.Context, protocol.Runtime, protocol.Session) error
+	uploadWebUI    func(context.Context, protocol.Runtime, protocol.Session, protocol.WebUIUpload) (protocol.WebUIUploadResult, error)
 	commandWebUI   func(context.Context, protocol.Runtime, protocol.Session, string, string) (protocol.Result, error)
 	historyWebUI   func(context.Context, protocol.Runtime, protocol.Session, webUIHistoryRequest) (json.RawMessage, error)
 	questionsWebUI func(context.Context, protocol.Runtime, protocol.Session, *webUIQuestionAnswer) ([]webUIQuestion, error)
@@ -155,7 +156,7 @@ func (c *Connection) connect(ctx context.Context) error {
 		return fmt.Errorf("load local event watermark: %w", err)
 	}
 	hostname, _ := os.Hostname()
-	hello := protocol.Hello{WorkerID: c.cfg.WorkerID, WorkerName: c.cfg.Name, Hostname: hostname, OS: runtime.GOOS, Arch: runtime.GOARCH, WorkerVersion: buildinfo.Version, ProtocolMin: protocol.Version, ProtocolMax: protocol.Version, LastAckedEventSeq: lastAcked, SupportsWebUI: true, SupportsWebUIFiles: true, SupportsImageInput: true, SupportsFileInput: true, SupportsSessionWorkspaces: true, SupportsWebUISessionCreation: true, SupportsSessionDeletion: true, SupportsSessionEditing: true, SupportsSessionArchives: true, SupportsConversationHistory: true, SupportsWorkerUpdate: c.updateManager != "", Runtimes: c.snapshot()}
+	hello := protocol.Hello{WorkerID: c.cfg.WorkerID, WorkerName: c.cfg.Name, Hostname: hostname, OS: runtime.GOOS, Arch: runtime.GOARCH, WorkerVersion: buildinfo.Version, ProtocolMin: protocol.Version, ProtocolMax: protocol.Version, LastAckedEventSeq: lastAcked, SupportsWebUI: true, SupportsWebUIFiles: true, SupportsWebUIUploads: true, SupportsImageInput: true, SupportsFileInput: true, SupportsSessionWorkspaces: true, SupportsWebUISessionCreation: true, SupportsSessionDeletion: true, SupportsSessionEditing: true, SupportsSessionArchives: true, SupportsConversationHistory: true, SupportsWorkerUpdate: c.updateManager != "", Runtimes: c.snapshot()}
 	handshakeCtx, stopHandshake := context.WithTimeout(connectionCtx, 10*time.Second)
 	if err := c.sendRedactedEnvelope(handshakeCtx, writes, "hello", hello); err != nil {
 		stopHandshake()
@@ -202,7 +203,7 @@ func (c *Connection) connect(ctx context.Context) error {
 		case err := <-readErr:
 			return err
 		case <-heartbeat.C:
-			if err := c.sendRedactedEnvelope(connectionCtx, writes, "heartbeat", protocol.Heartbeat{WorkerID: c.cfg.WorkerID, UptimeSeconds: int64(time.Since(c.startedAt).Seconds()), SupportsWebUI: true, SupportsWebUIFiles: true, SupportsImageInput: true, SupportsFileInput: true, SupportsSessionWorkspaces: true, SupportsWebUISessionCreation: true, SupportsSessionDeletion: true, SupportsSessionEditing: true, SupportsSessionArchives: true, SupportsConversationHistory: true, SupportsWorkerUpdate: c.updateManager != "", Runtimes: c.snapshot()}); err != nil {
+			if err := c.sendRedactedEnvelope(connectionCtx, writes, "heartbeat", protocol.Heartbeat{WorkerID: c.cfg.WorkerID, UptimeSeconds: int64(time.Since(c.startedAt).Seconds()), SupportsWebUI: true, SupportsWebUIFiles: true, SupportsWebUIUploads: true, SupportsImageInput: true, SupportsFileInput: true, SupportsSessionWorkspaces: true, SupportsWebUISessionCreation: true, SupportsSessionDeletion: true, SupportsSessionEditing: true, SupportsSessionArchives: true, SupportsConversationHistory: true, SupportsWorkerUpdate: c.updateManager != "", Runtimes: c.snapshot()}); err != nil {
 				return err
 			}
 		case <-poll.C:

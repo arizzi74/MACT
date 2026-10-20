@@ -92,7 +92,7 @@ func OpenStore(path, workerID string) (*Store, error) {
 	}
 	s := &Store{db: db, workerID: workerID}
 	if err := db.Update(func(tx *workerdb.Tx) error {
-		for _, bucket := range [][]byte{bucketMeta, bucketCommands, bucketOutbox, bucketRuntimes, bucketSessions} {
+		for _, bucket := range [][]byte{bucketMeta, bucketCommands, bucketOutbox, bucketRuntimes, bucketSessions, bucketWebUIUploads} {
 			if _, err := tx.CreateBucketIfNotExists(bucket); err != nil {
 				return err
 			}

@@ -147,7 +147,7 @@ func (p *webUIRelays) receive(frame protocol.WebUIFrame) {
 		}
 		if !client.reserveInput(len(frame.Data)) {
 			client.cancel()
-			p.fail(frame.ID, "Web UI input exceeded the byte limit. Reconnect before sending another image.")
+			p.fail(frame.ID, "Web UI input exceeded the byte limit. Reconnect before sending another attachment.")
 			return
 		}
 		select {
@@ -290,7 +290,10 @@ func (r *webUIRelay) forwardInput(conn *websocket.Conn, data []byte) error {
 		return err
 	}
 	var rpc webUIRPC
-	if json.Unmarshal(forward, &rpc) == nil && rpc.Method == "thread/resume" {
+	if err := json.Unmarshal(forward, &rpc); err != nil {
+		return err
+	}
+	if rpc.Method == "thread/resume" {
 		// Subscribe on the existing input loop before writing the browser RPC.
 		// The native reader remains available while admission or a session
 		// actor is busy, and no prompt is enabled before both checks finish.
@@ -306,7 +309,7 @@ func (r *webUIRelay) forwardInput(conn *websocket.Conn, data []byte) error {
 		r.observerReady = true
 		r.mu.Unlock()
 	}
-	if json.Unmarshal(forward, &rpc) == nil && rpc.Method == "thread/items/list" {
+	if rpc.Method == "thread/items/list" {
 		r.mu.Lock()
 		fallback := r.historyFallback
 		r.mu.Unlock()
@@ -317,17 +320,20 @@ func (r *webUIRelay) forwardInput(conn *websocket.Conn, data []byte) error {
 			return nil
 		}
 	}
-	if json.Unmarshal(forward, &rpc) == nil && (rpc.Method == "gateway/questions" || rpc.Method == "gateway/answer") {
+	if rpc.Method == "gateway/questions" || rpc.Method == "gateway/answer" {
 		if err := r.questions(rpc); err != nil {
 			return err
 		}
 		return nil
 	}
-	if json.Unmarshal(forward, &rpc) == nil && rpc.Method == "gateway/command" {
+	if rpc.Method == "gateway/command" {
 		if err := r.command(rpc); err != nil {
 			return err
 		}
 		return nil
+	}
+	if rpc.Method == "gateway/upload" {
+		return r.upload(rpc)
 	}
 	writeCtx, stop := context.WithTimeout(r.ctx, 10*time.Second)
 	err = conn.Write(writeCtx, websocket.MessageText, forward)
@@ -440,7 +446,7 @@ func (r *webUIRelay) clientMessage(data []byte) ([]byte, error) {
 		return nil, err
 	}
 	switch rpc.Method {
-	case "gateway/command", "gateway/questions", "gateway/answer", "turn/start", "turn/steer", "turn/interrupt", "thread/turns/list", "thread/items/list", "thread/goal/get", "account/rateLimits/read":
+	case "gateway/upload", "gateway/command", "gateway/questions", "gateway/answer", "turn/start", "turn/steer", "turn/interrupt", "thread/turns/list", "thread/items/list", "thread/goal/get", "account/rateLimits/read":
 		// Stored inventory is a discovery snapshot. An existing terminal can
 		// have moved the thread since then, so never admit browser mutations
 		// until this connection has checked the actual resume response.
@@ -481,6 +487,10 @@ func (r *webUIRelay) clientMessage(data []byte) ([]byte, error) {
 }
 
 func webUIParams(method string, params map[string]json.RawMessage, thread string) (map[string]json.RawMessage, error) {
+	if method == "gateway/upload" {
+		_, err := protocol.DecodeWebUIUploadParams(params)
+		return params, err
+	}
 	if method == "gateway/command" {
 		return webUICommandParams(params)
 	}
@@ -651,7 +661,7 @@ func (r *webUIRelay) serverMessage(data []byte) ([]byte, error) {
 			return nil, nil
 		}
 		method := r.pending[id]
-		if method == "gateway/command" || method == "gateway/questions" || method == "gateway/answer" {
+		if method == "gateway/upload" || method == "gateway/command" || method == "gateway/questions" || method == "gateway/answer" {
 			return nil, nil // Only the session actor may complete local commands.
 		}
 		if method == "thread/items/list" {

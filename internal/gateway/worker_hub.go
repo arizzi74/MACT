@@ -57,6 +57,7 @@ type peer struct {
 	supportsConversationHistory  bool
 	supportsWebUI                bool
 	supportsWebUIFiles           bool
+	supportsWebUIUploads         bool
 	conn                         *websocket.Conn
 	ctx                          context.Context
 	cancel                       context.CancelFunc
@@ -144,6 +145,7 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		supportsConversationHistory:  hello.SupportsConversationHistory,
 		supportsWebUI:                hello.SupportsWebUI,
 		supportsWebUIFiles:           hello.SupportsWebUIFiles,
+		supportsWebUIUploads:         hello.SupportsWebUIUploads,
 		conn:                         conn, ctx: ctx, cancel: cancel, writes: make(chan writeRequest, 128)}
 	h.mu.Lock()
 	old := h.peers[hello.WorkerID]
