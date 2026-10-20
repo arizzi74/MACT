@@ -282,7 +282,10 @@ func (s *Server) webuiConnect(w http.ResponseWriter, r *http.Request) {
 				failStream("Too many pending file uploads. Reconnect before uploading another file.", websocket.StatusPolicyViolation)
 				return
 			}
-			sendCtx, done := context.WithTimeout(ctx, 10*time.Second)
+			// A maximum-size attachment contains about 14 MiB of encoded JSON.
+			// Allow validation and serialization before the worker writer's own
+			// bounded socket write, including on slower worker/gateway hosts.
+			sendCtx, done := context.WithTimeout(ctx, 30*time.Second)
 			err := stream.Send(sendCtx, body)
 			done()
 			if err != nil {

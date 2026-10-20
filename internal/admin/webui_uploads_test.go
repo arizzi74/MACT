@@ -186,7 +186,9 @@ func readWebUIUploadMessage(t *testing.T, ctx context.Context, browser *websocke
 		}
 		var id string
 		if (wantID != "" && (json.Unmarshal(frame["id"], &id) != nil || id != wantID)) || (wantType != "" && frameType != wantType) {
-			t.Fatal("browser returned an unexpected message while awaiting the upload response")
+			var message string
+			_ = json.Unmarshal(frame["message"], &message)
+			t.Fatalf("browser returned an unexpected upload response: want id=%q type=%q, got id=%q type=%q message=%.512q", wantID, wantType, id, frameType, message)
 		}
 		return raw
 	}
@@ -219,7 +221,7 @@ func TestWebUIUploadMaximumBytesAndExactPathAcrossAuthenticatedTransport(t *test
 		Params protocol.WebUIUpload `json:"params"`
 	}
 	if forwarded.ID != opened.ID || forwarded.Action != "input" || json.Unmarshal(forwarded.Data, &request) != nil || request.Method != "gateway/upload" || request.Params.UploadID != upload.UploadID || request.Params.Name != upload.Name || !bytes.Equal(request.Params.Data, data) {
-		t.Fatal("maximum-size upload bytes or frozen target changed in transit")
+		t.Fatalf("maximum-size upload bytes or frozen target changed in transit: action=%q viewer=%q method=%q upload=%q bytes=%d", forwarded.Action, forwarded.ID, request.Method, request.Params.UploadID, len(request.Params.Data))
 	}
 	expected := filepath.Join(f.session.CWD, "inbound", protocol.InboundFilename(upload.Name, upload.UploadID))
 	result := protocol.WebUIUploadResult{UploadID: upload.UploadID, Path: expected, Text: "File saved in " + expected}
