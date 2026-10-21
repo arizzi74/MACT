@@ -31,4 +31,4 @@ jobs:
       - name: Prove self-contained restoration and continuation
         env:
           CODEX_NATIVE_ARCHIVE_TEST: '1'
-        run: go test ./internal/sessionarchive ./internal/worker -run '^TestNative(SelfContainedResume|ContinuedTurn|WorkerArchive)' -count=1 -timeout=10m
+        run: go test ./internal/sessionarchive ./internal/worker -run '^TestNative(SelfContained|ContinuedTurn|WorkerArchive)' -count=1 -timeout=10m

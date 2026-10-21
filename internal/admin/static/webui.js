@@ -118,9 +118,11 @@
   function renderTelegramBots() {
     const select = $('telegram-bot');
     const rows = state.authenticated ? telegramBots.rows : [];
-    if (select.options.length !== rows.length + 1 || rows.some((row, index) => select.options[index + 1]?.value !== row.id || select.options[index + 1]?.textContent !== row.display_name)) {
+    const sessionNames = new Map(state.sessions.map(session => [session.session_id, title(session)]));
+    const labels = rows.map(row => row.display_name + ' · ' + (row.session_id ? sessionNames.get(row.session_id) || 'Session unavailable' : '<no session>'));
+    if (select.options.length !== rows.length + 1 || rows.some((row, index) => select.options[index + 1]?.value !== row.id || select.options[index + 1]?.textContent !== labels[index])) {
       const none = document.createElement('option'); none.value = ''; none.textContent = '<no bot>';
-      select.replaceChildren(none, ...rows.map(row => { const option = document.createElement('option'); option.value = row.id; option.textContent = row.display_name; return option; }));
+      select.replaceChildren(none, ...rows.map((row, index) => { const option = document.createElement('option'); option.value = row.id; option.textContent = labels[index]; return option; }));
     }
     const sessionID = state.selected?.session_id;
     // Legacy duplicate bindings are displayed deterministically. Rendering
@@ -812,6 +814,7 @@
     }
     $('sessions-status').textContent = sessions.length ? sessions.length + (sessions.length === 1 ? ' session' : ' sessions') : query ? 'No matching sessions.' : workers.size ? 'Use + beside a worker to create a session.' : 'No workers enrolled.';
     updateSessionIndicators();
+    renderTelegramBots();
     if ($('new-session-dialog').open) renderSessionCreation();
     if ($('edit-session-dialog').open) renderSessionEditor();
   }
@@ -1497,7 +1500,7 @@
       notificationUI?.setAuthenticated(true);
       $('auth').hidden = true;
       renderSessions();
-      renderTelegramBots(); refreshTelegramBots();
+      refreshTelegramBots();
       connectActivity();
       commandUI?.update();
       if (!state.selected) { $('empty').hidden = false; connection('connected', 'Gateway connected · choose a session'); }

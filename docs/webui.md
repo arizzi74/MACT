@@ -57,6 +57,10 @@ to 16 MiB; a project with more file metadata is rejected before source cleanup.
 **Delete original project directory after successful archive** is optional and
 unchecked initially. The worker verifies the archive and an isolated native
 resume before cleanup, then checks that the project still matches the backup.
+The isolated check resumes the main conversation and reads each subagent's
+metadata and bounded history, repeating both checks after an app-server restart.
+Internal subagents keep their native parent relationships and project
+subdirectories; they are not resumed as standalone sessions.
 Active turns, native queues, goals, terminals and shared or protected project
 paths can prevent archival or cleanup. If backup succeeds but cleanup cannot
 finish, the operation reports the cleanup warning and keeps the verified
@@ -118,7 +122,7 @@ check the conversation before submitting again.
 
 ## Conversation controls
 
-- The **Bind Telegram bot** dropdown sits at the right of **Connected · session name**. It shows each bot's base display name, without an inherited session suffix, and `<no bot>` for sessions without an assignment. Selecting a bot moves its private Telegram conversation to this session; selecting `<no bot>` disconnects the session's bot. Each session has one bot: choosing another bot here or through Telegram's **/tgsessions** disconnects the previous one. Changes appear in other open web views through the live feed without reloading conversation history. Group and forum-topic selections remain independent.
+- The **Bind Telegram bot** dropdown sits at the right of **Connected · session name**. Each option shows the bot's base display name and its currently attached session, for example **EnkiCodex · Gym Tracker**; unassigned bots show `<no session>`. Session renames and bot moves refresh these labels through the live feed. Selecting a bot moves its private Telegram conversation to this session; selecting `<no bot>` disconnects the session's bot. Each session has one bot: choosing another bot here or through Telegram's **/tgsessions** disconnects the previous one. Changes appear in other open web views without reloading conversation history. Group and forum-topic selections remain independent.
 - Telegram questions and approvals go to the session's assigned bot by default. Enable **Broadcast session questions to all bots** in that bot's Admin configuration to notify all enabled bot chats. A session showing `<no bot>` always notifies all eligible bot chats. This preference changes Telegram notifications; questions remain available in the session's Web UI.
 - Search entries expand to show their full queries or page actions and any results supplied by Codex. Context compaction is a plain status line; other tool entries only expand when they have details to display. Compaction loaded from a still-running turn uses a neutral label until a live event confirms its state.
 - An accepted **Steer** message shows **Message queued** above the input for four seconds. This temporary confirmation also applies to **/tgsteer** and disappears when the turn ends, the session changes or the viewer disconnects. It is not added to conversation history. Failed or unconfirmed sends do not display this confirmation.

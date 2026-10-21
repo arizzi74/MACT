@@ -92,6 +92,7 @@ const initialBots = [
       await page.clock.install({ time: Date.now() });
       const ready = target => target.waitForFunction(() => document.querySelector('#connection').dataset.state === 'connected' && !document.querySelector('#composer').hidden && !document.querySelector('#telegram-bot').disabled);
       const value = (expected, target = page) => target.waitForFunction(expected => document.querySelector('#telegram-bot').value === expected, expected);
+      const label = (id, expected, target = page) => target.waitForFunction(({ id, expected }) => [...document.querySelector('#telegram-bot').options].find(option => option.value === id)?.textContent === expected, { id, expected });
       const selectSession = async (id, target = page) => {
         if (width <= 650) await target.locator('#show-sessions').click();
         await target.locator('.session-button[data-session-id="' + id + '"]').click();
@@ -115,7 +116,8 @@ const initialBots = [
         await selectSession(first); await ready(page); await pushSnapshot();
         assert.equal(await page.locator('#telegram-bot').inputValue(), '', 'A new session starts with no bot');
         assert.equal(await page.getByRole('combobox', { name: 'Telegram bot' }).count(), 1);
-        assert.deepEqual(await page.locator('#telegram-bot option').allTextContents(), ['<no bot>', ...initialBots.map(bot => bot.display_name)]);
+        assert.deepEqual(await page.locator('#telegram-bot option').allTextContents(), ['<no bot>', 'Enki Codex · <no session>', initialBots[1].display_name + ' · ' + sessions[1].name, initialBots[2].display_name + ' · <no session>']);
+        assert.deepEqual(await page.locator('#telegram-bot option').evaluateAll(options => options.map(option => option.value)), ['', ...initialBots.map(bot => bot.id)], 'Labels preserve opaque bot ID values');
         assert.equal(await page.locator('#telegram-bot img').count(), 0, 'Names are rendered as text');
         assert.equal(await page.evaluate(() => window.injected), undefined);
         assert.equal(await page.evaluate(() => new URL(window.botActivity.url).searchParams.get('v')), '3');
@@ -125,10 +127,23 @@ const initialBots = [
         });
         assert.equal(layout.fits, true, width + 'px keeps the selector inside the viewport and right of the text');
         assert.equal(layout.oneRow, true); assert.ok(layout.height <= 35, 'The connection line stays compact'); assert.equal(layout.ellipsis, 'ellipsis');
+        const renamedSession = 'Renamed <img src=x onerror="window.sessionInjected=true"> & "quoted" session';
+        listedSessions = listedSessions.map(session => session.session_id === second ? { ...session, name: renamedSession } : session);
+        await page.evaluate(id => {
+          const socket = window.botActivity;
+          socket.emit({ type: 'activity_event', version: 3, sequence: ++socket.sequence, event: 'session_changed', session_id: id, session: window.botActivityRows.find(row => row.session_id === id) });
+        }, second);
+        await label('beta', initialBots[1].display_name + ' · ' + renamedSession);
+        assert.equal(revision, 1, 'Renaming a session refreshes its label without a bot inventory change');
+        assert.equal(posts.length, 0, 'Rendering an updated session name never changes bot bindings');
+        assert.equal(await page.locator('#telegram-bot img').count(), 0, 'Session names are rendered as text');
+        assert.equal(await page.evaluate(() => window.sessionInjected), undefined);
         await selectSession(second); await value('beta');
+        assert.equal(await page.locator('#telegram-bot').getAttribute('title'), initialBots[1].display_name + ' · ' + renamedSession, 'The selected tooltip includes the current session name');
         await selectSession(first); await value('');
         const beforeAssignment = snapshot();
         await page.locator('#telegram-bot').selectOption('alpha'); await value('alpha'); await ready(page);
+        await label('alpha', 'Enki Codex · ' + sessions[0].name);
         assert.deepEqual(posts.at(-1), { body: { session_id: first, bot_id: 'alpha' }, csrf: 'bot-test-csrf', method: 'POST' });
         await page.evaluate(data => {
           const socket = window.botActivity;
@@ -137,9 +152,12 @@ const initialBots = [
         await value('alpha');
         assert.equal(await page.locator('#telegram-bot').inputValue(), 'alpha', 'A delayed activity event cannot overwrite a newer HTTP confirmation');
         await selectSession(second); await page.locator('#telegram-bot').selectOption('alpha'); await value('alpha'); await ready(page);
+        await label('alpha', 'Enki Codex · ' + renamedSession);
+        await label('beta', initialBots[1].display_name + ' · <no session>');
         await selectSession(first); await value('');
         assert.equal(bots.find(bot => bot.id === 'beta').session_id, '', 'Choosing a new bot disconnects the session’s former bot');
         await selectSession(second); await page.locator('#telegram-bot').selectOption(''); await value(''); await ready(page);
+        await label('alpha', 'Enki Codex · <no session>');
         assert.equal(posts.at(-1).body.bot_id, '', 'The literal no-bot choice clears the assignment');
 
         const peer = await context.newPage(); pages.push(peer); peer.on('pageerror', error => errors.push(error.message));
@@ -148,9 +166,11 @@ const initialBots = [
         const viewersBefore = await page.evaluate(() => window.botSockets.filter(socket => !socket.activity).length);
         bots = bots.map(bot => ({ ...bot, session_id: bot.id === 'alpha' ? first : '' })); await publish();
         await value('alpha', peer); await value('');
+        await label('alpha', 'Enki Codex · ' + sessions[0].name);
         bots = bots.map(bot => ({ ...bot, display_name: bot.id === 'alpha' ? 'Enki original name after /setbotname' : bot.display_name, session_id: bot.id === 'alpha' ? second : '' })); await publish();
         await value('alpha'); await value('', peer);
-        assert.equal(await page.locator('#telegram-bot option[value="alpha"]').textContent(), 'Enki original name after /setbotname');
+        await label('alpha', 'Enki original name after /setbotname · ' + renamedSession);
+        await label('alpha', 'Enki original name after /setbotname · ' + renamedSession, peer);
         assert.equal(await page.evaluate(() => window.botFrames.filter(frame => frame.method === 'thread/items/list').length), historyBefore, 'Out-of-band bot updates preserve conversation history');
         assert.equal(await page.evaluate(() => window.botSockets.filter(socket => !socket.activity).length), viewersBefore, 'Out-of-band bot updates preserve the selected viewer');
         await peer.close(); pages.pop();
@@ -205,6 +225,7 @@ const initialBots = [
         }, second);
         await page.waitForFunction(() => document.querySelector('#telegram-bot').disabled);
         assert.equal(await page.locator('#telegram-bot').isDisabled(), true, 'A stale selected session cannot be rebound');
+        await label('alpha', 'Enki original name after /setbotname · Session unavailable');
         await selectSession(first); await ready(page);
         holdReads = true; await page.locator('#refresh-sessions').evaluate(button => button.click()); await waitForRequest(heldReads);
         mode = 'unauthenticated'; await page.locator('#telegram-bot').selectOption('alpha');

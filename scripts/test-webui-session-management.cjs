@@ -3,6 +3,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { EventEmitter } = require('node:events');
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const assets = process.env.WEBUI_ASSETS || path.resolve(__dirname, '../internal/admin/static');
 const hostile = '<img src=x onerror="window.injected=true">';
@@ -13,6 +14,7 @@ const hostile = '<img src=x onerror="window.injected=true">';
   await page.clock.install({ time: Date.now() });
   await page.context().addCookies([{ name: '__Host-telegramgw-csrf', value: 'session-test-csrf', url: 'https://webui.test/', secure: true }]);
   const errors = [], requests = [], statuses = new Map();
+  const routedPosts = new EventEmitter();
   page.on('pageerror', error => errors.push(error.message));
   const workers = [{ ID: 'w', Name: 'Worker ' + hostile, Enabled: true, Connectivity: 'connected', SupportsWebUISessionCreation: true, SupportsSessionEditing: true, SupportsSessionArchives: true }, { ID: 'old', Name: 'Older worker', Enabled: true, Connectivity: 'connected', SupportsWebUISessionCreation: true }];
   const runtimes = [{ worker_id: 'w', runtime_id: 'r', generation: 4, name: 'Codex', state: 'running' }, { worker_id: 'w', runtime_id: 'other', generation: 9, name: 'Other Codex', state: 'running' }, { worker_id: 'old', runtime_id: 'old', generation: 1, state: 'running' }];
@@ -32,7 +34,8 @@ const hostile = '<img src=x onerror="window.injected=true">';
     const kind = url.pathname.endsWith('/session-archives') ? 'list' : url.pathname.match(/\/sessions\/(edit|archive|restore)$/)?.[1];
     if (kind) {
       const body = method === 'POST' ? route.request().postDataJSON() : Object.fromEntries(url.searchParams);
-      requests.push({ kind, method, csrf: route.request().headers()['x-csrf-token'], ...body });
+      const recorded = { kind, method, csrf: route.request().headers()['x-csrf-token'], ...body };
+      requests.push(recorded);
       if (method === 'POST') {
         const target = sessions.find(row => row.session_id === body.session_id);
         const status = { command_id: body.request_id, worker_id: target?.worker_id || body.worker_id, runtime_id: target?.runtime_id || body.runtime_id, runtime_generation: target ? 4 : body.runtime_generation,
@@ -42,6 +45,7 @@ const hostile = '<img src=x onerror="window.injected=true">';
           if (!body.offset) status.next_offset = 1;
         }
         statuses.set(body.request_id, status);
+        routedPosts.emit('post', recorded);
         if (behaviors[kind] === 'hold') { delete behaviors[kind]; heldReplies.set(body.request_id, { route, status }); return; }
         if (behaviors[kind] === 'drop') { delete behaviors[kind]; return route.abort('failed'); }
         return reply(status, kind === 'list' ? 200 : 202);
@@ -84,7 +88,22 @@ const hostile = '<img src=x onerror="window.injected=true">';
   };
   const openEditor = async id => { await pencil(id).click(); await page.locator('#edit-session-dialog').waitFor(); };
   const posts = kind => requests.filter(row => row.kind === kind && row.method === 'POST');
-  const waitPost = async (kind, action) => { const response = page.waitForRequest(request => request.method() === 'POST' && request.url().endsWith('/sessions/' + kind)); await action(); await response; return posts(kind).at(-1); };
+  const waitPost = async (kind, action) => {
+    let listener, timeout;
+    const routed = new Promise((resolve, reject) => {
+      listener = request => { if (request.kind === kind && request.method === 'POST') resolve(request); };
+      routedPosts.on('post', listener);
+      timeout = setTimeout(() => reject(new Error('Timed out waiting for the fixture to handle a ' + kind + ' POST')), 30000);
+    });
+    try {
+      // Browser request events precede route handling. Wait for this fixture's
+      // exact recorded POST, including its status, even for held/lost replies.
+      const [request] = await Promise.all([routed, Promise.resolve().then(action)]);
+      return request;
+    } finally {
+      clearTimeout(timeout); routedPosts.off('post', listener);
+    }
+  };
   const complete = (request, extra = {}) => {
     const status = statuses.get(request.request_id);
     if (request.kind === 'edit') { const row = sessions.find(row => row.session_id === request.session_id); row.name = request.name; status.session = { ...row }; }

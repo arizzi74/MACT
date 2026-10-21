@@ -13,7 +13,7 @@ import (
 )
 
 // Verify restores into a private, credential-free HOME and CODEX_HOME, resumes
-// every selected native thread, then restarts app-server and resumes again.
+// the parent and reads every descendant, then repeats after app-server restart.
 // It never starts a model turn or runs a project command.
 func Verify(ctx context.Context, archivePath string, o VerifyOptions) (Manifest, error) {
 	m, err := Read(ctx, archivePath)
@@ -44,38 +44,67 @@ func Verify(ctx context.Context, archivePath string, o VerifyOptions) (Manifest,
 			cancel()
 			return Manifest{}, err
 		}
-		for _, id := range m.ThreadIDs {
-			params := map[string]any{"threadId": id, "cwd": project, "modelProvider": "archive_verify", "model": "archive-proof", "excludeTurns": true}
-			var response struct {
-				Thread struct {
-					ID  string `json:"id"`
-					CWD string `json:"cwd"`
-				} `json:"thread"`
-			}
-			if err = client.call("thread/resume", params, &response); err != nil {
-				client.close()
-				cancel()
-				return Manifest{}, fmt.Errorf("native resume pass %d: %w", pass+1, err)
-			}
-			if response.Thread.ID != id || response.Thread.CWD != project {
-				client.close()
-				cancel()
-				return Manifest{}, fmt.Errorf("native resume returned wrong thread or project")
-			}
-			// Force canonical paginated history to be projected and read. Legacy
-			// transcripts are exposed by the same native listing contract.
-			var history json.RawMessage
-			if err = client.call("thread/turns/list", map[string]any{"threadId": id, "limit": 1, "itemsView": "notLoaded"}, &history); err != nil {
-				client.close()
-				cancel()
-				return Manifest{}, fmt.Errorf("native history read: %w", err)
-			}
-		}
+		err = verifyRestoredThreads(client, m, project, pass+1)
 		client.close()
 		cancel()
+		if err != nil {
+			return Manifest{}, err
+		}
 	}
 	m.VerifiedSelfContained = true
 	return m, nil
+}
+
+func verifyRestoredThreads(client *verificationServer, m Manifest, project string, pass int) error {
+	check := func(id string, parent bool) error {
+		method, operation := "thread/read", "subagent read"
+		params := map[string]any{"threadId": id, "includeTurns": false}
+		if parent {
+			method, operation = "thread/resume", "resume"
+			params = map[string]any{"threadId": id, "cwd": project, "modelProvider": "archive_verify", "model": "archive-proof", "excludeTurns": true}
+		}
+		var response struct {
+			Thread struct {
+				ID  string `json:"id"`
+				CWD string `json:"cwd"`
+			} `json:"thread"`
+		}
+		if err := client.call(method, params, &response); err != nil {
+			return fmt.Errorf("native %s pass %d for thread %s: %w", operation, pass, id, err)
+		}
+		cwd := response.Thread.CWD
+		validCWD := cwd == project
+		if !parent {
+			// A subagent may work in a project subdirectory. Restore preserves
+			// that suffix; reads must not override it or accept an outside path.
+			validCWD = filepath.IsAbs(cwd) && filepath.Clean(cwd) == cwd && within(project, cwd)
+		}
+		if response.Thread.ID != id || !validCWD {
+			return fmt.Errorf("native %s returned wrong thread or project (pass %d, thread %s)", operation, pass, id)
+		}
+		// Metadata reads alone do not prove that native history is available.
+		// Force bounded paginated history to be projected for every thread;
+		// legacy transcripts use the same native listing contract.
+		var history json.RawMessage
+		if err := client.call("thread/turns/list", map[string]any{"threadId": id, "limit": 1, "itemsView": "notLoaded"}, &history); err != nil {
+			return fmt.Errorf("native history read pass %d for thread %s: %w", pass, id, err)
+		}
+		return nil
+	}
+	// Manifest validation already proves the complete native spawn tree. Its
+	// root is the resumable user session; unloaded multi-agent v2 descendants
+	// must be inspected without trying to resume them as standalone sessions.
+	if err := check(m.ThreadID, true); err != nil {
+		return err
+	}
+	for _, id := range m.ThreadIDs {
+		if id != m.ThreadID {
+			if err := check(id, false); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 type verificationServer struct {

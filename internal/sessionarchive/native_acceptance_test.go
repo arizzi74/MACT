@@ -58,6 +58,120 @@ func TestNativeSelfContainedResumeAcrossRestart(t *testing.T) {
 	}
 }
 
+func TestNativeSelfContainedV2SubagentTreeAcrossRestart(t *testing.T) {
+	if os.Getenv("CODEX_NATIVE_ARCHIVE_TEST") != "1" {
+		t.Skip("set CODEX_NATIVE_ARCHIVE_TEST=1 for isolated native v2 subagent archive proof")
+	}
+	for _, mode := range []string{"legacy", "paginated"} {
+		t.Run(mode, func(t *testing.T) {
+			o, root := fixture(t, mode)
+			ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
+			defer cancel()
+			writeProofConfig(t, o.CodexHome, "http://127.0.0.1:1")
+			child, grandchild := uuid.NewString(), uuid.NewString()
+			childOptions := o
+			childOptions.ProjectPath = filepath.Join(o.ProjectPath, "child")
+			grandchildOptions := o
+			grandchildOptions.ThreadID = child
+			grandchildOptions.ProjectPath = filepath.Join(childOptions.ProjectPath, "nested")
+			if err := os.MkdirAll(grandchildOptions.ProjectPath, 0700); err != nil {
+				t.Fatal(err)
+			}
+			writeSubagentFixture(t, childOptions, child, mode)
+			writeSubagentFixture(t, grandchildOptions, grandchild, mode)
+			client, err := startVerificationServer(ctx, os.Getenv("CODEX_REAL_BINARY"), o.CodexHome, o.ProjectPath, root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Materialize the exact official schema and metadata with native v1
+			// fixtures, then persist the v2 lifecycle marker before export.
+			for _, id := range []string{o.ThreadID, child, grandchild} {
+				if err := client.call("thread/resume", map[string]any{"threadId": id, "excludeTurns": true, "modelProvider": "archive_verify", "model": "archive-proof"}, nil); err != nil {
+					client.close()
+					t.Fatal(err)
+				}
+			}
+			client.close()
+			for _, id := range []string{child, grandchild} {
+				filename := filepath.Join(o.CodexHome, "sessions", "2026", "10", "18", "rollout-2026-10-18T12-00-00-"+id+".jsonl")
+				contents, err := os.ReadFile(filename)
+				if err != nil {
+					t.Fatal(err)
+				}
+				scanner := bufio.NewScanner(bytes.NewReader(contents))
+				var rewritten bytes.Buffer
+				for scanner.Scan() {
+					var record map[string]any
+					if err := json.Unmarshal(scanner.Bytes(), &record); err != nil {
+						t.Fatal(err)
+					}
+					if record["type"] == "session_meta" {
+						meta := record["payload"].(map[string]any)
+						meta["multi_agent_version"] = "v2"
+						meta["session_id"] = o.ThreadID
+					}
+					if err := json.NewEncoder(&rewritten).Encode(record); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := scanner.Err(); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filename, rewritten.Bytes(), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			db, err := openDB(filepath.Join(o.CodexHome, "state_5.sqlite"), false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, edge := range [][2]string{{o.ThreadID, child}, {child, grandchild}} {
+				if _, err := db.Exec("INSERT OR REPLACE INTO thread_spawn_edges(parent_thread_id,child_thread_id,status) VALUES(?,?,?)", edge[0], edge[1], "completed"); err != nil {
+					db.Close()
+					t.Fatal(err)
+				}
+			}
+			db.Close()
+			client, err = startVerificationServer(ctx, os.Getenv("CODEX_REAL_BINARY"), o.CodexHome, o.ProjectPath, root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := client.call("thread/resume", map[string]any{"threadId": o.ThreadID, "excludeTurns": true, "modelProvider": "archive_verify", "model": "archive-proof"}, nil); err != nil {
+				client.close()
+				t.Fatal(err)
+			}
+			if err := client.call("thread/resume", map[string]any{"threadId": child, "excludeTurns": true, "modelProvider": "archive_verify", "model": "archive-proof"}, nil); err == nil || !strings.Contains(err.Error(), "multi-agent v2 sub-agent") {
+				client.close()
+				t.Fatalf("v2 subagent fixture did not reject standalone resume through its native lifecycle rule: %v", err)
+			}
+			client.close()
+			m, err := Export(ctx, o)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(m.ThreadIDs) != 3 {
+				t.Fatalf("nested subagent missing: %#v", m.ThreadIDs)
+			}
+			if err := os.RemoveAll(o.CodexHome); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.RemoveAll(o.ProjectPath); err != nil {
+				t.Fatal(err)
+			}
+			verified, err := Verify(ctx, m.ArchivePath, VerifyOptions{CodexBinary: os.Getenv("CODEX_REAL_BINARY")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !verified.VerifiedSelfContained || len(verified.ThreadIDs) != 3 {
+				t.Fatal("v2 subagent tree was not verified across restart")
+			}
+			if _, err := os.Stat(m.ArchivePath); err != nil {
+				t.Fatal("verification removed archive")
+			}
+		})
+	}
+}
+
 func TestNativeContinuedTurnPreservesCompactionToolsAttachmentsAndDescendants(t *testing.T) {
 	if os.Getenv("CODEX_NATIVE_ARCHIVE_TEST") != "1" {
 		t.Skip("set CODEX_NATIVE_ARCHIVE_TEST=1 for isolated native continued-turn proof")
