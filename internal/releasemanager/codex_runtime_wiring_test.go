@@ -103,7 +103,7 @@ func newCodexWiringFixture(t *testing.T) *codexWiringFixture {
 		case prefix + "SHA256SUMS":
 			return coreResponse(request, []byte(coreHash(archive)+"  "+workerAsset+"\n"+coreHash(archive)+"  "+localAsset+"\n")), nil
 		case prefix + "SHA256SUMS.sigstore.json":
-			return coreResponse(request, []byte("fixture bundle")), nil
+			return coreResponse(request, repositoryBundle(t, DefaultRepo, f.projectTag)), nil
 		case prefix + workerAsset, prefix + localAsset:
 			f.assets++
 			return coreResponse(request, archive), nil

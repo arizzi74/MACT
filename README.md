@@ -24,11 +24,11 @@ It also accepts images up to 10 MiB and other file attachments up to 20 MiB.
 Other files are saved in the selected session's `inbound/` folder, with optional
 instructions sent to Codex. See [Web UI file uploads](docs/webui.md#uploading-files).
 
-[Explore the website](https://arizzi74.github.io/Codex-Telegram-Gateway/) ·
+[Explore the website](https://arizzi74.github.io/MACT/) ·
 [Installation guide](docs/installation.md) ·
-[Latest release](https://github.com/arizzi74/Codex-Telegram-Gateway/releases/latest)
+[Latest release](https://github.com/arizzi74/MACT/releases/latest)
 
-[![Desktop browser interface with a session list, conversation and live tool activity. Screenshot uses fictional demo data.](site/assets/screenshots/webui-desktop.png)](https://arizzi74.github.io/Codex-Telegram-Gateway/#screenshots)
+[![Desktop browser interface with a session list, conversation and live tool activity. Screenshot uses fictional demo data.](site/assets/screenshots/webui-desktop.png)](https://arizzi74.github.io/MACT/#screenshots)
 
 ## Architecture
 
@@ -85,7 +85,7 @@ is missing also needs the standard `tar` and `gzip` utilities.
 **Gateway (Linux with systemd):** run on the gateway machine:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/arizzi74/Codex-Telegram-Gateway/main/scripts/install.sh | sudo sh
+curl -fsSL https://raw.githubusercontent.com/arizzi74/MACT/main/scripts/install.sh | sudo sh
 ```
 
 Have a domain pointing to this machine, your Telegram bot username and token,
@@ -103,7 +103,7 @@ console and copy the one-use URL, then run on its machine as the account that
 owns your projects, without sudo:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/arizzi74/Codex-Telegram-Gateway/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/arizzi74/MACT/main/scripts/install.sh | sh
 ```
 
 Enter a worker display name and the enrollment URL, which is visible as you
@@ -134,7 +134,7 @@ Gateway URLs all live under `/tgw`: `/tgw/admin/` for the console,
 and `/tgw/healthz` and `/tgw/readyz` for health checks.
 
 Both commands enable daily automatic updates from
-[GitHub Releases](https://github.com/arizzi74/Codex-Telegram-Gateway/releases).
+[GitHub Releases](https://github.com/arizzi74/MACT/releases).
 The worker also checks for stable Codex runtime updates once per day (UTC).
 Supported standalone installations update when the worker has no active or
 queued work, then its app servers restart and their versions are verified.

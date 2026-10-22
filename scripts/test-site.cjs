@@ -8,7 +8,7 @@ const path = require('node:path');
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const site = path.resolve(__dirname, '../site');
 const repo = path.resolve(__dirname, '..');
-const prefix = '/Codex-Telegram-Gateway/';
+const prefix = '/MACT/';
 const screenshots = process.env.SITE_SCREENSHOTS || '/tmp/telegramgw-site-preview';
 const mime = { '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript', '.png': 'image/png', '.svg': 'image/svg+xml', '.json': 'application/json' };
 const server = http.createServer((request, response) => {
@@ -38,6 +38,8 @@ const server = http.createServer((request, response) => {
       await page.goto(origin + prefix);
       await page.locator('h1').waitFor();
       assert.equal(await page.title(), 'MACT — Multi Agent Control Tower');
+      assert.equal(await page.locator('meta[property="og:url"]').getAttribute('content'), 'https://arizzi74.github.io/MACT/');
+      assert.equal(await page.locator('meta[property="og:image"]').getAttribute('content'), 'https://arizzi74.github.io/MACT/assets/screenshots/webui-desktop.png');
       assert.match(await page.locator('h1').innerText(), /Multi Agent\s+Control Tower/);
       assert.match(await page.locator('.hero-description').textContent(), /^A control hub for coding agents across sessions and machines\./);
       assert.match(await page.locator('.hero-description').textContent(), /Codex as the currently supported runtime/);
@@ -60,7 +62,7 @@ const server = http.createServer((request, response) => {
     for (const link of links) {
       if (link.startsWith('#')) { if (link.length > 1) assert.equal(await page.locator('[id="' + link.slice(1) + '"]').count(), 1, 'Broken anchor ' + link); continue; }
       if (/^https:\/\//.test(link)) {
-        assert.ok(link.startsWith('https://github.com/arizzi74/Codex-Telegram-Gateway'), 'Unexpected outbound link: ' + link);
+        assert.ok(link.startsWith('https://github.com/arizzi74/MACT'), 'Unexpected outbound link: ' + link);
         const local = link.split('/blob/main/')[1] || link.split('/tree/main/')[1];
         if (local) assert.ok(fs.existsSync(path.join(repo, local.split('#')[0])), 'Broken repository documentation link: ' + link);
         continue;
@@ -75,8 +77,8 @@ const server = http.createServer((request, response) => {
       assert.equal(await page.evaluate(() => navigator.clipboard.readText()), expected.trim());
       assert.equal(await button.getAttribute('data-copied'), 'true');
     }
-    assert.match(await page.locator('#gateway-command').innerText(), /\| sudo sh$/);
-    assert.match(await page.locator('#worker-command').innerText(), /\| sh$/);
+    assert.equal(await page.locator('#gateway-command').innerText(), 'curl -fsSL https://raw.githubusercontent.com/arizzi74/MACT/main/scripts/install.sh | sudo sh');
+    assert.equal(await page.locator('#worker-command').innerText(), 'curl -fsSL https://raw.githubusercontent.com/arizzi74/MACT/main/scripts/install.sh | sh');
     await page.evaluate(() => Object.defineProperty(navigator.clipboard, 'writeText', { configurable: true, value: () => Promise.reject(new Error('Clipboard unavailable')) }));
     await page.getByRole('button', { name: 'Copy worker install command', exact: true }).click();
     assert.match(await page.locator('#copy-status').innerText(), /command is selected/);

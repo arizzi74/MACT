@@ -73,7 +73,7 @@ func TestWorkerSetupRecoveryVerifiesActiveWorkerWithoutRestartOrBinaryReplacemen
 		t.Fatalf("active recovery attempted service mutation: %v", args)
 		return CommandResult{}, nil
 	}
-	err := m.resumeEnrolledWorkerInstall(t.Context(), l, source, nil, &Release{Repo: DefaultRepo, Tag: "v0.5.1"})
+	err := m.resumeEnrolledWorkerInstall(t.Context(), l, source, nil, &Release{Repo: LegacyRepo, Tag: "v0.5.1"})
 	if err != nil || len(commands) != 3 || updateRead(t, l.Binary) != "existing active worker executable\n" || updateRead(t, l.Unit) != "existing service access and overrides\n" {
 		t.Fatal("active recovery restarted or changed the worker", err)
 	}
@@ -131,7 +131,7 @@ func TestWorkerSetupRecoveryRefusesDifferentConfigTokenOrJournal(t *testing.T) {
 				t.Fatal("unverified recovery ran a command")
 				return CommandResult{}, nil
 			}
-			err := m.resumeEnrolledWorkerInstall(t.Context(), l, source, nil, &Release{Repo: DefaultRepo, Tag: "v0.5.1"})
+			err := m.resumeEnrolledWorkerInstall(t.Context(), l, source, nil, &Release{Repo: LegacyRepo, Tag: "v0.5.1"})
 			afterConfig, _ := os.ReadFile(l.Config)
 			if err == nil || !bytes.Equal(beforeConfig, afterConfig) || strings.Contains(err.Error(), testWorkerEnrollmentToken) {
 				t.Fatal("unsafe recovery was accepted or mutated config", err)
@@ -153,7 +153,7 @@ func TestWorkerSetupRecoveryWithoutConfigRefusesManualWorkerStatusAndOrphanServi
 				t.Fatal("unverified manual worker recovery ran a command")
 				return CommandResult{}, nil
 			}
-			err := m.resumeEnrolledWorkerInstall(t.Context(), l, source, nil, &Release{Repo: DefaultRepo, Tag: "v0.5.1"})
+			err := m.resumeEnrolledWorkerInstall(t.Context(), l, source, nil, &Release{Repo: LegacyRepo, Tag: "v0.5.1"})
 			if err == nil || FileExists(l.Config) || FileExists(l.Binary) || !FileExists(workerSetupRecoveryPath(l)) {
 				t.Fatal("manual worker recovery mutated the installation", err)
 			}
@@ -213,7 +213,7 @@ func TestWorkerSetupRecoveryCompletesStoppedPartialInstallation(t *testing.T) {
 		t.Fatalf("unexpected partial recovery command: %v", args)
 		return CommandResult{}, nil
 	}
-	err := m.resumeEnrolledWorkerInstall(t.Context(), l, source, packages, &Release{Repo: DefaultRepo, Tag: "v0.5.1"})
+	err := m.resumeEnrolledWorkerInstall(t.Context(), l, source, packages, &Release{Repo: LegacyRepo, Tag: "v0.5.1"})
 	if err != nil || !reflect.DeepEqual(serviceActions, []string{"daemon-reload", "enable", "start"}) || !FileExists(l.Binary) || !FileExists(l.Unit) || updateRead(t, recovery.Config.StateFile) != "existing worker database" {
 		t.Fatal("stopped partial installation did not complete safely", err, serviceActions)
 	}
@@ -241,7 +241,7 @@ func TestWorkerSetupRecoveryRefusesDowngradingStoppedExistingWorker(t *testing.T
 		t.Fatalf("downgrade recovery attempted mutation: %v", args)
 		return CommandResult{}, nil
 	}
-	err := m.resumeEnrolledWorkerInstall(t.Context(), l, source, nil, &Release{Repo: DefaultRepo, Tag: "v0.5.1"})
+	err := m.resumeEnrolledWorkerInstall(t.Context(), l, source, nil, &Release{Repo: LegacyRepo, Tag: "v0.5.1"})
 	if err == nil || !strings.Contains(err.Error(), "without downgrading") || updateRead(t, l.Binary) != "newer existing binary" || updateRead(t, l.Unit) != "existing worker service" {
 		t.Fatal("recovery downgraded existing worker", err)
 	}

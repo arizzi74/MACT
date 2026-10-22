@@ -378,7 +378,7 @@ or password verification within the last five minutes.
 Run the worker installer as the project account, without sudo:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/arizzi74/Codex-Telegram-Gateway/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/arizzi74/MACT/main/scripts/install.sh | sh
 ```
 
 A fresh setup asks for a worker display name and the enrollment URL, with the

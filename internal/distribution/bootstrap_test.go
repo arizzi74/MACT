@@ -91,7 +91,7 @@ esac
 	return bootstrapFixture{root, bin, managerPath, manifestPath, script, []string{
 		"PATH=" + bin, "TMPDIR=" + root, "TEST_RECORD=" + filepath.Join(root, "record"), "TEST_REQUESTS=" + filepath.Join(root, "requests"),
 		"TEST_MANIFEST=" + manifestPath, "TEST_MANAGER=" + managerPath,
-		"TEST_RELEASE_URL=https://github.com/arizzi74/Codex-Telegram-Gateway/releases/tag/v1.2.3",
+		"TEST_RELEASE_URL=https://github.com/arizzi74/MACT/releases/tag/v1.2.3",
 	}}
 }
 
@@ -122,7 +122,7 @@ func TestBootstrapWorksWithoutPythonAndPreservesArguments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "https://github.com/arizzi74/Codex-Telegram-Gateway/releases/latest\nhttps://github.com/arizzi74/Codex-Telegram-Gateway/releases/download/v1.2.3/SHA256SUMS\nhttps://github.com/arizzi74/Codex-Telegram-Gateway/releases/download/v1.2.3/codex-telegramgw-linux-amd64\n"
+	want := "https://github.com/arizzi74/MACT/releases/latest\nhttps://github.com/arizzi74/MACT/releases/download/v1.2.3/SHA256SUMS\nhttps://github.com/arizzi74/MACT/releases/download/v1.2.3/codex-telegramgw-linux-amd64\n"
 	if string(requests) != want {
 		t.Fatalf("wrong release requests: %s", requests)
 	}
@@ -199,10 +199,11 @@ func TestBootstrapRejectsInvalidSelectionBeforeNetwork(t *testing.T) {
 
 func TestBootstrapRejectsUnexpectedLatestRedirect(t *testing.T) {
 	for _, url := range []string{
-		"https://github.com/arizzi74/Codex-Telegram-Gateway/releases/tag/v1.2.3-rc1",
-		"http://github.com/arizzi74/Codex-Telegram-Gateway/releases/tag/v1.2.3",
+		"https://github.com/arizzi74/MACT/releases/tag/v1.2.3-rc1",
+		"http://github.com/arizzi74/MACT/releases/tag/v1.2.3",
 		"https://github.com/attacker/repo/releases/tag/v1.2.3",
-		"https://github.com/arizzi74/Codex-Telegram-Gateway/releases/tag/extra/v1.2.3",
+		"https://github.com/arizzi74/MACT/releases/tag/extra/v1.2.3",
+		"https://github.com/arizzi74/Codex-Telegram-Gateway/releases/tag/v1.2.3",
 	} {
 		t.Run(url, func(t *testing.T) {
 			fixture := bootstrapTestFixture(t)
@@ -223,7 +224,7 @@ func TestBootstrapFollowsOnlyOfficialRenameForLatestAndPinnedReleases(t *testing
 			fixture := bootstrapTestFixture(t)
 			resolved := "https://github.com/arizzi74/MACT/releases/tag/v1.2.3"
 			fixture.environment[len(fixture.environment)-1] = "TEST_RELEASE_URL=" + resolved
-			arguments := []string{"install", "worker"}
+			arguments := []string{"install", "worker", "--repo", "arizzi74/Codex-Telegram-Gateway"}
 			if pinned {
 				fixture.environment = append(fixture.environment, "TEST_PINNED_RELEASE_URL="+resolved)
 				arguments = append(arguments, "--version", "v1.2.3")
@@ -239,6 +240,9 @@ func TestBootstrapFollowsOnlyOfficialRenameForLatestAndPinnedReleases(t *testing
 			requests := strings.Fields(string(data))
 			if len(requests) != 3 {
 				t.Fatalf("unexpected requests: %s", data)
+			}
+			if !strings.HasPrefix(requests[0], "https://github.com/arizzi74/Codex-Telegram-Gateway/releases/") {
+				t.Fatalf("legacy selection did not resolve through its original URL: %s", requests[0])
 			}
 			for _, request := range requests[1:] {
 				if !strings.HasPrefix(request, "https://github.com/arizzi74/MACT/releases/download/v1.2.3/") {
@@ -296,7 +300,7 @@ func TestBootstrapRejectsPrebridgeManagersOnlyAfterOfficialRename(t *testing.T) 
 	}
 	// Before the actual rename the old historical installer remains usable.
 	fixture := bootstrapTestFixture(t)
-	output, err := fixture.run("install", "worker", "--version", "v0.6.20")
+	output, err := fixture.run("install", "worker", "--repo", "arizzi74/Codex-Telegram-Gateway", "--version", "v0.6.20")
 	if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 17 {
 		t.Fatalf("unrenamed legacy repository rejected: %v %s", err, output)
 	}

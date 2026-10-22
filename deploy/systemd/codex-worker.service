@@ -1,6 +1,6 @@
 [Unit]
 Description=MACT Worker
-Documentation=https://github.com/arizzi74/Codex-Telegram-Gateway
+Documentation=https://github.com/arizzi74/MACT
 After=network-online.target
 Wants=network-online.target
 

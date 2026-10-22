@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-const DefaultRepo = "arizzi74/Codex-Telegram-Gateway"
+const DefaultRepo = RenamedRepo
 const GatewayDataRoot = "/var/lib/codex-gateway"
 
 type Layout struct {

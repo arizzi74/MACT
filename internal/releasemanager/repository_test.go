@@ -39,6 +39,12 @@ func repositoryBundle(t *testing.T, repo, tag string) []byte {
 	return []byte(`{"mediaType":"application/vnd.dev.sigstore.bundle.v0.3+json","verificationMaterial":{"certificate":{"rawBytes":"` + base64.StdEncoding.EncodeToString(encoded) + `"}},"dsseEnvelope":{"payloadType":"application/vnd.in-toto+json","payload":"e30=","signatures":[{"sig":"AA=="}]}}`)
 }
 
+func TestDefaultRepositoryUsesCanonicalMACTIdentity(t *testing.T) {
+	if DefaultRepo != RenamedRepo || LegacyRepo != "arizzi74/Codex-Telegram-Gateway" {
+		t.Fatal("default or historical repository identity changed", DefaultRepo, LegacyRepo)
+	}
+}
+
 func TestRepositoryRenameFetchKeepsCanonicalDownloadsAndHistoricalIdentity(t *testing.T) {
 	for _, tc := range []struct{ name, requested, canonical, source, pin string }{
 		{"before rename latest", LegacyRepo, LegacyRepo, LegacyRepo, ""},
@@ -179,6 +185,9 @@ func TestRepositoryRenameCommitsOnlyAfterSuccessfulReadiness(t *testing.T) {
 	for _, ready := range []bool{false, true} {
 		t.Run(fmt.Sprint(ready), func(t *testing.T) {
 			l, packages, release := updateFixture(t, "worker")
+			if err := SaveSettings(l, LegacyRepo, "v1.0.0"); err != nil {
+				t.Fatal(err)
+			}
 			release.Repo = RenamedRepo
 			started := false
 			m := &Manager{ReadyTimeout: 10 * time.Millisecond, PollInterval: time.Millisecond, Run: func(_ context.Context, args ...string) (CommandResult, error) {

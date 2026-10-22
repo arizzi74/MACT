@@ -191,6 +191,7 @@ func TestReleaseMetadataPinnedAndScoped(t *testing.T) {
 			}
 			metadata["assets"] = assets
 			encoded, _ := json.Marshal(metadata)
+			bundle := repositoryBundle(t, DefaultRepo, "v1.2.3")
 			m := New(nil)
 			m.verifyManifest = func(repo, tag string, manifest, bundle []byte) error {
 				if repo != DefaultRepo || tag != "v1.2.3" || len(manifest) == 0 || len(bundle) == 0 {
@@ -204,6 +205,9 @@ func TestReleaseMetadataPinnedAndScoped(t *testing.T) {
 				data := encoded
 				if r.URL.Hostname() == "github.com" {
 					data = []byte(coreHash(nil) + "  codex-worker-linux-amd64.tar.gz\n")
+				}
+				if strings.HasSuffix(r.URL.Path, "/SHA256SUMS.sigstore.json") {
+					data = bundle
 				}
 				return coreResponse(r, data), nil
 			})

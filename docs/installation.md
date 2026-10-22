@@ -1,7 +1,7 @@
 # Installation and automatic updates
 
 The MACT installer downloads prebuilt binaries from
-[GitHub Releases](https://github.com/arizzi74/Codex-Telegram-Gateway/releases).
+[GitHub Releases](https://github.com/arizzi74/MACT/releases).
 A Go toolchain, Python and a repository checkout are not required on the target machine.
 Gateway packages support Linux amd64/arm64. Worker and terminal-helper packages
 support Linux and macOS, on amd64/arm64.
@@ -12,6 +12,11 @@ directories and release asset filenames retain their previous names during the
 [MACT migration](mact-migration.md). If another program already owns the `mact`
 command path, setup leaves it in place and reports the collision; use
 `codex-telegramgw` for this installation instead.
+
+The official repository is now `arizzi74/MACT`. Existing installations that save
+the old repository name can update through the v0.6.21 compatibility manager.
+Official installation requires v0.6.21 or later; see the migration guide for
+recovering an installation that missed that prerequisite.
 
 ## Before installing
 
@@ -76,7 +81,7 @@ and recovery details.
 
 ```sh
 curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
-  https://raw.githubusercontent.com/arizzi74/Codex-Telegram-Gateway/main/scripts/install.sh \
+  https://raw.githubusercontent.com/arizzi74/MACT/main/scripts/install.sh \
   --output /tmp/codex-telegramgw-install.sh
 ```
 
@@ -90,7 +95,7 @@ cannot install symlinks or paths outside the staging directory.
 Run on the Linux gateway host:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/arizzi74/Codex-Telegram-Gateway/main/scripts/install.sh | sudo sh
+curl -fsSL https://raw.githubusercontent.com/arizzi74/MACT/main/scripts/install.sh | sudo sh
 ```
 
 Running with sudo selects gateway setup; running without sudo selects worker
@@ -239,7 +244,7 @@ the webhook or command menu.
 Run as the developer account that owns Codex and the workspaces:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/arizzi74/Codex-Telegram-Gateway/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/arizzi74/MACT/main/scripts/install.sh | sh
 ```
 
 No installer arguments are needed. The default is worker setup with daily
@@ -491,7 +496,7 @@ Use the bootstrap to run the new manager for this gateway update. Older managers
 continue checking the previous readiness URL even after installing a new binary:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/arizzi74/Codex-Telegram-Gateway/main/scripts/install.sh | sudo sh -s -- update gateway
+curl -fsSL https://raw.githubusercontent.com/arizzi74/MACT/main/scripts/install.sh | sudo sh -s -- update gateway
 ```
 
 Reload the matching proxy configuration, then run `gateway webhook set` using

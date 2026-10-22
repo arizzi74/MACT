@@ -6,8 +6,8 @@ import (
 	"errors"
 )
 
-// These identities stay fixed even after DefaultRepo changes in a later
-// release. Only this one repository rename is trusted.
+// These identities stay fixed independently of DefaultRepo. Only this one
+// repository rename is trusted; historical releases keep their original signer.
 const LegacyRepo = "arizzi74/Codex-Telegram-Gateway"
 const RenamedRepo = "arizzi74/MACT"
 const officialRepositoryID int64 = 1369450599

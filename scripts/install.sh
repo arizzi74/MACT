@@ -35,7 +35,7 @@ select_repo() {
   repository=$1
 }
 
-repository=arizzi74/Codex-Telegram-Gateway
+repository=arizzi74/MACT
 requested_repo=
 release_tag=
 expect=

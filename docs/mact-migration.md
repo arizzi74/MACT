@@ -7,8 +7,8 @@ will be separate changes; the name change does not add them.
 
 ## Compatibility release
 
-The first release introduces MACT in the browser, admin console, website,
-notifications and installer, and adds the `mact` management command. The existing
+Release v0.6.21 introduced MACT in the browser, admin console, website,
+notifications and installer, and added the `mact` management command. The existing
 `codex-telegramgw` command invokes the same manager and remains supported.
 
 The installer adds `/usr/local/bin/mact` for a gateway and `~/.local/bin/mact`
@@ -37,10 +37,16 @@ MACT identifies the application that manages it.
 
 ## Repository transition
 
-The planned repository move is from `arizzi74/Codex-Telegram-Gateway` to
-`arizzi74/MACT`. Install the compatibility release before moving the repository.
-The current installation links continue to use the existing repository until
-the move is complete.
+The repository has moved from `arizzi74/Codex-Telegram-Gateway` to
+[`arizzi74/MACT`](https://github.com/arizzi74/MACT). Release v0.6.22 uses MACT as
+the default release repository. Current installation commands, documentation and
+website links use the new repository and `https://arizzi74.github.io/MACT/`.
+The old repository name remains an explicitly supported update source through
+GitHub's redirect; custom repository selections remain independent.
+
+The move requires the v0.6.21 compatibility manager on every enabled gateway and
+worker before GitHub is renamed. An installation that missed that prerequisite
+must recover its manager using the bootstrap below before updating its service.
 
 Installed updaters save their release repository and verify both asset locations
 and Sigstore provenance. A repository redirect alone is insufficient: the
@@ -57,7 +63,7 @@ settings. Failed installation or verification must not change the repository
 selection. Release versions continue increasing, and historical releases are
 not rebuilt or replaced.
 
-After the move, installation from the official repository requires v0.6.21 or
+Installation from the official repository requires v0.6.21 or
 later. Earlier release archives remain available and their original provenance
 can still be verified, but their bundled updaters do not support the renamed
 repository. Both the current bootstrap and native installer reject those
@@ -65,8 +71,8 @@ pre-migration versions after the move rather than installing an updater that
 cannot receive future releases. Existing installations can upgrade directly to
 the compatibility release; downgrades remain unsupported.
 
-Before moving GitHub, check that every enabled installation has the compatible
-manager. A worker can keep serving its existing runtime while a verified manager
+Check that every enabled installation has a v0.6.21 or newer manager. A worker
+can keep serving its existing runtime while a verified manager
 is installed through the supported `adopt worker` path. Normal worker binary
 updates still wait for idle. Do not restart an active worker solely to change
 the product name.
@@ -87,25 +93,38 @@ sudo mact update gateway --check
 mact update worker --check
 ```
 
-After the repository move, verify a fresh installation, an upgrade through the
-old saved repository name, the v0.6.21 release with its historical signer, a
+To validate the completed transition, verify a fresh installation, an upgrade
+through the old saved repository name, the v0.6.21 release with its historical signer, a
 rejected pre-migration installation, and a rejected release with the wrong
 signer. Also verify gateway readiness, worker
 reconnection, passkey sign-in, installed mobile web apps and archived sessions.
 Use isolated fixtures for mutating session and authentication tests.
 
-GitHub Pages project URLs require a separate website deployment after the
-repository rename. Update site links, metadata and installation examples in the
-same release. Do not recreate a repository at the old name: it would replace
+GitHub Pages uses the new `/MACT/` project URL and a separate website deployment
+from gateway and worker releases. Site links, metadata and installation examples
+use the new URL. Do not recreate a repository at the old name: it would replace
 GitHub's repository redirects. See
 [GitHub's repository rename documentation](https://docs.github.com/en/repositories/creating-and-managing-repositories/renaming-a-repository).
 
 ## Recovery for an installation that missed the compatibility release
 
-After the move, download `scripts/install.sh` from the new repository and run it
-with an explicit `--repo arizzi74/MACT`. The installer supplies the compatible
-manager. Run gateway commands with sudo and worker commands as the worker's
-existing account. Preserve the existing configuration and enrollment.
+Download `scripts/install.sh` from the new repository and run it with an explicit
+`--repo arizzi74/MACT`. The bootstrap supplies a manager from v0.6.21 or later;
+it rejects earlier versions. Run gateway commands with sudo and worker commands
+as the worker's existing account. Preserve the existing configuration and
+enrollment.
+
+For a worker, install the verified manager without restarting its runtime:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/arizzi74/MACT/main/scripts/install.sh | sh -s -- adopt worker --repo arizzi74/MACT
+```
+
+For a gateway, use the corresponding supported adoption command:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/arizzi74/MACT/main/scripts/install.sh | sudo sh -s -- adopt gateway --repo arizzi74/MACT
+```
 
 For an active worker, install the verified manager with `adopt worker` first;
 apply the worker update when its work is idle. The normal updater's busy check

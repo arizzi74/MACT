@@ -1,7 +1,7 @@
 # Project website
 
 The public site is hosted at
-[MACT (Multi Agent Control Tower)](https://arizzi74.github.io/Codex-Telegram-Gateway/).
+[MACT (Multi Agent Control Tower)](https://arizzi74.github.io/MACT/).
 This directory contains the static website and Playwright screenshots of the
 actual Web UI using fictional demo data. It does not connect to a gateway.
 

@@ -96,6 +96,9 @@ func TestWorkerEnrollmentHTTPCreateLandingRedeemAndPrivacy(t *testing.T) {
 		if w.Code != http.StatusOK || strings.Contains(w.Body.String(), u.Fragment) || !strings.Contains(w.Body.String(), "MACT Worker installer") || strings.Contains(w.Body.String(), "<script") || w.Header().Get("Cache-Control") != "no-store" || w.Header().Get("Referrer-Policy") != "no-referrer" {
 			t.Fatalf("landing page exposed the code or lacked safe instructions: status=%d path=%s", w.Code, u.Path)
 		}
+		if !strings.Contains(w.Body.String(), "https://raw.githubusercontent.com/arizzi74/MACT/main/scripts/install.sh | sh") {
+			t.Fatal("enrollment landing page does not use the canonical installer")
+		}
 	}
 	var consumed *string
 	if err = db.QueryRow(`SELECT consumed_at FROM worker_enrollments WHERE enrollment_id=?`, e.EnrollmentID).Scan(&consumed); err != nil || consumed != nil {
