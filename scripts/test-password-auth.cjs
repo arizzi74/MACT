@@ -95,6 +95,7 @@ const assets = path.resolve(__dirname, '../internal/admin/static');
     }
     optionsMode = 'valid';
     await page.goto(origin + '/tgw/webui/'); await page.waitForSelector('#auth:not([hidden])');
+    assert.equal(await page.locator('#auth-title').textContent(), 'Sign in to MACT');
     assert.equal(await page.locator('#auth-password').isHidden(), true);
     state.enabled = true; state.username = 'admin'; state.password = '  correct secret  ';
     await page.reload(); await page.waitForSelector('#auth-password:not([hidden])');

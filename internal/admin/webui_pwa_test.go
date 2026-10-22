@@ -28,6 +28,8 @@ func TestWebUINotificationAssetsAreScopedAndUncached(t *testing.T) {
 	w := request("/tgw/webui/manifest.webmanifest", "application/manifest+json")
 	var manifest struct {
 		ID, Scope, Display string
+		Name, Description  string
+		ShortName          string `json:"short_name"`
 		StartURL           string `json:"start_url"`
 		Icons              []struct{ Src string }
 	}
@@ -36,6 +38,9 @@ func TestWebUINotificationAssetsAreScopedAndUncached(t *testing.T) {
 	}
 	if manifest.ID != "/tgw/webui/" || manifest.Scope != manifest.ID || manifest.StartURL != manifest.ID || manifest.Display != "standalone" {
 		t.Fatalf("unexpected install scope: %+v", manifest)
+	}
+	if manifest.Name != "MACT · Multi Agent Control Tower" || manifest.ShortName != "MACT" || manifest.Description != "A control hub for coding agents across sessions and machines." {
+		t.Fatalf("unexpected install branding: %+v", manifest)
 	}
 	if len(manifest.Icons) == 0 {
 		t.Fatal("install manifest has no icons")

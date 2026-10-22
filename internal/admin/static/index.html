@@ -3,20 +3,20 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Gateway admin</title>
+  <title>MACT Gateway · Operations console</title>
   <link rel="stylesheet" href="/tgw/admin/static/app.css">
   <link rel="stylesheet" href="/tgw/admin/static/session-auth.css">
 </head>
 <body>
 <main>
   <header>
-    <div><p class="eyebrow">CODEX GATEWAY</p><h1>Operations console</h1></div>
-    <nav aria-label="Gateway"><a href="/tgw/webui/">Open Codex</a> <button id="logout" hidden>Sign out</button></nav>
+    <div><p class="eyebrow">MACT GATEWAY</p><h1>Operations console</h1></div>
+    <nav aria-label="MACT Gateway"><a href="/tgw/webui/">Open MACT</a> <button id="logout" hidden>Sign out</button></nav>
   </header>
   <div id="auth-warning"></div>
   <section id="auth" class="card">
     <h2 id="auth-title">Passkey access</h2>
-    <p id="auth-description">Use a personal passkey to administer this gateway.</p>
+    <p id="auth-description">Use a personal passkey to administer MACT Gateway.</p>
     <button id="login">Continue with passkey</button>
     <button id="password-login" class="secondary" hidden>Use password</button>
     <details>
@@ -178,8 +178,8 @@
   <form id="bot-create-form">
     <p id="bot-create-description">Enable Bot Management Mode for your manager bot in @BotFather. Choose a display name, then confirm in Telegram.</p>
     <div class="bot-profile-default">
-      <img src="/tgw/admin/static/webui-icon.svg" width="48" height="48" alt="Codex Gateway profile icon">
-      <p class="muted">New bots use the Gateway icon as their profile photo.</p>
+      <img src="/tgw/admin/static/webui-icon.svg" width="48" height="48" alt="MACT profile icon">
+      <p class="muted">New bots use the MACT icon as their profile photo.</p>
     </div>
     <label for="bot-manager">Manager bot<select id="bot-manager" required></select></label>
     <p id="bot-manager-help" class="muted">Enable Bot Management Mode for your selected manager in @BotFather.</p>

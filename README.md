@@ -1,10 +1,17 @@
-# Codex Telegram control plane
+# MACT — Multi Agent Control Tower
 
-A Go gateway and Linux/macOS worker with embedded SQLite storage for controlling local
-Codex sessions through allowlisted Telegram bots or a responsive browser interface.
+A control hub for coding agents across sessions and machines. MACT currently
+supports Codex, with access through a responsive browser interface and allowlisted
+Telegram bots. Its Go gateway and Linux/macOS workers use embedded SQLite storage.
 The gateway includes an admin console with passkeys and optional username/password
 sign-in. Workers supervise
 private Codex app-server processes and support local terminal attachment.
+
+MACT was previously named Codex Telegram Gateway. The migration keeps existing
+installations, sessions and commands working. The management command is now
+`mact`; `codex-telegramgw` remains supported. See the
+[name migration guide](docs/mact-migration.md) for repository transition details
+and compatibility guarantees.
 
 The admin console can connect additional Telegram bots by token or create them
 through Telegram's Managed Bots flow. Bots share the gateway owner's access and
@@ -120,7 +127,7 @@ Prompts work through the pipe; bot-token input is hidden and enrollment URLs are
 visible. Rerunning the installer preserves existing configurations and running
 sessions; prepared private JSON
 configurations are also supported. Gateway completion can be resumed with
-`sudo codex-telegramgw finish gateway`.
+`sudo mact finish gateway`.
 
 Gateway URLs all live under `/tgw`: `/tgw/admin/` for the console,
 `/tgw/webui/` for the browser Codex interface, `/tgw/api/v1/` for APIs,
@@ -292,7 +299,7 @@ Open **Admin → Audio support in Telegram** to enable transcription, download a
 model, and select CPU threads. The page shows available CPUs and RAM, recommends
 the multilingual **base** model and one fewer thread than available cores
 (minimum one), and preserves existing installations' selections. The CLI
-alternative remains `sudo codex-telegramgw setup voice`.
+alternative remains `sudo mact setup voice`.
 
 Optional spoken replies offer **Piper / Miro** for fast Italian speech or
 **Qwen3-TTS 1.7B quantized** for multilingual speech with a larger CPU and RAM

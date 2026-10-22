@@ -18,6 +18,12 @@ const sessions = [
   { session_id: 'demo-docs', codex_thread_id: 'thread-docs', worker_id: 'mac', worker_name: 'MacBook Pro', runtime_name: 'Development', name: 'Update documentation', cwd: '/projects/docs', state: 'running' },
   { session_id: 'demo-library', codex_thread_id: 'thread-library', worker_id: 'mac', worker_name: 'MacBook Pro', runtime_name: 'Development', name: 'Refactor component library', cwd: '/projects/components', state: 'idle' },
 ];
+const workers = [
+  { ID: 'linux', Name: 'Studio Linux', Enabled: true, Connectivity: 'connected', SupportsWebUISessionCreation: true },
+  { ID: 'mac', Name: 'MacBook Pro', Enabled: true, Connectivity: 'connected', SupportsWebUISessionCreation: true },
+];
+const runtimes = workers.map(worker => ({ runtime_id: worker.ID + '-development', worker_id: worker.ID, name: 'Development', generation: 1, state: 'running' }));
+for (const session of sessions) session.runtime_id = session.worker_id + '-development';
 const turns = [
   { id: 'turn-accessibility', status: 'inProgress', startedAt: now - 35, items: [
     { id: 'user-followup', type: 'userMessage', content: [{ type: 'text', text: 'Now check keyboard navigation and the mobile layout.' }] },
@@ -41,7 +47,8 @@ async function prepare(page, pendingQuestions = true) {
     if (url.origin !== 'https://webui.example.test') return route.abort('blockedbyclient');
     const json = data => route.fulfill({ contentType: 'application/json', body: JSON.stringify(data) });
     if (url.pathname === '/tgw/api/v1/admin/session') return json({ authenticated: true, session_id: 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa', owner_id: 'screenshot-owner', server_time: new Date().toISOString(), expires_at: new Date(Date.now() + 8 * 3600000).toISOString(), reauthenticated_at: new Date().toISOString() });
-    if (url.pathname === '/tgw/api/v1/webui/sessions') return json({ sessions });
+    if (url.pathname === '/tgw/api/v1/webui/sessions') return json({ sessions, workers, runtimes });
+    if (url.pathname === '/tgw/api/v1/webui/telegram-bots') return json({ revision: 'demo-bots', bots: [] });
     if (url.pathname === '/tgw/api/v1/webui/push/config') return json({ supported: true, public_key: 'fictional-demo-public-key', subscribed: false, scope: 'all' });
     let name = url.pathname.endsWith('/diagram-renderer') ? 'webui-mermaid-frame.html' : url.pathname === '/tgw/webui/' ? 'webui.html' : url.pathname.endsWith('/manifest.webmanifest') ? 'webui-manifest.webmanifest' : path.basename(url.pathname);
     if (!/^(webui[\w.-]*|session-auth)\.(html|js|css|svg|png|webmanifest)$/.test(name) || !fs.existsSync(path.join(assets, name))) return route.fulfill({ status: 404, body: 'Not part of the demo fixture' });
@@ -60,8 +67,8 @@ async function prepare(page, pendingQuestions = true) {
       static OPEN = 1;
       constructor(url) {
         this.readyState = 0; this.url = url; this.activity = new URL(url).pathname.endsWith('/activity');
-        if (this.activity) window.demoShowQuestion = () => { const session = { ...rows.find(row => row.session_id === 'demo-checkout'), pending_questions: 1, pending_revision: 'demo-question' }; this.emit({ type: 'activity_event', version: 2, sequence: 1, revision: 2, event: 'question_requested', session_id: session.session_id, session }); };
-        setTimeout(() => { this.readyState = 1; this.onopen?.({}); this.emit(this.activity ? { type: 'activity_snapshot', version: 2, sequence: 0, revision: 1, sessions: rows } : { type: 'ready' }); }, 10);
+        if (this.activity) window.demoShowQuestion = () => { const session = { ...rows.find(row => row.session_id === 'demo-checkout'), pending_questions: 1, pending_revision: 'demo-question' }; this.emit({ type: 'activity_event', version: 3, sequence: 1, revision: 2, event: 'question_requested', session_id: session.session_id, session }); };
+        setTimeout(() => { this.readyState = 1; this.onopen?.({}); this.emit(this.activity ? { type: 'activity_snapshot', version: 3, sequence: 0, revision: 1, sessions: rows, telegram_bots: [], telegram_bots_revision: 'demo-bots' } : { type: 'ready' }); }, 10);
       }
       emit(value) { this.onmessage?.({ data: JSON.stringify(value) }); }
       close(code = 1000) { this.readyState = 3; this.onclose?.({ code }); }
@@ -80,6 +87,8 @@ async function prepare(page, pendingQuestions = true) {
     window.WebSocket = FixtureSocket;
   }, { sessions, turns, now, pendingQuestions });
   await page.goto('https://webui.example.test/tgw/webui/');
+  assert.equal(await page.title(), 'MACT · Multi Agent Control Tower');
+  assert.equal(await page.locator('.sidebar-heading .brand strong').textContent(), 'MACT');
   await page.locator('.session-button[data-session-id="demo-storefront"]').waitFor({ state: 'attached' });
   // Select through the actual interface, including its mobile drawer.
   if (page.viewportSize().width <= 650) await page.locator('#show-sessions').click();

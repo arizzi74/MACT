@@ -167,6 +167,9 @@ func (m *Manager) requestedWorkerReleaseStep(ctx context.Context, l *Layout, pla
 			return protocol.WorkerUpdateResult{}, err
 		}
 	}
+	if err := validateRepositoryBridgeInstall(plan.release); err != nil {
+		return protocol.WorkerUpdateResult{}, err
+	}
 	data, err := m.command(ctx, l.Binary, "version")
 	if err != nil {
 		return protocol.WorkerUpdateResult{}, err
@@ -181,11 +184,15 @@ func (m *Manager) requestedWorkerReleaseStep(ctx context.Context, l *Layout, pla
 			if err := m.WorkerReady(ctx, l, m.updateNow().Add(-15*time.Second), installed); err != nil {
 				return protocol.WorkerUpdateResult{}, err
 			}
-			repo, _ := settings["repo"].(string)
-			if err := SaveSettings(l, repo, installed); err != nil {
+			if err := SaveSettings(l, plan.release.Repo, installed); err != nil {
 				return protocol.WorkerUpdateResult{}, err
 			}
 			m.pruneUpdateBackups(l, installed)
+		}
+		if comparison == 0 && settings["repo"] != plan.release.Repo {
+			if err := SaveSettings(l, plan.release.Repo, installed); err != nil {
+				return protocol.WorkerUpdateResult{}, err
+			}
 		}
 		return protocol.WorkerUpdateResult{State: "up_to_date", Version: installed}, nil
 	}

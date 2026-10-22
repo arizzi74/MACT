@@ -37,6 +37,13 @@ const server = http.createServer((request, response) => {
       await page.setViewportSize({ width, height: width <= 390 ? 844 : 1000 });
       await page.goto(origin + prefix);
       await page.locator('h1').waitFor();
+      assert.equal(await page.title(), 'MACT — Multi Agent Control Tower');
+      assert.match(await page.locator('h1').innerText(), /Multi Agent\s+Control Tower/);
+      assert.match(await page.locator('.hero-description').textContent(), /^A control hub for coding agents across sessions and machines\./);
+      assert.match(await page.locator('.hero-description').textContent(), /Codex as the currently supported runtime/);
+      assert.equal(await page.getByRole('link', { name: 'MACT · Multi Agent Control Tower home', exact: true }).count(), 1);
+      assert.equal(await page.locator('.gateway-node > strong').textContent(), 'MACT Gateway');
+      assert.equal(await page.locator('.worker-node > strong').textContent(), 'MACT Worker');
       await page.evaluate(async () => { for (const image of document.images) image.loading = 'eager'; await Promise.all([...document.images].map(image => image.decode())); });
       const layout = await page.evaluate(() => ({ width: innerWidth, pageWidth: document.documentElement.scrollWidth, bodyWidth: document.body.scrollWidth, images: [...document.images].map(image => ({ alt: image.alt, loaded: image.naturalWidth > 0, width: image.clientWidth, height: image.clientHeight, ratio: image.naturalWidth / image.naturalHeight })) }));
       assert.ok(layout.pageWidth <= width + 1 && layout.bodyWidth <= width + 1, `Horizontal overflow at ${width}: ${JSON.stringify(layout)}`);

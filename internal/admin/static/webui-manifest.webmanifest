@@ -1,8 +1,8 @@
 {
   "id": "/tgw/webui/",
-  "name": "Codex Gateway",
-  "short_name": "Codex",
-  "description": "Your Codex sessions and turn notifications.",
+  "name": "MACT · Multi Agent Control Tower",
+  "short_name": "MACT",
+  "description": "A control hub for coding agents across sessions and machines.",
   "start_url": "/tgw/webui/",
   "scope": "/tgw/webui/",
   "display": "standalone",

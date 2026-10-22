@@ -33,8 +33,8 @@ async function workerChecks() {
   await run('push', { data: { json: () => payload } });
   await run('push', { data: { json: () => payload } });
   assert.equal(notifications.length, 2, 'Every delivered push displays an OS notification, including while a page is open');
-  assert.equal(notifications[0].title, 'Turn finished');
-  assert.equal(notifications[0].options.body, 'A Codex turn has finished.');
+  assert.equal(notifications[0].title, 'MACT · Turn finished');
+  assert.equal(notifications[0].options.body, 'A turn has finished in MACT.');
   assert.equal(notifications[0].options.data.url, payload.url);
   assert.equal(notifications[0].options.tag, subscriptionID);
   await run('push', { data: { json: () => { throw Error('Invalid push'); } } });

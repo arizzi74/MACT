@@ -66,6 +66,7 @@ func newLayout(component, system, architecture, home string) (*Layout, error) {
 		l.Backups = filepath.Join(home, ".local/state/codex-worker/updates")
 		l.UnitDir = filepath.Join(home, ".config/systemd/user")
 	}
+	l.AliasCommand = filepath.Join(filepath.Dir(l.Command), "mact")
 	l.Binary = filepath.Join(l.Bin, "codex-"+component)
 	l.Unit = filepath.Join(l.UnitDir, "codex-"+component+".service")
 	return l, nil
@@ -143,39 +144,62 @@ func (m *Manager) Service(ctx context.Context, l *Layout, action string) error {
 	return errors.New("unsupported launchd operation")
 }
 
-// InstallManager accepts only our existing command links, including the legacy
-// Python manager link. Replacing the link atomically keeps updates executable.
-func (m *Manager) InstallManager(l *Layout, source string) error {
-	info, err := os.Lstat(l.Command)
+var errManagerCommandOccupied = errors.New("manager command path is already occupied")
+
+// managerCommandAvailable recognizes only links owned by this installation.
+// An unrelated command, including a dangling symlink, must never be replaced.
+func managerCommandAvailable(l *Layout, command string) (bool, error) {
+	info, err := os.Lstat(command)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
+		return false, err
 	}
-	if err == nil && l.Command != l.Manager {
+	if err == nil && command != l.Manager {
 		if info.Mode()&os.ModeSymlink == 0 {
-			return errors.New("manager command path is already occupied")
+			return false, nil
 		}
-		target, err := os.Readlink(l.Command)
+		target, err := os.Readlink(command)
 		if err != nil {
-			return err
+			return false, err
 		}
 		if !filepath.IsAbs(target) {
-			target = filepath.Join(filepath.Dir(l.Command), target)
+			target = filepath.Join(filepath.Dir(command), target)
 		}
 		target = filepath.Clean(target)
-		if target != filepath.Clean(l.Manager) && (l.LegacyManager == "" || target != filepath.Clean(l.LegacyManager)) {
-			return errors.New("manager command path is already occupied")
+		for _, known := range []string{l.Manager, l.LegacyManager} {
+			if known != "" && target == filepath.Clean(known) {
+				return true, nil
+			}
 		}
+		return command != l.Command && target == filepath.Clean(l.Command), nil
 	}
-	if err := AtomicCopy(source, l.Manager, 0755); err != nil {
-		return err
-	}
-	if l.Command == l.Manager {
+	return true, nil
+}
+
+func installManagerLink(l *Layout, command string) error {
+	if command == l.Manager {
 		return nil
 	}
-	if err := os.MkdirAll(filepath.Dir(l.Command), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(command), 0755); err != nil {
 		return err
 	}
-	temporary, err := os.CreateTemp(filepath.Dir(l.Command), ".codex-telegramgw-link-")
+	// Symlink creates a new directory entry atomically and refuses a command
+	// that appeared after the preflight check.
+	if err := os.Symlink(l.Manager, command); err == nil {
+		return SyncDir(filepath.Dir(command))
+	} else if !errors.Is(err, os.ErrExist) {
+		return err
+	}
+	available, err := managerCommandAvailable(l, command)
+	if err != nil {
+		return err
+	}
+	if !available {
+		return errManagerCommandOccupied
+	}
+	if target, err := os.Readlink(command); err == nil && target == l.Manager {
+		return nil
+	}
+	temporary, err := os.CreateTemp(filepath.Dir(command), ".codex-telegramgw-link-")
 	if err != nil {
 		return err
 	}
@@ -190,10 +214,48 @@ func (m *Manager) InstallManager(l *Layout, source string) error {
 	if err := os.Symlink(l.Manager, name); err != nil {
 		return err
 	}
-	if err := os.Rename(name, l.Command); err != nil {
+	if err := os.Rename(name, command); err != nil {
 		return err
 	}
-	return SyncDir(filepath.Dir(l.Command))
+	return SyncDir(filepath.Dir(command))
+}
+
+// InstallManager keeps the original command and adds the MACT name, both linked
+// to the same native manager. An occupied optional alias does not block updates.
+func (m *Manager) InstallManager(l *Layout, source string) error {
+	available, err := managerCommandAvailable(l, l.Command)
+	if err != nil {
+		return err
+	}
+	if !available {
+		return errManagerCommandOccupied
+	}
+	if err := AtomicCopy(source, l.Manager, 0755); err != nil {
+		return err
+	}
+	if err := installManagerLink(l, l.Command); err != nil {
+		return err
+	}
+	return m.installManagerAlias(l)
+}
+
+func (m *Manager) installManagerAlias(l *Layout) error {
+	if l.AliasCommand == "" || l.AliasCommand == l.Command || l.AliasCommand == l.Manager {
+		return nil
+	}
+	if err := installManagerLink(l, l.AliasCommand); err != nil {
+		if !errors.Is(err, errManagerCommandOccupied) {
+			return err
+		}
+		m.warnManagerAliasOccupied(l)
+	}
+	return nil
+}
+
+func (m *Manager) warnManagerAliasOccupied(l *Layout) {
+	if m.Out != nil {
+		fmt.Fprintf(m.Out, "Warning: management alias %s is already occupied; kept the existing command. Use %s for MACT administration.\n", l.AliasCommand, l.Command)
+	}
 }
 
 func gatewayOwnership() (*Ownership, error) {
@@ -569,6 +631,9 @@ func (m *Manager) installService(ctx context.Context, l *Layout, pkg string) err
 }
 
 func (m *Manager) FreshInstall(ctx context.Context, l *Layout, source, environment string, packages map[string]string, release *Release) (result error) {
+	if err := validateRepositoryBridgeInstall(release); err != nil {
+		return err
+	}
 	servicePath := l.Unit
 	if l.System == "darwin" {
 		servicePath = workerPlist(l)
@@ -642,8 +707,8 @@ func (m *Manager) AutoUpdate(ctx context.Context, l *Layout, enabled bool) error
 	if l.System == "linux" {
 		prefix := systemctlPrefix(l)
 		if enabled {
-			service := "[Unit]\nDescription=Update Codex Telegram " + l.Component + " from GitHub Releases\nWants=network-online.target\nAfter=network-online.target\n\n[Service]\nType=oneshot\nExecStart=" + l.Command + " update " + l.Component + "\nSuccessExitStatus=75\nUMask=0077\nTimeoutStartSec=15min\n"
-			timer := "[Unit]\nDescription=Check daily for Codex Telegram " + l.Component + " releases\n\n[Timer]\nOnCalendar=daily\nRandomizedDelaySec=30min\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n"
+			service := "[Unit]\nDescription=Update MACT " + l.Component + " from GitHub Releases\nWants=network-online.target\nAfter=network-online.target\n\n[Service]\nType=oneshot\nExecStart=" + l.Command + " update " + l.Component + "\nSuccessExitStatus=75\nUMask=0077\nTimeoutStartSec=15min\n"
+			timer := "[Unit]\nDescription=Check daily for MACT " + l.Component + " releases\n\n[Timer]\nOnCalendar=daily\nRandomizedDelaySec=30min\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n"
 			if err := AtomicWrite(filepath.Join(l.UnitDir, label+".service"), []byte(service), 0644, nil); err != nil {
 				return err
 			}

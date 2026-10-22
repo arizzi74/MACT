@@ -74,6 +74,7 @@ done
 printf '%s\n' "$url" >> "$TEST_REQUESTS"
 case "$url" in
   */releases/latest) printf '%s' "$TEST_RELEASE_URL" ;;
+  */releases/tag/*) printf '%s' "${TEST_PINNED_RELEASE_URL:-$url}" ;;
   */SHA256SUMS) /bin/cp "$TEST_MANIFEST" "$output" ;;
   */codex-telegramgw-*) /bin/cp "$TEST_MANAGER" "$output" ;;
   *) exit 97 ;;
@@ -170,7 +171,7 @@ func TestBootstrapPinnedVersionAndRepository(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, request := range strings.Fields(string(requests)) {
-				if !strings.HasPrefix(request, "https://github.com/owner/repository/releases/download/v2.3.4/") {
+				if request != "https://github.com/owner/repository/releases/tag/v2.3.4" && !strings.HasPrefix(request, "https://github.com/owner/repository/releases/download/v2.3.4/") {
 					t.Fatalf("wrong repository or version: %s", request)
 				}
 			}
@@ -213,6 +214,101 @@ func TestBootstrapRejectsUnexpectedLatestRedirect(t *testing.T) {
 				t.Fatal("executed manager after unexpected redirect")
 			}
 		})
+	}
+}
+
+func TestBootstrapFollowsOnlyOfficialRenameForLatestAndPinnedReleases(t *testing.T) {
+	for _, pinned := range []bool{false, true} {
+		t.Run(fmt.Sprint(pinned), func(t *testing.T) {
+			fixture := bootstrapTestFixture(t)
+			resolved := "https://github.com/arizzi74/MACT/releases/tag/v1.2.3"
+			fixture.environment[len(fixture.environment)-1] = "TEST_RELEASE_URL=" + resolved
+			arguments := []string{"install", "worker"}
+			if pinned {
+				fixture.environment = append(fixture.environment, "TEST_PINNED_RELEASE_URL="+resolved)
+				arguments = append(arguments, "--version", "v1.2.3")
+			}
+			output, err := fixture.run(arguments...)
+			if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 17 {
+				t.Fatalf("renamed repository bootstrap failed: %v %s", err, output)
+			}
+			data, err := os.ReadFile(filepath.Join(fixture.root, "requests"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			requests := strings.Fields(string(data))
+			if len(requests) != 3 {
+				t.Fatalf("unexpected requests: %s", data)
+			}
+			for _, request := range requests[1:] {
+				if !strings.HasPrefix(request, "https://github.com/arizzi74/MACT/releases/download/v1.2.3/") {
+					t.Fatalf("asset did not use canonical renamed repository: %s", request)
+				}
+			}
+		})
+	}
+}
+
+func TestBootstrapRenameDoesNotChangeForkSelectionOrPinnedTag(t *testing.T) {
+	for _, tc := range []struct{ name, repo, resolved string }{
+		{"fork remains independent", "owner/fork", "https://github.com/arizzi74/MACT/releases/tag/v1.2.3"},
+		{"rename cannot change pinned tag", "arizzi74/Codex-Telegram-Gateway", "https://github.com/arizzi74/MACT/releases/tag/v2.0.0"},
+		{"rename cannot change owner", "arizzi74/Codex-Telegram-Gateway", "https://github.com/attacker/MACT/releases/tag/v1.2.3"},
+		{"rename cannot add URL suffix", "arizzi74/Codex-Telegram-Gateway", "https://github.com/arizzi74/MACT/releases/tag/v1.2.3?other"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := bootstrapTestFixture(t)
+			fixture.environment = append(fixture.environment, "TEST_PINNED_RELEASE_URL="+tc.resolved)
+			if output, err := fixture.run("install", "worker", "--repo", tc.repo, "--version", "v1.2.3"); err == nil {
+				t.Fatalf("accepted unexpected canonical repository or tag: %s", output)
+			}
+			if _, err := os.Stat(filepath.Join(fixture.root, "record")); !os.IsNotExist(err) {
+				t.Fatal("executed manager after invalid release resolution")
+			}
+		})
+	}
+}
+
+func TestBootstrapRejectsPrebridgeManagersOnlyAfterOfficialRename(t *testing.T) {
+	for _, tag := range []string{"v0.0.0", "v0.5.99", "v0.6.0", "v0.6.9", "v0.6.19", "v0.6.20", "v0.6.21", "v0.6.100", "v0.7.0", "v1.0.0"} {
+		t.Run(tag, func(t *testing.T) {
+			fixture := bootstrapTestFixture(t)
+			fixture.environment = append(fixture.environment, "TEST_PINNED_RELEASE_URL=https://github.com/arizzi74/MACT/releases/tag/"+tag)
+			output, err := fixture.run("install", "worker", "--version", tag)
+			allowed := tag == "v0.6.21" || tag == "v0.6.100" || tag == "v0.7.0" || tag == "v1.0.0"
+			if allowed {
+				if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 17 {
+					t.Fatalf("compatible manager rejected: %v %s", err, output)
+				}
+			} else {
+				if err == nil || !strings.Contains(string(output), "install v0.6.21 or newer") {
+					t.Fatalf("missing prebridge explanation: %v %s", err, output)
+				}
+				if _, err := os.Stat(filepath.Join(fixture.root, "record")); !os.IsNotExist(err) {
+					t.Fatal("executed prebridge manager after repository rename")
+				}
+				data, err := os.ReadFile(filepath.Join(fixture.root, "requests"))
+				if err != nil || len(strings.Fields(string(data))) != 1 {
+					t.Fatalf("downloaded manager before prebridge rejection: %s %v", data, err)
+				}
+			}
+		})
+	}
+	// Before the actual rename the old historical installer remains usable.
+	fixture := bootstrapTestFixture(t)
+	output, err := fixture.run("install", "worker", "--version", "v0.6.20")
+	if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 17 {
+		t.Fatalf("unrenamed legacy repository rejected: %v %s", err, output)
+	}
+	fixture = bootstrapTestFixture(t)
+	output, err = fixture.run("install", "worker", "--repo", "arizzi74/MACT", "--version", "v0.6.20")
+	if err == nil || !strings.Contains(string(output), "install v0.6.21 or newer") {
+		t.Fatalf("explicit canonical repository executed prebridge manager: %v %s", err, output)
+	}
+	fixture = bootstrapTestFixture(t)
+	output, err = fixture.run("install", "worker", "--repo", "owner/fork", "--version", "v0.6.20")
+	if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 17 {
+		t.Fatalf("official prebridge guard affected a fork: %v %s", err, output)
 	}
 }
 

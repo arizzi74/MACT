@@ -226,7 +226,7 @@ func (r *webUIRelay) run() error {
 	}
 	defer conn.CloseNow()
 	conn.SetReadLimit(protocol.MaxFrameBytes - (64 << 10))
-	initialize := map[string]any{"id": "webui-initialize", "method": "initialize", "params": map[string]any{"clientInfo": map[string]any{"name": "telegramgw_webui", "title": "Codex Gateway Web UI", "version": buildinfo.Version}, "capabilities": map[string]any{"experimentalApi": true}}}
+	initialize := map[string]any{"id": "webui-initialize", "method": "initialize", "params": map[string]any{"clientInfo": map[string]any{"name": "telegramgw_webui", "title": "MACT Web UI", "version": buildinfo.Version}, "capabilities": map[string]any{"experimentalApi": true}}}
 	data, _ := json.Marshal(initialize)
 	if err = conn.Write(handshake, websocket.MessageText, data); err == nil {
 		var kind websocket.MessageType

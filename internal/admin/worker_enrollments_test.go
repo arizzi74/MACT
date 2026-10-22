@@ -93,7 +93,7 @@ func TestWorkerEnrollmentHTTPCreateLandingRedeemAndPrivacy(t *testing.T) {
 	}
 	for _, target := range []string{u.RequestURI(), "/tgw/enroll/?code=" + u.Fragment} {
 		w := publicEnrollmentRequest(s, http.MethodGet, target, "", "", "198.51.100.1")
-		if w.Code != http.StatusOK || strings.Contains(w.Body.String(), u.Fragment) || !strings.Contains(w.Body.String(), "worker installer") || strings.Contains(w.Body.String(), "<script") || w.Header().Get("Cache-Control") != "no-store" || w.Header().Get("Referrer-Policy") != "no-referrer" {
+		if w.Code != http.StatusOK || strings.Contains(w.Body.String(), u.Fragment) || !strings.Contains(w.Body.String(), "MACT Worker installer") || strings.Contains(w.Body.String(), "<script") || w.Header().Get("Cache-Control") != "no-store" || w.Header().Get("Referrer-Policy") != "no-referrer" {
 			t.Fatalf("landing page exposed the code or lacked safe instructions: status=%d path=%s", w.Code, u.Path)
 		}
 	}

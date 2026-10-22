@@ -25,6 +25,7 @@ func updateFixture(t *testing.T, component string) (*Layout, map[string]string, 
 		Bin: filepath.Join(root, "bin"), Manager: filepath.Join(root, "lib", "codex-telegramgw"),
 		LegacyManager: filepath.Join(root, "lib", "release-manager.py"),
 		Command:       filepath.Join(root, "bin", "codex-telegramgw"),
+		AliasCommand:  filepath.Join(root, "bin", "mact"),
 		Config:        filepath.Join(root, "etc", "config.json"), State: filepath.Join(root, "etc", "update.json"),
 		Backups: filepath.Join(root, "backups"), DataRoot: filepath.Join(root, "data"),
 	}
@@ -451,9 +452,11 @@ func TestWorkerStoppedLegacyUpdateSucceedsWithoutPreparation(t *testing.T) {
 	if updateRead(t, l.Binary) != "new binary" || updateRead(t, filepath.Join(l.Bin, "codex-local")) != "new local" {
 		t.Fatal("worker/helper not installed")
 	}
-	link, err := os.Readlink(l.Command)
-	if err != nil || link != l.Manager {
-		t.Fatalf("native manager command: %q %v", link, err)
+	for _, command := range []string{l.Command, l.AliasCommand} {
+		link, err := os.Readlink(command)
+		if err != nil || link != l.Manager {
+			t.Fatalf("native manager command %s: %q %v", command, link, err)
+		}
 	}
 	settings, err := ReadJSON(l.State)
 	if err != nil || settings["pending"] != nil || settings["version"] != release.Tag {

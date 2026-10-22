@@ -616,11 +616,11 @@ async function toggleTelegramBot(bot) {
 function telegramPhotoResetHelp(disabled) {
   if (disabled) return 'Enable this bot to reset its profile photo.';
   if (telegramBusy) return 'Wait for the current bot action to finish before resetting a profile photo.';
-  return 'Replaces the current Telegram profile photo with the default Gateway icon.';
+  return 'Replaces the current Telegram profile photo with the default MACT icon.';
 }
 async function resetTelegramBotProfilePhoto(bot) {
   if (telegramBusy || !authenticated || !bot.id || bot.enabled === false) return;
-  if (!confirm('Reset the profile photo for ' + telegramBotLabel(bot) + '? This replaces its current Telegram profile photo with the default Gateway icon.')) return;
+  if (!confirm('Reset the profile photo for ' + telegramBotLabel(bot) + '? This replaces its current Telegram profile photo with the default MACT icon.')) return;
   let completed = false;
   await runTelegramAction(async current => {
     $('bot-status').textContent = 'Resetting the profile photo for ' + telegramBotLabel(bot) + '…';
@@ -1608,8 +1608,8 @@ sessionAuth = window.CodexSessionAuth.create({
   },
   onOptions: options => {
     $('password-login').hidden = !options.password;
-    $('auth-title').textContent = options.password ? 'Gateway access' : 'Passkey access';
-    $('auth-description').textContent = options.password ? 'Use a personal passkey or your gateway password to administer this gateway.' : 'Use a personal passkey to administer this gateway.';
+    $('auth-title').textContent = options.password ? 'MACT Gateway access' : 'Passkey access';
+    $('auth-description').textContent = options.password ? 'Use a personal passkey or your MACT Gateway password to administer MACT Gateway.' : 'Use a personal passkey to administer MACT Gateway.';
   },
   onStatus: msg,
 });

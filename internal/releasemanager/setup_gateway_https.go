@@ -333,7 +333,7 @@ func gatewayCaddySite(cfg config.GatewayConfig) string {
 
 func gatewayCaddyUnit(configuration string) string {
 	return fmt.Sprintf(`[Unit]
-Description=Codex Telegram Gateway HTTPS proxy
+Description=MACT Gateway HTTPS proxy
 After=network-online.target codex-gateway.service
 Wants=network-online.target
 

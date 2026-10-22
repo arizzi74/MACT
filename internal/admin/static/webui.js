@@ -742,12 +742,12 @@
     $('questions').replaceChildren();
     $('questions').hidden = true;
     $('session-list').replaceChildren();
-    $('session-title').textContent = 'Codex';
+    $('session-title').textContent = 'MACT';
     $('session-location').textContent = 'Sign in to continue';
     $('sessions-status').textContent = 'Sign in to see your sessions.';
     for (const id of ['transcript', 'composer', 'empty', 'disconnect', 'jump-latest']) $(id).hidden = true;
     $('auth').hidden = false;
-    $('auth-title').textContent = authRestore ? 'Unlock your sessions' : 'Sign in to Codex';
+    $('auth-title').textContent = authRestore ? 'Unlock your sessions' : 'Sign in to MACT';
     updateAuthDescription();
     showSessions(false);
     notice();
@@ -758,7 +758,7 @@
     const password = sessionAuth?.hasPassword();
     $('auth-description').textContent = authRestore
       ? password ? 'Your running work continues. Sign in to return to the same conversation.' : 'Your running work continues. Use your passkey to return to the same conversation.'
-      : password ? 'Use your gateway passkey or password to open your sessions.' : 'Use your gateway passkey to open your sessions.';
+      : password ? 'Use your MACT Gateway passkey or password to open your sessions.' : 'Use your MACT Gateway passkey to open your sessions.';
   }
   function renderSessions() {
     const query = $('session-search').value.toLocaleLowerCase().trim();
@@ -1401,7 +1401,7 @@
       state.items.clear(); state.questions.clear(); state.models = []; state.turn = null; state.cursor = null; state.queuedEvents = [];
       $('messages').replaceChildren(); $('questions').replaceChildren(); $('questions').hidden = true; $('prompt').value = ''; renderAttachmentDraft();
       for (const name of ['transcript', 'composer', 'disconnect', 'jump-latest']) $(name).hidden = true;
-      $('empty').hidden = false; $('session-title').textContent = 'Codex'; $('session-location').textContent = 'Choose a session to continue';
+      $('empty').hidden = false; $('session-title').textContent = 'MACT'; $('session-location').textContent = 'Choose a session to continue';
       $('workspace-path').textContent = ''; $('usage').textContent = '';
       connection('connected', statusMessage); updateControls();
     }
@@ -2396,7 +2396,7 @@
       disconnect(); state.selected = null; state.items.clear(); state.questions.clear();
       $('messages').replaceChildren(); $('questions').replaceChildren(); $('questions').hidden = true;
       for (const id of ['transcript', 'composer', 'disconnect', 'jump-latest']) $(id).hidden = true;
-      $('empty').hidden = false; $('session-title').textContent = 'Codex'; $('session-location').textContent = 'Choose a session to continue';
+      $('empty').hidden = false; $('session-title').textContent = 'MACT'; $('session-location').textContent = 'Choose a session to continue';
       notice(result.text || 'Conversation removed from the session list.'); await refreshSessions();
     } else if (state.selected && name === 'rename') {
       state.selected.name = args;

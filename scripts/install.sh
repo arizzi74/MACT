@@ -67,15 +67,28 @@ download() {
   curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
     --tlsv1.2 --connect-timeout 15 --max-time 180 --retry 2 "$@"
 }
-if [ -z "$release_tag" ]; then
-  release_url=$(download --max-filesize 1048576 --output /dev/null --write-out '%{url_effective}' \
-    "https://github.com/$repository/releases/latest") || fail 'could not resolve the latest release'
-  case "$release_url" in
-    "https://github.com/$repository/releases/tag/"*) release_tag=${release_url##*/} ;;
-    *) fail 'GitHub returned an unexpected release URL' ;;
+selection=latest
+if [ -n "$release_tag" ]; then selection="tag/$release_tag"; fi
+release_url=$(download --max-filesize 1048576 --output /dev/null --write-out '%{url_effective}' \
+  "https://github.com/$repository/releases/$selection") || fail 'could not resolve the selected release'
+# Only the deliberate official rename can change repository scope. Resolve tag
+# pages too: historical release assets acquire the renamed repository's URLs.
+case "$repository:$release_url" in
+  arizzi74/Codex-Telegram-Gateway:https://github.com/arizzi74/MACT/releases/tag/*) repository=arizzi74/MACT ;;
+esac
+case "$release_url" in
+  "https://github.com/$repository/releases/tag/"*) resolved_tag=${release_url##*/} ;;
+  *) fail 'GitHub returned an unexpected release URL' ;;
+esac
+stable_tag "$resolved_tag" || fail 'GitHub did not return a stable release tag'
+[ "$release_url" = "https://github.com/$repository/releases/tag/$resolved_tag" ] || fail 'GitHub returned an unexpected release URL'
+[ -z "$release_tag" ] || [ "$release_tag" = "$resolved_tag" ] || fail 'GitHub returned the wrong release version'
+release_tag=$resolved_tag
+if [ "$repository" = arizzi74/MACT ]; then
+  case "$release_tag" in
+    v0.0.*|v0.1.*|v0.2.*|v0.3.*|v0.4.*|v0.5.*|v0.6.[0-9]|v0.6.1[0-9]|v0.6.20)
+      fail 'releases before v0.6.21 contain an updater that cannot follow the MACT repository rename; install v0.6.21 or newer' ;;
   esac
-  stable_tag "$release_tag" || fail 'GitHub did not return a stable release tag'
-  [ "$release_url" = "https://github.com/$repository/releases/tag/$release_tag" ] || fail 'GitHub returned an unexpected release URL'
 fi
 
 temporary=$(mktemp -d "${TMPDIR:-/tmp}/codex-telegramgw-install.XXXXXXXX")

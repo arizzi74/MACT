@@ -253,6 +253,7 @@ func (m *Manager) FetchRelease(ctx context.Context, repo, version string) (*Rele
 		return nil, err
 	}
 	var metadata struct {
+		HTMLURL    string `json:"html_url"`
 		Tag        string `json:"tag_name"`
 		Draft      *bool  `json:"draft"`
 		Prerelease *bool  `json:"prerelease"`
@@ -276,8 +277,12 @@ func (m *Manager) FetchRelease(ctx context.Context, repo, version string) (*Rele
 			return nil, errors.New("GitHub returned the wrong release version")
 		}
 	}
-	release := &Release{Repo: repo, Tag: metadata.Tag, Assets: map[string]string{}}
-	prefix := "https://github.com/" + repo + "/releases/download/" + metadata.Tag + "/"
+	canonicalRepo, err := m.releaseRepository(ctx, repo, metadata.Tag, metadata.HTMLURL)
+	if err != nil {
+		return nil, err
+	}
+	release := &Release{Repo: canonicalRepo, RequestedRepo: repo, SourceRepo: canonicalRepo, Tag: metadata.Tag, Assets: map[string]string{}}
+	prefix := "https://github.com/" + canonicalRepo + "/releases/download/" + metadata.Tag + "/"
 	for _, asset := range metadata.Assets {
 		if !safeArchivePath(asset.Name) || strings.Contains(asset.Name, "/") || release.Assets[asset.Name] != "" {
 			return nil, errors.New("invalid or duplicate release asset")
@@ -309,7 +314,16 @@ func (m *Manager) FetchRelease(ctx context.Context, repo, version string) (*Rele
 	if m.verifyManifest != nil {
 		verify = m.verifyManifest
 	}
-	if err = verify(repo, release.Tag, data, attestation); err != nil {
+	if canonicalRepo == RenamedRepo {
+		// Renaming the repository changes asset URLs, but cannot change the
+		// identity in historical certificates. Select an exact identity before
+		// verification; an invalid signature is never retried with another.
+		release.SourceRepo, err = releaseauth.CandidateRepository(release.Tag, attestation, RenamedRepo, LegacyRepo)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if err = verify(release.SourceRepo, release.Tag, data, attestation); err != nil {
 		return nil, err
 	}
 	return release, nil

@@ -13,7 +13,7 @@ const GatewayDataRoot = "/var/lib/codex-gateway"
 
 type Layout struct {
 	Component, System, Architecture, Home                              string
-	Bin, Binary, Manager, LegacyManager, Command                       string
+	Bin, Binary, Manager, LegacyManager, Command, AliasCommand         string
 	Config, Environment, State, Lock, Backups, UnitDir, Unit, DataRoot string
 	WorkerServiceAccess                                                string
 }
@@ -41,8 +41,8 @@ type Manager struct {
 }
 
 type Release struct {
-	Repo, Tag      string
-	Assets, Hashes map[string]string
+	Repo, SourceRepo, RequestedRepo, Tag string
+	Assets, Hashes                       map[string]string
 }
 
 type Ownership struct{ UID, GID int }

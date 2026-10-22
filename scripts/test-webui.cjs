@@ -483,6 +483,11 @@ itemTimes['timestamp-older-completed'] = { startedAtMs: null, completedAtMs: tim
     listedSessions = [];
     await page.goto('https://webui.test/tgw/webui/');
     await page.waitForSelector('.session-create[data-create-worker-id="fresh"]');
+    assert.equal(await page.title(), 'MACT · Multi Agent Control Tower');
+    assert.equal(await page.locator('.sidebar-heading .brand strong').textContent(), 'MACT');
+    assert.equal(await page.locator('#session-title').textContent(), 'MACT');
+    assert.equal(await page.locator('meta[name="apple-mobile-web-app-title"]').getAttribute('content'), 'MACT');
+    assert.equal(await page.locator('#prompt').getAttribute('placeholder'), 'Ask Codex to do anything', 'The composer retains the supported runtime name');
     assert.equal(await page.locator('.session-group').count(), workers.length, 'Zero-session workers have independent sidebar headings');
     assert.equal(await page.locator('.session-button').count(), 0);
     for (const id of ['offline', 'no-runtime', 'old-worker', 'disabled-worker']) assert.equal(await page.locator('.session-create[data-create-worker-id="' + id + '"]').isDisabled(), true, id + ' exposes an actionable availability reason');
@@ -1694,6 +1699,7 @@ itemTimes['timestamp-older-completed'] = { startedAtMs: null, completedAtMs: tim
       await page.locator('#prompt').fill(command); await page.locator('#send').click();
       assert.equal(await page.locator('#command-panel').isHidden(), true, command + ' closes after updating the browser setting');
     }
+    assert.equal(await page.title(), 'MACT · Multi Agent Control Tower', 'Resetting a custom browser title restores the product name');
     await page.evaluate(() => { window.testHoldCommand = true; });
     await page.locator('#prompt').fill('/model codex-model low');
     await page.locator('#send').click();
@@ -2706,7 +2712,9 @@ itemTimes['timestamp-older-completed'] = { startedAtMs: null, completedAtMs: tim
     await page.locator('#prompt').fill('/export'); await page.locator('#send').click();
     const exported = page.waitForEvent('download');
     await page.getByRole('button', { name: 'Download loaded conversation', exact: true }).click();
-    const exportContent = fs.readFileSync(await (await exported).path(), 'utf8');
+    const downloadedConversation = await exported;
+    assert.equal(downloadedConversation.suggestedFilename(), 'mact-conversation.md');
+    const exportContent = fs.readFileSync(await downloadedConversation.path(), 'utf8');
     assert.match(exportContent, /Turn started: 2026-10-02T18:21:00\.000Z/, 'Exports preserve turn-fallback provenance');
     assert.match(exportContent, /Completed: 2026-10-02T18:45:00\.456Z/, 'Exports preserve completion-only provenance');
     for (const index of [0, 1, 2, 14, 15, 16]) assert.ok(exportContent.includes('Recorded: ' + new Date(timestampTurnMilliseconds + index * 60000 + 654).toISOString()), 'Exports preserve each same-turn saved record date');

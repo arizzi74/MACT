@@ -455,7 +455,7 @@
         button('Download loaded conversation', () => {
           const data = ctx.exportText();
           const url = URL.createObjectURL(new Blob([data], { type: 'text/markdown;charset=utf-8' }));
-          const link = node('a'); link.href = url; link.download = 'codex-conversation.md'; document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+          const link = node('a'); link.href = url; link.download = 'mact-conversation.md'; document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
         }); return;
       }
       if (name === 'mention') {
@@ -473,7 +473,7 @@
       }
       if (name === 'title') {
         if (!args) return form('/title', [{ key: 'title', label: 'Browser tab title (or reset)', value: document.title, maxLength: 200 }], 'Set title', values => execute('title', values.title));
-        document.title = args === 'reset' ? 'Codex · Gateway' : args; close(); return;
+        document.title = args === 'reset' ? 'MACT · Multi Agent Control Tower' : args; close(); return;
       }
       if (name === 'statusline') {
         if (!args) { show('/statusline'); const hidden = $('session-status').classList.contains('hide-details'); button('Show status line', () => execute('statusline', 'on'), '', { current: !hidden }); button('Hide status details', () => execute('statusline', 'off'), '', { current: hidden }); return; }

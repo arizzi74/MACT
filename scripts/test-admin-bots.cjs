@@ -751,12 +751,12 @@ async function checkPendingRecovery(browser, width) {
       if (screenshots) await page.locator('#telegram-bots-section').screenshot({ path: path.join(screenshots, 'telegram-bots-' + width + '.png') });
 
       await page.locator('#bot-create').click();
-      const defaultPhoto = page.getByRole('img', { name: 'Codex Gateway profile icon' });
+      const defaultPhoto = page.getByRole('img', { name: 'MACT profile icon' });
       assert.equal(await defaultPhoto.isVisible(), true, 'Creation previews the default profile photo');
       assert.equal(await defaultPhoto.getAttribute('src'), '/tgw/admin/static/webui-icon.svg', 'The default profile photo uses the local Gateway icon');
       assert.equal(await defaultPhoto.evaluate(icon => icon.complete && icon.naturalWidth > 0), true, 'The profile icon loads successfully');
       assert.deepEqual(await defaultPhoto.evaluate(icon => ({ width: icon.width, height: icon.height })), { width: 48, height: 48 }, 'The profile preview stays compact');
-      assert.match(await page.locator('.bot-profile-default').innerText(), /New bots use the Gateway icon as their profile photo/);
+      assert.match(await page.locator('.bot-profile-default').innerText(), /New bots use the MACT icon as their profile photo/);
       assert.equal(await page.locator('#bot-create-dialog').evaluate(dialog => dialog.scrollWidth <= dialog.clientWidth && dialog.getBoundingClientRect().width <= innerWidth), true, 'The creation form and profile preview fit the viewport');
       assert.equal(await page.locator('#bot-create-form input').count(), 1, 'Creation asks only for a display name and manager');
       assert.equal(await page.locator('#bot-create-username').count(), 0, 'There is no manual username field');

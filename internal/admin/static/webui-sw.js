@@ -17,14 +17,14 @@ self.addEventListener('push', event => {
   let data;
   try { data = event.data?.json(); } catch (_) { /* Every push must still display a notification. */ }
   const options = {
-    body: 'A Codex turn has finished.',
+    body: 'A turn has finished in MACT.',
     icon: basePath + 'static/webui-icon-192.png',
     data: { url: notificationURL(data?.url) }
   };
   if (typeof data?.tag === 'string' && uuid.test(data.tag)) options.tag = data.tag.toLowerCase();
   // No foreground suppression: iPhone requires a visible notification for
   // every delivered push. The page never emits duplicate local notifications.
-  event.waitUntil(self.registration.showNotification('Turn finished', options));
+  event.waitUntil(self.registration.showNotification('MACT · Turn finished', options));
 });
 async function focusConversation(url) {
   const pages = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });

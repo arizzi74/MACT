@@ -67,6 +67,9 @@ func TestUpdateRetentionWaitsForReadinessAndSavedSettings(t *testing.T) {
 	for _, failure := range []string{"", "readiness", "settings"} {
 		t.Run(map[string]string{"": "success", "readiness": "readiness-failure", "settings": "settings-failure"}[failure], func(t *testing.T) {
 			l, packages, release := updateFixture(t, "worker")
+			if err := os.Symlink(l.Manager, l.AliasCommand); err != nil {
+				t.Fatal(err)
+			}
 			if err := os.WriteFile(filepath.Join(l.Bin, "codex-local"), []byte("old local"), 0o755); err != nil {
 				t.Fatal(err)
 			}

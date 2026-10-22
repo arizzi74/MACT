@@ -20,6 +20,9 @@ func TestAdminUsesConfiguredHostnameAndExactOrigin(t *testing.T) {
 				t.Fatal(err)
 			}
 			cfg := server.webauthn.Config
+			if cfg.RPDisplayName != "MACT Gateway" {
+				t.Fatalf("WebAuthn display name = %q, want MACT Gateway", cfg.RPDisplayName)
+			}
 			if server.origin != tc.origin || cfg.RPID != tc.rpID {
 				t.Fatalf("configured origin/RP ID = %q / %q, want %q / %q", server.origin, cfg.RPID, tc.origin, tc.rpID)
 			}

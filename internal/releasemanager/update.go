@@ -766,6 +766,13 @@ func (snapshot *updateSnapshot) restore() error {
 // ApplyUpdate rolls back only before attempting to start the new service. Once
 // started, its database and binaries must survive even a failed readiness check.
 func (m *Manager) ApplyUpdate(ctx context.Context, l *Layout, packages map[string]string, release *Release, fresh bool) (retErr error) {
+	if err := validateRepositoryBridgeInstall(release); err != nil {
+		return err
+	}
+	pendingRepo, err := pendingReleaseRepository(l, release)
+	if err != nil {
+		return err
+	}
 	started := false
 	defer func() {
 		if retErr != nil {
@@ -802,6 +809,23 @@ func (m *Manager) ApplyUpdate(ctx context.Context, l *Layout, packages map[strin
 	for _, source := range sources {
 		paths = append(paths, source.destination)
 	}
+	// Command links have in-memory rollback snapshots. Keep the alias after the
+	// existing paths so private backup filenames remain compatible with retention.
+	managerLayout := *l
+	aliasOccupied := false
+	if alias := l.AliasCommand; alias != "" && alias != l.Command && alias != l.Manager {
+		available, err := managerCommandAvailable(l, alias)
+		if err != nil {
+			return err
+		}
+		if available {
+			paths = append(paths, alias)
+		} else {
+			// Exclude foreign commands from both replacement and rollback.
+			managerLayout.AliasCommand = ""
+			aliasOccupied = true
+		}
+	}
 	snapshots := make(map[string]*updateSnapshot)
 	var database *updateDatabase
 	if l.Component == "gateway" {
@@ -815,7 +839,7 @@ func (m *Manager) ApplyUpdate(ctx context.Context, l *Layout, packages map[strin
 	changed := make(map[string]bool)
 	var prepared *workerLease
 	stopped, databaseMutated := false, false
-	err := func() error {
+	err = func() error {
 		running := !fresh
 		if !fresh && l.Component == "worker" {
 			var err error
@@ -881,8 +905,14 @@ func (m *Manager) ApplyUpdate(ctx context.Context, l *Layout, packages map[strin
 			}
 		}
 		changed[l.Command] = true
-		if err := m.InstallManager(l, filepath.Join(packages[l.Component], "codex-telegramgw")); err != nil {
+		if alias := managerLayout.AliasCommand; alias != "" && snapshots[alias] != nil {
+			changed[alias] = true
+		}
+		if err := m.InstallManager(&managerLayout, filepath.Join(packages[l.Component], "codex-telegramgw")); err != nil {
 			return err
+		}
+		if aliasOccupied {
+			m.warnManagerAliasOccupied(l)
 		}
 		if database != nil {
 			databaseMutated = true
@@ -891,7 +921,7 @@ func (m *Manager) ApplyUpdate(ctx context.Context, l *Layout, packages map[strin
 			}
 		}
 		changed[l.State] = true
-		if err := WriteJSON(l.State, map[string]any{"schema": 1, "component": l.Component, "repo": release.Repo, "version": release.Tag, "pending": true}); err != nil {
+		if err := WriteJSON(l.State, map[string]any{"schema": 1, "component": l.Component, "repo": pendingRepo, "version": release.Tag, "pending": true}); err != nil {
 			return err
 		}
 		// Even a failed start command can have launched a service that wrote data.

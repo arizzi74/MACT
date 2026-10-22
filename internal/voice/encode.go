@@ -57,7 +57,7 @@ func EncodeOggOpus(ctx context.Context, samples []float32, sampleRate int) ([]by
 	binary.LittleEndian.PutUint32(head[12:], uint32(sampleRate))
 	writeVoiceOggPage(&out, head, serial, sequence, 0, 2)
 	sequence++
-	vendor := "Codex Gateway"
+	vendor := "MACT"
 	tags := make([]byte, 16+len(vendor))
 	copy(tags, "OpusTags")
 	binary.LittleEndian.PutUint32(tags[8:], uint32(len(vendor)))

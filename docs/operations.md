@@ -12,7 +12,7 @@ standalone Caddy proxy on Debian or Ubuntu, using
 `codex-gateway-proxy.service` and `/etc/codex-gateway-proxy/Caddyfile`. The
 [HTTPS setup options](installation.md#finish-gateway-setup) explain alternative
 public ports and certificate requirements.
-Run `sudo codex-telegramgw finish gateway` to resume HTTPS, Telegram, and first
+Run `sudo mact finish gateway` to resume HTTPS, Telegram, and first
 administrator setup. For a manually managed nginx deployment, the sample
 [nginx configuration](../deploy/nginx/telegramgw.conf) proxies health checks,
 the admin interface, HTTP APIs, and WebSocket upgrades with bounded body and

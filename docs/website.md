@@ -1,6 +1,6 @@
 # Project website and screenshots
 
-The public project site is [Codex Telegram Gateway](https://arizzi74.github.io/Codex-Telegram-Gateway/).
+The public project site is [MACT](https://arizzi74.github.io/Codex-Telegram-Gateway/).
 It is a static website in `site/`, published by `.github/workflows/pages.yml`
 to GitHub Pages from `main`. The site has no gateway connection, login screen,
 analytics or external asset dependencies. Its installation links point to this

@@ -78,9 +78,11 @@ func TestAdoptPreservesPendingReadinessAndRepository(t *testing.T) {
 	if state["pending"] != true || state["repo"] != "example/releases" {
 		t.Fatal(state)
 	}
-	target, err := os.Readlink(l.Command)
-	if err != nil || target != l.Manager {
-		t.Fatal(target, err)
+	for _, command := range []string{l.Command, l.AliasCommand} {
+		target, err := os.Readlink(command)
+		if err != nil || target != l.Manager {
+			t.Fatal(command, target, err)
+		}
 	}
 	data, _ := os.ReadFile(l.Manager)
 	if string(data) != "native executable" {

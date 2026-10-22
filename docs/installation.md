@@ -1,10 +1,17 @@
 # Installation and automatic updates
 
-The installer downloads prebuilt binaries from
+The MACT installer downloads prebuilt binaries from
 [GitHub Releases](https://github.com/arizzi74/Codex-Telegram-Gateway/releases).
 A Go toolchain, Python and a repository checkout are not required on the target machine.
 Gateway packages support Linux amd64/arm64. Worker and terminal-helper packages
 support Linux and macOS, on amd64/arm64.
+
+Use `mact` to manage an installation. The existing `codex-telegramgw` command is
+still supported and targets the same installation. Service names, configuration
+directories and release asset filenames retain their previous names during the
+[MACT migration](mact-migration.md). If another program already owns the `mact`
+command path, setup leaves it in place and reports the collision; use
+`codex-telegramgw` for this installation instead.
 
 ## Before installing
 
@@ -113,7 +120,7 @@ needed. DNS and firewall changes remain your responsibility; the prompts explain
 what is required and let you retry or finish later.
 
 You can also use `sudo sh /tmp/codex-telegramgw-install.sh` or
-`sudo codex-telegramgw setup gateway`. For an unattended installation using
+`sudo mact setup gateway`. For an unattended installation using
 custom paths, the explicit command remains available:
 
 ```sh
@@ -129,7 +136,7 @@ The fresh guided installation includes these steps. To resume them later, or
 finish an installation made from prepared configuration files, run:
 
 ```sh
-sudo codex-telegramgw finish gateway
+sudo mact finish gateway
 ```
 
 The wizard offers these HTTPS options:
@@ -172,7 +179,7 @@ The wizard copies the chain and key into its private proxy directory. After
 renewal, refresh those copies and restart only the dedicated proxy with:
 
 ```sh
-sudo codex-telegramgw https refresh
+sudo mact https refresh
 ```
 
 This command rechecks the original certificate and key files, copies them only
@@ -202,8 +209,8 @@ preserved when completion is rerun.
 You can then connect or create additional bots in **Telegram bots** without
 rerunning installation or changing the primary bot's configuration.
 If an existing gateway predates guided administrator setup, the wizard prints
-`sudo codex-telegramgw update gateway`; run that command when convenient, then
-run `sudo codex-telegramgw finish gateway` again. Existing administrators can
+`sudo codex-telegramgw update gateway`; run that existing command when convenient, then
+run `sudo mact finish gateway` again. Existing administrators can
 continue signing in while that step is pending.
 
 For manual maintenance, the equivalent gateway administration helper loads the
@@ -258,7 +265,7 @@ automatic updates enabled:
 The prompts use the terminal directly, so they work when the script is piped
 into `sh`. Without an interactive terminal, provide `worker.json` beforehand.
 You can also run the downloaded script with `sh /tmp/codex-telegramgw-install.sh`
-or run the native manager's `codex-telegramgw setup worker` command.
+or run the native manager's `mact setup worker` command.
 
 This installs both `codex-worker` and `codex-local` for the current user and sets
 up the worker service. Relative configuration paths are resolved before the
@@ -389,16 +396,16 @@ Python cannot be selected with the new bootstrap.
 
 ```sh
 # Gateway administration:
-sudo codex-telegramgw update gateway --check
-sudo codex-telegramgw update gateway
+sudo mact update gateway --check
+sudo mact update gateway
 
 # Worker administration, as its owning user:
-codex-telegramgw update worker --check
-codex-telegramgw update worker
+mact update worker --check
+mact update worker
 
 # Check or apply only the worker's Codex runtime maintenance:
-codex-telegramgw update codex --check
-codex-telegramgw update codex
+mact update codex --check
+mact update codex
 ```
 
 Checks fetch release metadata, the checksum manifest, and its signed build
@@ -630,10 +637,10 @@ For explicit `install` and `adopt` commands, pass `--auto-update` to enable it.
 To manage it later:
 
 ```sh
-sudo codex-telegramgw auto-update enable gateway
-sudo codex-telegramgw auto-update disable gateway
-codex-telegramgw auto-update enable worker
-codex-telegramgw auto-update disable worker
+sudo mact auto-update enable gateway
+sudo mact auto-update disable gateway
+mact auto-update enable worker
+mact auto-update disable worker
 ```
 
 The gateway scheduler runs as a system service; the worker scheduler runs as its
@@ -739,7 +746,7 @@ so later writes cannot be lost through an automatic rollback.
 After installing or updating the gateway, run:
 
 ```sh
-sudo codex-telegramgw setup voice
+sudo mact setup voice
 ```
 
 This installs the matching `codex-whisper` helper, downloads the multilingual
@@ -751,7 +758,7 @@ gateway updates and their backup/rollback handling; the model is reused.
 To select the larger multilingual small model and three CPU inference threads:
 
 ```sh
-sudo codex-telegramgw setup voice --model small --threads 3
+sudo mact setup voice --model small --threads 3
 ```
 
 Supported setup models are `base` (148 MB) and `small` (488 MB). Both downloads

@@ -277,7 +277,7 @@ the new setup succeeds.
 Alternatively, enable transcription on the gateway host:
 
 ```sh
-sudo codex-telegramgw setup voice
+sudo mact setup voice
 ```
 
 The installer verifies and installs the release's Whisper helper and a pinned
@@ -286,7 +286,7 @@ gateway. Workers do not need an audio decoder or a model. No OpenAI transcriptio
 API key, Python, FFmpeg, or separately installed audio libraries are needed.
 
 For the multilingual **small** model and three CPU threads, use
-`sudo codex-telegramgw setup voice --model small --threads 3`. Setup supports
+`sudo mact setup voice --model small --threads 3`. Setup supports
 base and small models and 1–32 threads. Re-running setup without model/thread
 options preserves the existing supported selection, including settings saved in
 the administrator console. Explicit command-line options replace those choices;

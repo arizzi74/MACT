@@ -87,7 +87,7 @@ func (m *Manager) printWorkerSetupCommands(l *Layout) {
 		}
 	}
 	if !inPath {
-		fmt.Fprintln(m.Out, "To use codex-worker, codex-local, and codex-telegramgw by name in this terminal:")
+		fmt.Fprintln(m.Out, "To use codex-worker, codex-local, mact, and codex-telegramgw by name in this terminal:")
 		fmt.Fprintln(m.Out, `  export PATH="$HOME/.local/bin:$PATH"`)
 		fmt.Fprintln(m.Out, "Add that line to your shell startup file to keep it in future terminals.")
 	}

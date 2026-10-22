@@ -68,22 +68,23 @@ type options struct {
 	AutoUpdate, Check                                              bool
 }
 
-const usage = `Install and update Codex Telegram Gateway from verified GitHub Releases.
+const usage = `Install and update MACT from verified GitHub Releases.
 
 Usage:
-  codex-telegramgw setup [gateway|worker]
-  codex-telegramgw setup voice [--model base|small] [--threads 1..32]
-  codex-telegramgw finish gateway
-  codex-telegramgw https refresh
-  codex-telegramgw install gateway --config PATH --secrets-env PATH [--auto-update]
-  codex-telegramgw install worker --config PATH [--service-access restricted|full] [--auto-update]
-  codex-telegramgw adopt gateway|worker [--auto-update]
-  codex-telegramgw update gateway|worker [--check]
-  codex-telegramgw update codex [--check]
-  codex-telegramgw request-update worker --request-id UUID --worker-state PATH
-  codex-telegramgw auto-update enable|disable gateway|worker
-  codex-telegramgw version
+  mact setup [gateway|worker]
+  mact setup voice [--model base|small] [--threads 1..32]
+  mact finish gateway
+  mact https refresh
+  mact install gateway --config PATH --secrets-env PATH [--auto-update]
+  mact install worker --config PATH [--service-access restricted|full] [--auto-update]
+  mact adopt gateway|worker [--auto-update]
+  mact update gateway|worker [--check]
+  mact update codex [--check]
+  mact request-update worker --request-id UUID --worker-state PATH
+  mact auto-update enable|disable gateway|worker
+  mact version
 
+The codex-telegramgw command remains supported for compatibility.
 Install and update accept --version vMAJOR.MINOR.PATCH and --repo OWNER/REPOSITORY.
 Run gateway administration with sudo and worker administration as its user.
 Setup defaults to gateway under sudo/root and worker otherwise.
@@ -113,7 +114,7 @@ func setupComponent(args []string, uid int) (string, error) {
 	if len(args) == 1 && (args[0] == "gateway" || args[0] == "worker") {
 		return args[0], nil
 	}
-	return "", errors.New("usage: codex-telegramgw setup [gateway|worker]")
+	return "", errors.New("usage: mact setup [gateway|worker]")
 }
 
 func parseOptions(args []string) (options, error) {
@@ -124,7 +125,7 @@ func parseOptions(args []string) (options, error) {
 	result.Action = args[0]
 	if result.Action == "auto-update" {
 		if len(args) != 3 || (args[1] != "enable" && args[1] != "disable") {
-			return result, errors.New("usage: codex-telegramgw auto-update enable|disable gateway|worker")
+			return result, errors.New("usage: mact auto-update enable|disable gateway|worker")
 		}
 		result.Setting = args[1]
 		result.Component = args[2]
@@ -224,13 +225,13 @@ func Execute(ctx context.Context, args []string, out, errOut io.Writer) int {
 		err = New(out).requestWorkerUpdate(ctx, args[1:])
 	} else if args[0] == "https" {
 		if len(args) != 2 || args[1] != "refresh" {
-			err = errors.New("usage: codex-telegramgw https refresh")
+			err = errors.New("usage: mact https refresh")
 		} else {
 			err = New(out).refreshGatewayHTTPSCommand(ctx)
 		}
 	} else if args[0] == "finish" {
 		if len(args) != 2 || args[1] != "gateway" {
-			err = errors.New("usage: codex-telegramgw finish gateway")
+			err = errors.New("usage: mact finish gateway")
 		} else {
 			err = New(out).FinishGateway(ctx)
 		}
@@ -407,6 +408,11 @@ func (m *Manager) execute(ctx context.Context, opts options) (retErr error) {
 	if err != nil {
 		return err
 	}
+	if opts.Action == "install" || (opts.Action == "update" && !opts.Check) {
+		if err := validateRepositoryBridgeInstall(release); err != nil {
+			return err
+		}
+	}
 	if opts.Action == "update" {
 		data, e := m.command(ctx, l.Binary, "version")
 		if e != nil {
@@ -421,7 +427,8 @@ func (m *Manager) execute(ctx context.Context, opts options) (retErr error) {
 			return errors.New("downgrades are not supported")
 		}
 		if comparison == 0 {
-			if pending, _ := settings["pending"].(bool); pending {
+			pending, _ := settings["pending"].(bool)
+			if pending {
 				if opts.Check {
 					return errors.New("installed version is awaiting a successful readiness check; inspect service logs")
 				}
@@ -433,10 +440,6 @@ func (m *Manager) execute(ctx context.Context, opts options) (retErr error) {
 				if err != nil {
 					return err
 				}
-				if err = SaveSettings(l, repo, release.Tag); err != nil {
-					return err
-				}
-				m.pruneUpdateBackups(l, release.Tag)
 			}
 			// An old updater may have installed this native executable at its
 			// legacy .py path. Finish that migration without restarting services.
@@ -444,6 +447,18 @@ func (m *Manager) execute(ctx context.Context, opts options) (retErr error) {
 				if err = m.InstallManager(l, m.Self); err != nil {
 					return err
 				}
+			} else if !opts.Check {
+				if err = m.installManagerAlias(l); err != nil {
+					return err
+				}
+			}
+			if !opts.Check && (pending || settings["repo"] != release.Repo) {
+				if err = SaveSettings(l, release.Repo, release.Tag); err != nil {
+					return err
+				}
+			}
+			if pending {
+				m.pruneUpdateBackups(l, release.Tag)
 			}
 			fmt.Fprintf(m.Out, "%s is already at %s.\n", l.Component, release.Tag)
 			return nil

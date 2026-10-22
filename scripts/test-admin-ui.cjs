@@ -143,6 +143,9 @@ const data = {
     if (page.clock) await page.clock.install();
     await page.goto('https://admin.test/tgw/admin');
     await page.waitForSelector('#console:not([hidden])');
+    assert.equal(await page.title(), 'MACT Gateway · Operations console');
+    assert.equal(await page.locator('.eyebrow').textContent(), 'MACT GATEWAY');
+    assert.equal(await page.getByRole('link', { name: 'Open MACT', exact: true }).getAttribute('href'), '/tgw/webui/');
     const sectionIDs = ['telegram-bots-section', 'audio-section', 'session-section', 'worker-section', 'passkey-section', 'browser-session-section', 'password-section'];
     for (const id of sectionIDs) {
       const section = page.locator('#' + id);

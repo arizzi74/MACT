@@ -1,11 +1,11 @@
 {
-  "captured_at": "2026-09-23T20:36:54.974Z",
+  "captured_at": "2026-10-22T18:07:55.158Z",
   "demo_data": true,
   "description": "Actual embedded WebUI rendered in Chromium with fictional API and WebSocket fixtures. No live server or private session data.",
   "source_sha256": {
-    "webui.html": "9a5561de37c745bc9459caec80f25f47a85245d2ba9b3417c67384a467130389",
-    "webui.css": "c59399956837757b35aa4db8969125c6e35cba46513f1918c1d7538a62a91621",
-    "webui.js": "8be794a15f5e8a6c0b9a14189dd0f8f9c85f234592ad1785e7185dddbd0ae1c6"
+    "webui.html": "27af7a8e84780035ab8718f6fa35d8a550bb3664ceecbc5a6bce91c073c479be",
+    "webui.css": "d287f0c037992d024cb451bafadbdbe14c1ad9934318c739c3567102ce7711b2",
+    "webui.js": "63ee1a421508deaf637aa25e4e7fcc23371148f54f64ab9aec6fc2fb2fc87f7a"
   },
   "images": {
     "webui-desktop.png": {
