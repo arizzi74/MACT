@@ -167,7 +167,7 @@ func (p *webUIRelays) receive(frame protocol.WebUIFrame) {
 func (r *webUIRelay) reserveInput(n int) bool {
 	r.pool.mu.Lock()
 	defer r.pool.mu.Unlock()
-	if r.ctx.Err() != nil || r.pool.clients[r.id] != r || n > protocol.MaxWebUIInputBytes || r.inputBytes+n > 20<<20 || r.pool.inputBytes+n > 64<<20 {
+	if r.ctx.Err() != nil || r.pool.clients[r.id] != r || n > protocol.MaxWebUIInputBytes || r.inputBytes+n > protocol.MaxFrameBytes || r.pool.inputBytes+n > 64<<20 {
 		return false
 	}
 	r.inputBytes += n
@@ -404,7 +404,7 @@ func webUIID(id json.RawMessage) string {
 
 func (r *webUIRelay) clientMessage(data []byte) ([]byte, error) {
 	if len(data) > protocol.MaxWebUIInputBytes {
-		return nil, errors.New("Web request exceeds the 15 MiB limit.")
+		return nil, errors.New("Web request exceeds the 30 MiB limit.")
 	}
 	var rpc webUIRPC
 	decoder := json.NewDecoder(bytes.NewReader(data))

@@ -57,6 +57,7 @@ type Hello struct {
 	WorkerVersion                string    `json:"worker_version"`
 	SupportsImageInput           bool      `json:"supports_image_input,omitempty"`
 	SupportsFileInput            bool      `json:"supports_file_input,omitempty"`
+	MaxFileBytes                 int       `json:"max_file_bytes,omitempty"`
 	SupportsSessionWorkspaces    bool      `json:"supports_session_workspaces,omitempty"`
 	SupportsWebUISessionCreation bool      `json:"supports_webui_session_creation,omitempty"`
 	SupportsSessionDeletion      bool      `json:"supports_session_deletion,omitempty"`
@@ -83,6 +84,7 @@ type Heartbeat struct {
 	WorkerID                     string    `json:"worker_id"`
 	SupportsImageInput           bool      `json:"supports_image_input,omitempty"`
 	SupportsFileInput            bool      `json:"supports_file_input,omitempty"`
+	MaxFileBytes                 int       `json:"max_file_bytes,omitempty"`
 	SupportsSessionWorkspaces    bool      `json:"supports_session_workspaces,omitempty"`
 	SupportsWebUISessionCreation bool      `json:"supports_webui_session_creation,omitempty"`
 	SupportsSessionDeletion      bool      `json:"supports_session_deletion,omitempty"`

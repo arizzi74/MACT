@@ -29,7 +29,7 @@
   const sessionOperations = new Map();
   let editSessionTarget = null, sessionOperationOwner = '', sessionOperationSerial = 0, newSessionMode = 'create', selectedArchiveID = '';
   let newSessionWorkerID = '', workspaceBrowse = null, workspacePage = null, newSessionPathEdited = false;
-  const maxAttachmentBytes = 10 * 1024 * 1024, maxDraftAttachmentBytes = 40 * 1024 * 1024, maxDraftAttachments = 16;
+  const maxFileBytes = 20 * 1024 * 1024, maxImageBytes = 10 * 1024 * 1024, maxDraftAttachmentBytes = 40 * 1024 * 1024, maxDraftAttachments = 16;
   let attachmentPickerSession = null;
   let followLatest = true, bottomFrame = null;
   const fileUI = window.CodexFiles.create({
@@ -614,7 +614,8 @@
     if (!sessionId || !state.authenticated || !file || state.submitting) return;
     if (attachmentDrafts.has(sessionId)) { notice('One attachment per message. Remove the attached file or image before choosing another.'); return; }
     const isImage = ['image/png', 'image/jpeg', 'image/gif'].includes(file.type);
-    if (file.size > maxAttachmentBytes || (isImage && !file.size)) { notice('Files and images must be no larger than 10 MiB.'); return; }
+    if (isImage && (!file.size || file.size > maxImageBytes)) { notice('Choose a non-empty image no larger than 10 MiB.'); return; }
+    if (!isImage && file.size > maxFileBytes) { notice('Files must be no larger than 20 MiB.'); return; }
     if (attachmentDrafts.size >= maxDraftAttachments || [...attachmentDrafts.values()].reduce((sum, attachment) => sum + attachment.file.size, 0) + file.size > maxDraftAttachmentBytes) { notice('Send or remove an attachment draft from another session before attaching more files.'); return; }
     const attachment = isImage ? { kind: 'image', file, url: URL.createObjectURL(file), loading: true } :
       { kind: 'file', file, name: file.name.split(/[\\/]/).pop() || 'attachment', uploadId: crypto.randomUUID(), uploadedPath: '' };

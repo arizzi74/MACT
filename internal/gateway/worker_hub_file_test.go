@@ -67,9 +67,9 @@ func TestHubFileCapabilityAndBinaryTransfer(t *testing.T) {
 		}
 	}
 	assertRejected()
-	setCapability := func(supported bool) {
+	setCapability := func(supported bool, maxFileBytes int) {
 		t.Helper()
-		sendFrame(t, ctx, conn, "heartbeat", protocol.Heartbeat{WorkerID: id.String(), SupportsFileInput: supported})
+		sendFrame(t, ctx, conn, "heartbeat", protocol.Heartbeat{WorkerID: id.String(), SupportsFileInput: supported, MaxFileBytes: maxFileBytes})
 		for {
 			workers, err := store.ListWorkers(ctx)
 			if err != nil || len(workers) != 1 {
@@ -77,14 +77,16 @@ func TestHubFileCapabilityAndBinaryTransfer(t *testing.T) {
 			}
 			var metadata struct {
 				SupportsFileInput bool `json:"supports_file_input"`
+				MaxFileBytes      int  `json:"max_file_bytes"`
 			}
 			if err := json.Unmarshal(workers[0].HeartbeatMetadata, &metadata); err != nil {
 				t.Fatal(err)
 			}
 			hub.mu.RLock()
 			peerSupported := hub.peers[id.String()] != nil && hub.peers[id.String()].supportsFileInput
+			peerLimit := hub.peers[id.String()].maxFileBytes
 			hub.mu.RUnlock()
-			if metadata.SupportsFileInput == supported && peerSupported == supported {
+			if metadata.SupportsFileInput == supported && peerSupported == supported && metadata.MaxFileBytes == maxFileBytes && peerLimit == maxFileBytes {
 				return
 			}
 			select {
@@ -94,7 +96,10 @@ func TestHubFileCapabilityAndBinaryTransfer(t *testing.T) {
 			}
 		}
 	}
-	setCapability(true)
+	// Legacy workers support file input but only accept 10 MiB and 16 MiB frames.
+	setCapability(true, 0)
+	assertRejected()
+	setCapability(true, protocol.MaxFileBytes)
 	sent := make(chan error, 1)
 	go func() { sent <- hub.SendCommand(ctx, command) }()
 	frame, err := readEnvelope(ctx, conn)
@@ -108,6 +113,6 @@ func TestHubFileCapabilityAndBinaryTransfer(t *testing.T) {
 	if err != nil || received.Operation != protocol.StoreFiles || len(received.Arguments.Files) != 1 || !bytes.Equal(received.Arguments.Files[0].Data, data) {
 		t.Fatalf("file transport corrupted bytes: %v", err)
 	}
-	setCapability(false)
+	setCapability(false, protocol.MaxFileBytes)
 	assertRejected()
 }

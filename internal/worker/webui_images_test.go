@@ -79,7 +79,7 @@ func TestWebUIImageEchoAndHistoryUsePlaceholders(t *testing.T) {
 	}
 }
 
-func TestWebUIInputByteBudgetIncludesInFlightImages(t *testing.T) {
+func TestWebUIInputByteBudgetIncludesInFlightAttachments(t *testing.T) {
 	pool := newWebUIRelays(nil, context.Background(), nil)
 	clients := make([]*webUIRelay, 5)
 	for i := range clients {
@@ -87,23 +87,21 @@ func TestWebUIInputByteBudgetIncludesInFlightImages(t *testing.T) {
 		clients[i] = client
 		pool.clients[client.id] = client
 	}
-	if !clients[0].reserveInput(15<<20) || clients[0].reserveInput(6<<20) {
-		t.Fatal("per-connection image budget ineffective")
+	if !clients[0].reserveInput(protocol.MaxWebUIInputBytes) || clients[0].reserveInput(3<<20) {
+		t.Fatal("per-connection attachment budget ineffective")
 	}
-	for i := 1; i < 4; i++ {
-		if !clients[i].reserveInput(15 << 20) {
-			t.Fatal("valid global image budget rejected")
-		}
+	if !clients[1].reserveInput(protocol.MaxWebUIInputBytes) {
+		t.Fatal("valid global attachment budget rejected")
 	}
 	if clients[4].reserveInput(5 << 20) {
 		t.Fatal("global input byte ceiling ineffective")
 	}
-	clients[0].releaseInput(15 << 20)
+	clients[0].releaseInput(protocol.MaxWebUIInputBytes)
 	if !clients[4].reserveInput(5 << 20) {
 		t.Fatal("consumed input capacity not released")
 	}
 	for _, client := range clients {
-		client.releaseInput(20 << 20)
+		client.releaseInput(protocol.MaxFrameBytes)
 	}
 	if pool.inputBytes != 0 {
 		t.Fatal("input byte accounting leaked")

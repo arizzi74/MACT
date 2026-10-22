@@ -18,6 +18,89 @@ func enableFileInput(t *testing.T, env eventTestEnv) {
 	}
 }
 
+func TestTelegramFilesRespectWorkerAdvertisedByteLimitBeforeQueue(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		advertised int
+		size       int
+		accepted   bool
+	}{
+		{"legacy maximum", 0, 10 << 20, true},
+		{"legacy oversized", 0, (10 << 20) + 1, false},
+		{"current maximum", 20 << 20, 20 << 20, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			env := newHistoryTestEnv(t)
+			metadata, err := json.Marshal(map[string]any{"supports_file_input": true, "max_file_bytes": test.advertised})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := env.store.RecordHeartbeat(t.Context(), Heartbeat{WorkerID: env.worker, ConnectionID: env.connection, Metadata: metadata}); err != nil {
+				t.Fatal(err)
+			}
+			in := telegramUpdate(env, 2)
+			in.Action = "text"
+			prepared, err := env.store.PrepareTelegramFile(t.Context(), in)
+			if err != nil || prepared.MediaError != "" {
+				t.Fatalf("file preflight: %+v, %v", prepared, err)
+			}
+			prepared.Files = []protocol.File{{Name: "report.bin", Data: make([]byte, test.size)}}
+			result, err := env.store.AcceptTelegram(t.Context(), prepared)
+			if err != nil || (result.CommandID != "") != test.accepted || (!test.accepted && result.ErrorCode != "file_worker_upgrade") {
+				t.Fatalf("file capacity acceptance: %+v, %v", result, err)
+			}
+			commands, err := env.store.PendingCommandsForWorker(t.Context(), env.worker, 10)
+			wantCommands := 0
+			if test.accepted {
+				wantCommands = 1
+			}
+			if err != nil || len(commands) != wantCommands {
+				t.Fatalf("file capacity queued %d commands, want %d: %v", len(commands), wantCommands, err)
+			}
+		})
+	}
+}
+
+func TestTelegramFileUnsupportedAcknowledgementRepliesOnceAfterWorkerDowngrade(t *testing.T) {
+	for _, caption := range []string{"", "inspect this file"} {
+		t.Run(map[bool]string{true: "storage", false: "caption"}[caption == ""], func(t *testing.T) {
+			env := newHistoryTestEnv(t)
+			metadata, _ := json.Marshal(map[string]any{"supports_file_input": true, "max_file_bytes": protocol.MaxFileBytes})
+			if err := env.store.RecordHeartbeat(t.Context(), Heartbeat{WorkerID: env.worker, ConnectionID: env.connection, Metadata: metadata}); err != nil {
+				t.Fatal(err)
+			}
+			in := telegramUpdate(env, 2)
+			in.Action, in.Text, in.TopicID = "text", caption, 77
+			in.Files = []protocol.File{{Name: "report.bin", Data: make([]byte, protocol.LegacyMaxFileBytes+1)}}
+			accepted, err := env.store.AcceptTelegram(t.Context(), in)
+			if err != nil || accepted.CommandID == "" {
+				t.Fatalf("accept: %+v, %v", accepted, err)
+			}
+			if err := env.store.RecordHeartbeat(t.Context(), Heartbeat{WorkerID: env.worker, ConnectionID: env.connection,
+				Metadata: json.RawMessage(`{"supports_file_input":true}`)}); err != nil {
+				t.Fatal(err)
+			}
+			ack := protocol.CommandAck{CommandID: accepted.CommandID, Status: "rejected", Error: &protocol.Error{Code: protocol.UnsupportedOperation, Message: "Update worker"}}
+			for range 2 {
+				if err := env.store.AcknowledgeCommand(t.Context(), env.worker, env.connection, ack); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var count int
+			var chat, topic int64
+			if err := env.store.pool.QueryRow(t.Context(), `SELECT count(*),min(chat_id),min(message_thread_id) FROM telegram_deliveries
+				WHERE kind='ui_response' AND json_extract(payload,'$.command_id')=$1 AND json_extract(payload,'$.error_code')='file_worker_upgrade'`, accepted.CommandID).
+				Scan(&count, &chat, &topic); err != nil || count != 1 || chat != 20 || topic != 77 {
+				t.Fatalf("upgrade notification count=%d, chat=%d, topic=%d: %v", count, chat, topic, err)
+			}
+			commands, err := env.store.PendingCommandsForWorker(t.Context(), env.worker, 10)
+			if err != nil || len(commands) != 0 {
+				t.Fatalf("unsupported file remained queued: count=%d, err=%v", len(commands), err)
+			}
+		})
+	}
+}
+
 func TestTelegramFilesSaveOnlyAndCaptionCommands(t *testing.T) {
 	for _, tc := range []struct {
 		name, action, caption, active, state string

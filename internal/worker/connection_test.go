@@ -38,7 +38,7 @@ func TestConnectionAdvertisesCapabilitiesThroughoutConnection(t *testing.T) {
 			return
 		}
 		hello, err := protocol.Payload[protocol.Hello](helloEnvelope)
-		if err != nil || helloEnvelope.Type != "hello" || !hello.SupportsWebUI || !hello.SupportsImageInput || !hello.SupportsFileInput || !hello.SupportsSessionWorkspaces || !hello.SupportsSessionDeletion || !hello.SupportsConversationHistory {
+		if err != nil || helloEnvelope.Type != "hello" || !hello.SupportsWebUI || !hello.SupportsImageInput || !hello.SupportsFileInput || hello.MaxFileBytes != protocol.MaxFileBytes || !hello.SupportsSessionWorkspaces || !hello.SupportsSessionDeletion || !hello.SupportsConversationHistory {
 			t.Errorf("hello did not advertise capabilities: %#v, %v", hello, err)
 			return
 		}
@@ -52,7 +52,7 @@ func TestConnectionAdvertisesCapabilitiesThroughoutConnection(t *testing.T) {
 			return
 		}
 		heartbeat, err := protocol.Payload[protocol.Heartbeat](heartbeatEnvelope)
-		if err != nil || heartbeatEnvelope.Type != "heartbeat" || !heartbeat.SupportsWebUI || !heartbeat.SupportsImageInput || !heartbeat.SupportsFileInput || !heartbeat.SupportsSessionWorkspaces || !heartbeat.SupportsSessionDeletion || !heartbeat.SupportsConversationHistory {
+		if err != nil || heartbeatEnvelope.Type != "heartbeat" || !heartbeat.SupportsWebUI || !heartbeat.SupportsImageInput || !heartbeat.SupportsFileInput || heartbeat.MaxFileBytes != protocol.MaxFileBytes || !heartbeat.SupportsSessionWorkspaces || !heartbeat.SupportsSessionDeletion || !heartbeat.SupportsConversationHistory {
 			t.Errorf("heartbeat lost capabilities: %#v, %v", heartbeat, err)
 			return
 		}

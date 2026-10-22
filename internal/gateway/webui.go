@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -154,7 +155,12 @@ func (s *WebUIStream) Send(ctx context.Context, data json.RawMessage) error {
 		return err
 	}
 	s.hub.mu.Lock()
-	if s.inputBytes+len(data) > 20<<20 || s.hub.webuiInputBytes+len(data) > 64<<20 {
+	fileLimit := protocol.WorkerFileByteLimit(s.peer.maxFileBytes)
+	if len(data) > protocol.WorkerWebUIInputByteLimit(s.peer.maxFileBytes) {
+		s.hub.mu.Unlock()
+		return fmt.Errorf("%w for attachments of this size", ErrWebUIUploadsUnsupported)
+	}
+	if s.inputBytes+len(data) > protocol.MaxFrameBytes || s.hub.webuiInputBytes+len(data) > 64<<20 {
 		s.hub.mu.Unlock()
 		return errors.New("web input byte limit exceeded")
 	}
@@ -184,9 +190,14 @@ func (s *WebUIStream) Send(ctx context.Context, data json.RawMessage) error {
 			release()
 			return errors.New("invalid web upload request")
 		}
-		if _, err := protocol.DecodeWebUIUploadParams(request.Params); err != nil {
+		upload, err := protocol.DecodeWebUIUploadParams(request.Params)
+		if err != nil {
 			release()
 			return err
+		}
+		if len(upload.Data) > fileLimit {
+			release()
+			return fmt.Errorf("%w larger than %d MiB", ErrWebUIUploadsUnsupported, fileLimit>>20)
 		}
 	}
 	return s.peer.sendWithCompletion(ctx, "webui", protocol.WebUIFrame{ID: s.id, Action: "input", Data: data}, release)
@@ -253,7 +264,7 @@ func (h *Hub) handleWebUI(p *peer, envelope protocol.Envelope) error {
 		return errors.New("invalid web relay output")
 	}
 	// History pages can be large. Bound bytes as well as frame count, globally
-	// and per viewer, rather than allowing dozens of 16 MiB frames per tab.
+	// and per viewer, rather than allowing dozens of large frames per tab.
 	n := webUIFrameSize(f)
 	if s.queuedBytes+n > 20<<20 || h.webuiQueuedBytes+n > 64<<20 {
 		h.mu.Unlock()

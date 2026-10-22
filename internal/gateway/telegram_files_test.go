@@ -48,6 +48,7 @@ func TestWebhookDocumentsClassifyContentAndPreserveCaption(t *testing.T) {
 		{name: "explicit steer alone", fields: `"document":{"file_id":"doc","file_name":"data"}`, caption: "/tgsteer", action: "steer", filename: "data", data: []byte("data")},
 		{name: "missing filename", fields: `"document":{"file_id":"doc"}`, action: "text", filename: "file", data: []byte("data")},
 		{name: "empty file", fields: `"document":{"file_id":"doc","file_name":"empty"}`, action: "text", filename: "empty"},
+		{name: "exact limit", fields: fmt.Sprintf(`"document":{"file_id":"doc","file_name":"report.bin","file_size":%d}`, 20<<20), action: "text", filename: "report.bin", data: make([]byte, 20<<20)},
 		{name: "safe filename", fields: `"document":{"file_id":"doc","file_name":"../../bad\\name\n.txt"}`, action: "text", filename: ".._.._bad_name_.txt", data: []byte("data")},
 		{name: "fake image metadata", fields: `"document":{"file_id":"doc","file_name":"screenshot.png","mime_type":"image/png"}`, action: "text", filename: "screenshot.png", data: []byte("plain text")},
 		{name: "actual image", fields: `"document":{"file_id":"doc","file_name":"data.bin","mime_type":"application/octet-stream"}`, action: "text", data: testTelegramImage(t), image: true},
@@ -86,7 +87,7 @@ func TestWebhookDocumentsClassifyContentAndPreserveCaption(t *testing.T) {
 					t.Fatal("image document lost vision behavior")
 				}
 			} else if len(in.Files) != 1 || len(in.Images) != 0 || in.Files[0].Name != tc.filename || !bytes.Equal(in.Files[0].Data, tc.data) {
-				t.Fatalf("document bytes or name changed: %#v", in.Files)
+				t.Fatalf("document bytes or name changed: files=%d, images=%d", len(in.Files), len(in.Images))
 			}
 		})
 	}

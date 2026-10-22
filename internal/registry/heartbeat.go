@@ -88,11 +88,12 @@ func (s *Store) RegisterConnection(ctx context.Context, token string, connection
 		ProtocolMax                  int  `json:"protocol_max"`
 		SupportsImageInput           bool `json:"supports_image_input,omitempty"`
 		SupportsFileInput            bool `json:"supports_file_input,omitempty"`
+		MaxFileBytes                 int  `json:"max_file_bytes,omitempty"`
 		SupportsSessionWorkspaces    bool `json:"supports_session_workspaces,omitempty"`
 		SupportsWebUISessionCreation bool `json:"supports_webui_session_creation,omitempty"`
 		SupportsSessionEditing       bool `json:"supports_session_editing,omitempty"`
 		SupportsSessionArchives      bool `json:"supports_session_archives,omitempty"`
-	}{hello.ProtocolMin, hello.ProtocolMax, hello.SupportsImageInput, hello.SupportsFileInput, hello.SupportsSessionWorkspaces, hello.SupportsWebUISessionCreation, hello.SupportsSessionEditing, hello.SupportsSessionArchives})
+	}{hello.ProtocolMin, hello.ProtocolMax, hello.SupportsImageInput, hello.SupportsFileInput, hello.MaxFileBytes, hello.SupportsSessionWorkspaces, hello.SupportsWebUISessionCreation, hello.SupportsSessionEditing, hello.SupportsSessionArchives})
 	if err != nil {
 		return Worker{}, fmt.Errorf("registry: marshal hello metadata: %w", err)
 	}

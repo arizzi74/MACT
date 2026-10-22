@@ -13,9 +13,9 @@ worker inventory while keeping independent chat selections. See
 
 The browser interface displays Markdown and Mermaid diagrams on desktop and
 mobile, with local rendering, zoom controls and access to the diagram source.
-It also accepts images and file attachments up to 10 MiB. Other files are saved
-in the selected session's `inbound/` folder, with optional instructions sent to
-Codex. See [Web UI file uploads](docs/webui.md#uploading-files).
+It also accepts images up to 10 MiB and other file attachments up to 20 MiB.
+Other files are saved in the selected session's `inbound/` folder, with optional
+instructions sent to Codex. See [Web UI file uploads](docs/webui.md#uploading-files).
 
 [Explore the website](https://arizzi74.github.io/Codex-Telegram-Gateway/) ·
 [Installation guide](docs/installation.md) ·
@@ -280,7 +280,7 @@ Send a photo or a JPEG, PNG, WebP or GIF image file to the selected session,
 with an optional caption. Images can be up to 10 MiB; both the gateway and
 worker must support image input (v0.5.13 or later).
 
-Other files sent as Telegram documents, up to 10 MiB each, are saved in the
+Other files sent as Telegram documents, up to 20 MiB each, are saved in the
 selected session's working directory under `inbound/`. Without a caption, the
 bot confirms the saved path without contacting Codex. With a caption, the
 caption and saved path become a prompt, or steer the active turn. Filenames

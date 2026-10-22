@@ -6,7 +6,7 @@ const path = require('node:path');
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const assets = process.env.WEBUI_ASSETS || path.resolve(__dirname, '../internal/admin/static');
 const sessions = ['aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', '11111111-2222-4333-8444-555555555555'].map((id, index) => ({ session_id: id, codex_thread_id: 'thread-' + index, worker_id: 'worker', runtime_id: 'primary', runtime_generation: 1, worker_name: 'Worker', runtime_name: 'Codex', name: 'Session ' + index, cwd: '/projects/demo', state: 'idle' }));
-const maxBytes = 10 * 1024 * 1024;
+const maxFileBytes = 20 * 1024 * 1024, maxImageBytes = 10 * 1024 * 1024;
 
 async function setup(browser, mobile) {
   const context = await browser.newContext({ viewport: mobile ? { width: 390, height: 844 } : { width: 1280, height: 900 }, isMobile: mobile, hasTouch: mobile });
@@ -194,13 +194,29 @@ async function setup(browser, mobile) {
         assert.ok(geometry.scrollWidth <= geometry.width && geometry.composer.right <= geometry.width + 1, 'Desktop/mobile composer fits its viewport');
 
         if (!mobile) {
-          await attach('limit.bin', Buffer.alloc(maxBytes, 0xa5)); assert.match(await page.locator('#file-description').textContent(), /10 MiB/);
+          await attach('limit.bin', Buffer.alloc(maxFileBytes, 0xa5)); assert.match(await page.locator('#file-description').textContent(), /20 MiB/);
           await page.locator('#send').click(); await sent();
-          assert.equal(await page.evaluate(() => atob(window.uploadFrames.filter(row => row.method === 'gateway/upload').at(-1).params.data).length), maxBytes, 'Exactly 10 MiB is accepted');
+          assert.equal(await page.evaluate(() => atob(window.uploadFrames.filter(row => row.method === 'gateway/upload').at(-1).params.data).length), maxFileBytes, 'Exactly 20 MiB is accepted');
           const beforeOversize = await count('gateway/upload');
-          await attach('too-large.bin', Buffer.alloc(maxBytes + 1));
-          assert.equal(await page.locator('#file-preview').isHidden(), true); assert.match(await page.locator('#notice').textContent(), /10 MiB/);
+          await attach('too-large.bin', Buffer.alloc(maxFileBytes + 1));
+          assert.equal(await page.locator('#file-preview').isHidden(), true); assert.match(await page.locator('#notice').textContent(), /20 MiB/);
           assert.equal(await count('gateway/upload'), beforeOversize, 'Oversize selection never dispatches an upload');
+
+          const png = Buffer.from(await page.evaluate(() => {
+            const canvas = document.createElement('canvas'); canvas.width = 2; canvas.height = 2;
+            return canvas.toDataURL('image/png').split(',')[1];
+          }), 'base64');
+          const imageAtLimit = Buffer.alloc(maxImageBytes); png.copy(imageAtLimit);
+          await attach('image-limit.png', imageAtLimit, 'image/png');
+          await page.waitForFunction(() => !document.querySelector('#image-preview').hidden && !document.querySelector('#send').disabled);
+          await page.locator('#send').click();
+          await page.waitForFunction(() => document.querySelector('#image-preview').hidden && !document.querySelector('#send').textContent.includes('Sending'));
+          assert.equal(await page.evaluate(() => atob(window.uploadFrames.filter(row => ['turn/start', 'turn/steer'].includes(row.method)).at(-1).params.input[0].url.split(',')[1]).length), maxImageBytes, 'Exactly 10 MiB remains accepted for images');
+          const beforeOversizeImage = await count('native');
+          await attach('image-too-large.png', Buffer.alloc(maxImageBytes + 1), 'image/png');
+          assert.equal(await page.locator('#image-preview').isHidden(), true); assert.match(await page.locator('#notice').textContent(), /image.*10 MiB/);
+          assert.equal(await count('native'), beforeOversizeImage, 'Images above 10 MiB never dispatch native input');
+          assert.equal(await count('gateway/upload'), beforeOversize, 'Image boundaries keep the native image input path');
 
           await attach('command.txt'); await page.locator('#prompt').fill('/status');
           const commandBefore = await count('gateway/command'), uploadBefore = await count('gateway/upload');

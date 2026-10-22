@@ -12,7 +12,7 @@ import (
 )
 
 const Version = 1
-const MaxFrameBytes = 16 << 20
+const MaxFrameBytes = 32 << 20
 
 type Envelope struct {
 	Version   int             `json:"version"`

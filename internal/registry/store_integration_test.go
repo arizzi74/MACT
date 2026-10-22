@@ -3,6 +3,7 @@ package registry
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -143,6 +144,7 @@ func TestRegisterConnectionIntegration(t *testing.T) {
 	registered, err := store.RegisterConnection(ctx, token, connectionID, protocol.Hello{
 		WorkerID: worker.ID.String(), WorkerName: "actual-name", Hostname: "workstation",
 		OS: "darwin", Arch: "arm64", WorkerVersion: "1.2.3", ProtocolMin: 1, ProtocolMax: 1,
+		SupportsFileInput: true, MaxFileBytes: protocol.MaxFileBytes,
 		Runtimes: []protocol.Runtime{{ID: runtimeID.String(), ProfileID: "main", Name: "Main", Generation: 1, PID: 99, State: "running"}},
 	})
 	if err != nil {
@@ -150,6 +152,13 @@ func TestRegisterConnectionIntegration(t *testing.T) {
 	}
 	if registered.Name != "actual-name" || registered.Hostname != "workstation" || registered.OS != "darwin" || registered.Arch != "arm64" {
 		t.Fatalf("hello metadata was not persisted: %#v", registered)
+	}
+	var capability struct {
+		SupportsFileInput bool `json:"supports_file_input"`
+		MaxFileBytes      int  `json:"max_file_bytes"`
+	}
+	if json.Unmarshal(registered.HeartbeatMetadata, &capability) != nil || !capability.SupportsFileInput || capability.MaxFileBytes != protocol.MaxFileBytes {
+		t.Fatalf("hello file capacity was not persisted before the first heartbeat: %s", registered.HeartbeatMetadata)
 	}
 	if err := store.CheckConnection(ctx, worker.ID, connectionID); err != nil {
 		t.Fatal(err)

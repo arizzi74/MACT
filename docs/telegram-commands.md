@@ -230,9 +230,14 @@ resend them after the upgrade.
 
 After selecting a session, send a non-image file using Telegram's **File** or
 **Document** attachment option. PDF, text, spreadsheet, archive and other file
-contents are accepted up to **10 MiB per file**. Files are not executed or
+contents are accepted up to **20 MiB per file**. Files are not executed or
 unpacked automatically. Photos and supported image documents retain the image
 behavior described above.
+
+Image documents that exceed the image-input limits can be saved as ordinary
+files instead of being sent as visual input. Attachments above 10 MiB require
+both the gateway and the selected worker to support the 20 MiB limit. An older
+worker reports that an update is needed before accepting a larger file.
 
 The selected worker saves the file in `<session working directory>/inbound/`,
 creating that subfolder on the first upload. For a session whose directory is

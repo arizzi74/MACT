@@ -897,11 +897,11 @@ func telegramErrorText(code string) string {
 	case "image_input_reply":
 		return "This input request needs a text answer. Send the image as a separate message to the selected session."
 	case "file_too_large":
-		return "The file is too large. Send a document of 10 MiB or less."
+		return "The file is too large. Send a document of 20 MiB or less."
 	case "file_download_failed":
 		return "The file could not be downloaded from Telegram. Please send it again."
 	case "file_invalid":
-		return "The document could not be accepted. Send one file of 10 MiB or less."
+		return "The document could not be accepted. Send one file of 20 MiB or less."
 	case "file_worker_upgrade":
 		return "The selected worker needs an update before it can receive files. Please resend the file after the worker updates."
 	case "file_unauthorized":

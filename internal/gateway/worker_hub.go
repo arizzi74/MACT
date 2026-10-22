@@ -49,6 +49,7 @@ type peer struct {
 	supportsWorkerUpdate         bool
 	supportsImageInput           bool
 	supportsFileInput            bool // guarded by Hub.mu after publication
+	maxFileBytes                 int  // guarded by Hub.mu after publication
 	supportsSessionWorkspaces    bool
 	supportsWebUISessionCreation bool
 	supportsSessionEditing       bool
@@ -136,6 +137,7 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	legacySessionSupport := strings.TrimPrefix(hello.WorkerVersion, "v") == "0.5.19"
 	p := &peer{workerID: worker.ID, connectionID: connectionID, supportsImageInput: hello.SupportsImageInput,
 		supportsFileInput:            hello.SupportsFileInput,
+		maxFileBytes:                 hello.MaxFileBytes,
 		supportsWorkerUpdate:         hello.SupportsWorkerUpdate,
 		supportsSessionWorkspaces:    hello.SupportsSessionWorkspaces || legacySessionSupport,
 		supportsWebUISessionCreation: hello.SupportsWebUISessionCreation,
@@ -213,6 +215,7 @@ func (h *Hub) handle(ctx context.Context, p *peer, e protocol.Envelope) error {
 		}
 		h.mu.Lock()
 		p.supportsFileInput = hb.SupportsFileInput
+		p.maxFileBytes = hb.MaxFileBytes
 		h.mu.Unlock()
 		return nil
 	case "worker_event":
@@ -403,6 +406,10 @@ func (h *Hub) SendCommand(ctx context.Context, c protocol.Command) error {
 	h.mu.RLock()
 	p := h.peers[c.WorkerID]
 	supportsFiles := p != nil && p.supportsFileInput
+	fileLimit := protocol.LegacyMaxFileBytes
+	if p != nil {
+		fileLimit = protocol.WorkerFileByteLimit(p.maxFileBytes)
+	}
 	h.mu.RUnlock()
 	if p == nil {
 		return errors.New("worker is not connected")
@@ -413,7 +420,11 @@ func (h *Hub) SendCommand(ctx context.Context, c protocol.Command) error {
 	if err := h.store.CheckConnection(ctx, p.workerID, p.connectionID); err != nil {
 		return err
 	}
-	if (len(c.Arguments.Files) > 0 || c.Operation == protocol.StoreFiles) && !supportsFiles {
+	fileTooLarge := false
+	for _, file := range c.Arguments.Files {
+		fileTooLarge = fileTooLarge || len(file.Data) > fileLimit
+	}
+	if (len(c.Arguments.Files) > 0 || c.Operation == protocol.StoreFiles) && (!supportsFiles || fileTooLarge) {
 		if h.AckHandler == nil {
 			return errors.New("worker must be updated before receiving files")
 		}

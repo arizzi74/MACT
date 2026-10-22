@@ -271,7 +271,10 @@ func (a *Agent) emit(runtime protocol.Runtime, sessionID, kind string, data any)
 }
 
 func (a *Agent) onSession(runtime protocol.Runtime, s protocol.Session) {
-	_ = a.onSessionContext(a.ctx, runtime, s)
+	err := a.onSessionContext(a.ctx, runtime, s)
+	if err != nil && !(a.ctx.Err() != nil && errors.Is(err, a.ctx.Err())) {
+		a.report(err)
+	}
 }
 
 // Browser admission must stop waiting for a busy actor when its connection
@@ -289,7 +292,20 @@ func (a *Agent) onSessionContext(ctx context.Context, runtime protocol.Runtime, 
 	a.mu.Lock()
 	actor := a.sessions[s.ID]
 	if actor == nil {
-		if s.Archived {
+		if s.Archived || s.Deleted {
+			a.mu.Unlock()
+			return nil
+		}
+		// A restarted worker has no actors, but both inventories may still hold
+		// the previous process's running turn. Publish this fresh native state
+		// durably before commands can reach the newly installed actor.
+		var err error
+		s, err = a.store.ReconcileRuntimeSession(runtime, s)
+		if err != nil {
+			a.mu.Unlock()
+			return err
+		}
+		if s.Archived || s.Deleted {
 			a.mu.Unlock()
 			return nil
 		}

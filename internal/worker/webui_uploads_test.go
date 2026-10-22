@@ -40,6 +40,34 @@ func TestWebUIUploadRequiresResumeAndCannotBeCompletedByNativeReply(t *testing.T
 	}
 }
 
+func TestWebUIUploadWorkerAcceptsMaximumFileAndRejectsOneExtraByte(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		size int
+		bad  bool
+	}{
+		{"20 MiB", 20 << 20, false},
+		{"20 MiB plus one byte", (20 << 20) + 1, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			upload := protocol.WebUIUpload{UploadID: uuid.NewString(), Name: "report.bin", Data: make([]byte, test.size)}
+			raw, err := json.Marshal(map[string]any{"id": 7, "method": "gateway/upload", "params": upload})
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := testWebUIRelay()
+			r.resumed = true
+			forward, err := r.clientMessage(raw)
+			if (err != nil) != test.bad {
+				t.Fatalf("worker attachment boundary: bytes=%d, err=%v", test.size, err)
+			}
+			if !test.bad && !webUIEqualJSON(forward, raw) {
+				t.Fatal("maximum file bytes changed during worker validation")
+			}
+		})
+	}
+}
+
 func TestWebUIUploadUsesPrivateDurableLedgerAndFrozenIdentity(t *testing.T) {
 	store, workerID, database := inboundTestStore(t)
 	cwd := t.TempDir()

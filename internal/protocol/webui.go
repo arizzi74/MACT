@@ -19,9 +19,19 @@ type WebUIFrame struct {
 	Error             string          `json:"error,omitempty"`
 }
 
-// One maximum image expands to ~13.4 MiB of base64. Reserve space for
-// text and both relay/envelope wrappers beneath the 16 MiB transport cap.
-const MaxWebUIInputBytes = 15 << 20
+// One maximum file expands to ~26.7 MiB of base64. Reserve space for
+// metadata and both relay/envelope wrappers beneath the 32 MiB transport cap.
+const MaxWebUIInputBytes = 30 << 20
+const LegacyMaxWebUIInputBytes = 15 << 20
+
+// A larger advertised file limit also establishes support for the enlarged
+// relay frame. Keep legacy inputs bounded even when padded with JSON whitespace.
+func WorkerWebUIInputByteLimit(advertisedFileBytes int) int {
+	if WorkerFileByteLimit(advertisedFileBytes) <= LegacyMaxFileBytes {
+		return LegacyMaxWebUIInputBytes
+	}
+	return MaxWebUIInputBytes
+}
 
 func (f WebUIFrame) Validate() error {
 	if _, err := uuid.Parse(f.ID); err != nil {

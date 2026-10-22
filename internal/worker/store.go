@@ -397,20 +397,32 @@ func (s *Store) BeginRuntime(profileID, name, defaultCWD string) (protocol.Runti
 
 // UpsertSession preserves one stable UUID for each runtime/thread pair.
 func (s *Store) UpsertSession(session protocol.Session) (protocol.Session, error) {
-	return s.upsertSession(session, 0)
+	return s.upsertSession(session, 0, false)
 }
 
 // UpsertRuntimeSession also preserves confirmed preferences across metadata
 // responses racing native settings notifications, within the explicit runtime
 // generation. Production runtime/actor writers must use this fenced form.
 func (s *Store) UpsertRuntimeSession(runtime protocol.Runtime, session protocol.Session) (protocol.Session, error) {
+	return s.upsertRuntimeSession(runtime, session, false)
+}
+
+// ReconcileRuntimeSession installs the native snapshot used by a new actor.
+// Existing inventory and its gateway event commit together so a worker restart
+// cannot leave routing on the previous process's active turn. Equal snapshots
+// need no event, including first discoveries already persisted by the manager.
+func (s *Store) ReconcileRuntimeSession(runtime protocol.Runtime, session protocol.Session) (protocol.Session, error) {
+	return s.upsertRuntimeSession(runtime, session, true)
+}
+
+func (s *Store) upsertRuntimeSession(runtime protocol.Runtime, session protocol.Session, publish bool) (protocol.Session, error) {
 	if runtime.WorkerID != s.workerID || runtime.ID != session.RuntimeID || runtime.Generation == 0 || runtime.Generation > math.MaxInt64 {
 		return protocol.Session{}, errors.New("worker store: invalid session runtime generation")
 	}
-	return s.upsertSession(session, runtime.Generation)
+	return s.upsertSession(session, runtime.Generation, publish)
 }
 
-func (s *Store) upsertSession(session protocol.Session, generation uint64) (protocol.Session, error) {
+func (s *Store) upsertSession(session protocol.Session, generation uint64, publish bool) (protocol.Session, error) {
 	if _, err := uuid.Parse(session.RuntimeID); err != nil || session.ThreadID == "" {
 		return protocol.Session{}, errors.New("worker store: session runtime_id and thread_id are required")
 	}
@@ -422,6 +434,7 @@ func (s *Store) upsertSession(session protocol.Session, generation uint64) (prot
 		b := tx.Bucket(bucketSessions)
 		key := sessionKey(session.RuntimeID, session.ThreadID)
 		saved = session
+		var previous *protocol.Session
 		if generation != 0 {
 			saved.Settings = currentSessionSettings(saved.Settings, nil, generation)
 		}
@@ -430,6 +443,7 @@ func (s *Store) upsertSession(session protocol.Session, generation uint64) (prot
 			if err := json.Unmarshal(value, &old); err != nil {
 				return err
 			}
+			previous = &old
 			// Permanent Codex deletion wins over an older in-flight discovery
 			// snapshot or notification. This identity can never be restored.
 			if old.Deleted {
@@ -444,6 +458,10 @@ func (s *Store) upsertSession(session protocol.Session, generation uint64) (prot
 				}
 				saved.Settings = currentSessionSettings(saved.Settings, old.Settings, generation)
 			}
+			if publish && saved.Name == "" {
+				// Some native summaries omit the title; keep the confirmed name.
+				saved.Name = old.Name
+			}
 		} else if saved.ID == "" {
 			saved.ID = uuid.NewString()
 		}
@@ -454,12 +472,31 @@ func (s *Store) upsertSession(session protocol.Session, generation uint64) (prot
 		if tx.Bucket(bucketMeta).Get(archiveVisibilityKey(session.RuntimeID, session.ThreadID)) != nil {
 			saved.Archived, saved.Loaded, saved.ActiveTurnID, saved.State = true, false, "", "not_loaded"
 		}
+		if publish && saved.ActiveTurnID == "" && saved.Stats != nil && saved.Stats.ActiveSince != nil {
+			stats := *saved.Stats
+			stats.ActiveSince = nil
+			saved.Stats = &stats
+		}
+		if publish && previous != nil {
+			current, old := saved, *previous
+			current.UpdatedAt, old.UpdatedAt = time.Time{}, time.Time{}
+			if reflect.DeepEqual(current, old) {
+				saved = *previous
+				return nil
+			}
+		}
 		saved.UpdatedAt = time.Now().UTC()
 		encoded, err := json.Marshal(saved)
 		if err != nil {
 			return err
 		}
-		return b.Put(key, encoded)
+		if err := b.Put(key, encoded); err != nil {
+			return err
+		}
+		if publish {
+			_, err = s.appendEvent(tx, protocol.Event{RuntimeID: session.RuntimeID, RuntimeGeneration: generation, SessionID: saved.ID, Kind: "session_state_changed", Data: encoded})
+		}
+		return err
 	})
 	return saved, err
 }

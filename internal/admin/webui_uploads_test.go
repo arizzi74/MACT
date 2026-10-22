@@ -153,7 +153,7 @@ func newWebUIUploadFixture(t *testing.T, supported bool) *webUIFileFixture {
 	}
 	t.Cleanup(func() { f.worker.CloseNow() })
 	f.worker.SetReadLimit(protocol.MaxFrameBytes)
-	f.send("hello", protocol.Hello{WorkerID: f.workerID.String(), WorkerName: "Upload test worker", OS: "linux", Arch: "amd64", ProtocolMin: 1, ProtocolMax: 1, SupportsWebUI: true, SupportsWebUIUploads: supported,
+	f.send("hello", protocol.Hello{WorkerID: f.workerID.String(), WorkerName: "Upload test worker", OS: "linux", Arch: "amd64", ProtocolMin: 1, ProtocolMax: 1, SupportsWebUI: true, SupportsWebUIUploads: supported, MaxFileBytes: protocol.MaxFileBytes,
 		Runtimes: []protocol.Runtime{{ID: f.runtimeID.String(), WorkerID: f.workerID.String(), ProfileID: "main", Name: "Main", Generation: 1, State: "running"}}})
 	ack, err := protocol.Payload[protocol.HelloAck](f.read("hello_ack"))
 	if err != nil {

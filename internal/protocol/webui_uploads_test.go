@@ -26,9 +26,35 @@ func TestWebUIUploadValidatesOneBasenameAndExactBytes(t *testing.T) {
 		if len(message) > MaxWebUIInputBytes {
 			t.Fatal("a maximum upload exceeds the browser input budget")
 		}
-		if _, err := NewEnvelope("webui", WebUIFrame{ID: uuid.NewString(), Action: "input", Data: message}); err != nil {
+		frame := WebUIFrame{ID: uuid.NewString(), Action: "input", Data: message}
+		if err := frame.Validate(); err != nil {
+			t.Fatalf("upload exceeds relay input budget: %v", err)
+		}
+		envelope, err := NewEnvelope("webui", frame)
+		if err != nil {
 			t.Fatalf("upload exceeds worker transport budget: %v", err)
 		}
+		encoded, err := json.Marshal(envelope)
+		if err != nil || len(encoded) > MaxFrameBytes {
+			t.Fatalf("upload exceeds complete transport frame: bytes=%d, err=%v", len(encoded), err)
+		}
+		decodedEnvelope, err := Decode(encoded)
+		if err != nil {
+			t.Fatal(err)
+		}
+		received, err := Payload[WebUIFrame](decodedEnvelope)
+		if err != nil || !bytes.Equal(received.Data, message) {
+			t.Fatalf("upload changed in nested transport envelope: %v", err)
+		}
+	}
+}
+
+func TestFileInputTransportLimitsKeepImageLimitIndependent(t *testing.T) {
+	if MaxFileBytes != 20<<20 || MaxImageBytes != 10<<20 {
+		t.Fatalf("unexpected attachment limits: files=%d, images=%d", MaxFileBytes, MaxImageBytes)
+	}
+	if base64.StdEncoding.EncodedLen(MaxFileBytes)+(64<<10) > MaxWebUIInputBytes || MaxWebUIInputBytes+(64<<10) > MaxFrameBytes {
+		t.Fatal("maximum file does not leave room for its JSON and transport wrappers")
 	}
 }
 

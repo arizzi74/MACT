@@ -29,7 +29,7 @@ func (u WebUIUpload) Validate() error {
 		return errors.New("A canonical UUID uploadId is required.")
 	}
 	if err := ValidateFiles([]File{{Name: u.Name, Data: u.Data}}); err != nil {
-		return errors.New("Upload one file with a valid basename and at most 10 MiB.")
+		return errors.New("Upload one file with a valid basename and at most 20 MiB.")
 	}
 	return nil
 }
@@ -44,7 +44,7 @@ func DecodeWebUIUploadParams(params map[string]json.RawMessage) (WebUIUpload, er
 		return upload, errors.New("An uploadId, basename and base64 data are required for one file.")
 	}
 	if len(*encoded) > base64.StdEncoding.EncodedLen(MaxFileBytes) || strings.ContainsAny(*encoded, "\r\n\t ") {
-		return upload, errors.New("Upload one file of at most 10 MiB using valid base64 data.")
+		return upload, errors.New("Upload one file of at most 20 MiB using valid base64 data.")
 	}
 	var err error
 	upload.Data, err = base64.StdEncoding.Strict().DecodeString(*encoded)

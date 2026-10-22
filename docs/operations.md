@@ -274,6 +274,14 @@ turn/status events for already-loaded user conversations. Hidden helper threads
 are classified without repeatedly loading their turn history. The independent
 maintenance check still reads current activity before allowing an update.
 
+After a worker or host restart, the first discovered snapshot of each existing
+session is committed together with its gateway notification. This clears an
+interrupted turn's stale active ID when Codex reports the session idle, and
+preserves turns that Codex reports as still active. Telegram can then route
+ordinary messages using the current session state. Previously accepted commands
+retain their original runtime generation and turn target; recovery does not
+automatically replay them.
+
 Transcript statistics keep their scan offsets and partial-line state in SQLite.
 Once indexed, unchanged files are not reread, even after a worker restart or
 in-memory cache eviction; appended data is scanned from the saved offset.

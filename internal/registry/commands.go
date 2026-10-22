@@ -512,12 +512,17 @@ func acceptTextCommand(ctx context.Context, tx *dbTx, in IncomingUpdate, operati
 		if !allowed {
 			return mediaErrorResult("file_unauthorized"), nil
 		}
-		supported, err := workerSupportsFileInput(ctx, tx, target.workerID)
+		fileLimit, err := workerFileInputByteLimit(ctx, tx, target.workerID)
 		if err != nil {
 			return AcceptResult{}, err
 		}
-		if !supported {
+		if fileLimit == 0 {
 			return mediaErrorResult("file_worker_upgrade"), nil
+		}
+		for _, file := range in.Files {
+			if len(file.Data) > fileLimit {
+				return mediaErrorResult("file_worker_upgrade"), nil
+			}
 		}
 		if strings.TrimSpace(target.cwd) == "" {
 			return AcceptResult{}, ErrTelegramTarget
@@ -1167,6 +1172,9 @@ func (s *Store) AcknowledgeCommand(ctx context.Context, workerID, connectionID u
 			return err
 		}
 		if err := notifyUnsupportedHistoryAcknowledgement(ctx, tx, commandID, code); err != nil {
+			return err
+		}
+		if err := notifyUnsupportedFileAcknowledgement(ctx, tx, commandID, code); err != nil {
 			return err
 		}
 	}

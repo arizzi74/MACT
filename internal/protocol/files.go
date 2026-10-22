@@ -8,11 +8,21 @@ import (
 	"unicode/utf8"
 )
 
-const MaxFileBytes = 10 << 20
+const MaxFileBytes = 20 << 20
+const LegacyMaxFileBytes = 10 << 20
 const MaxFileCount = 1
 
+// WorkerFileByteLimit defaults omitted capabilities to the legacy file limit
+// and never lets a worker raise the gateway's global attachment ceiling.
+func WorkerFileByteLimit(advertised int) int {
+	if advertised <= 0 {
+		return LegacyMaxFileBytes
+	}
+	return min(advertised, MaxFileBytes)
+}
+
 // File contains immutable document bytes and an untrusted original basename.
-// A single base64 encoded 10 MiB file fits the 16 MiB transport frame limit.
+// A single base64 encoded 20 MiB file fits the 32 MiB transport frame limit.
 type File struct {
 	Name string `json:"name"`
 	Data []byte `json:"data"`

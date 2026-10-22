@@ -137,7 +137,7 @@ check the conversation before submitting again.
 - Every sidebar session has an edit button on desktop and mobile for renaming, deleting or archiving it. Deletion asks for confirmation, including its child conversations, and keeps project files. Editing another session keeps your current session selected. Rows change only after worker confirmation; a lost acknowledgment triggers read-only status checks without automatically repeating a mutation. See [session editing and archives](#session-editing-and-archives).
 - Send a prompt with **Send**, or desktop Enter. Shift+Enter inserts a newline. Touch keyboards use Enter for a newline; use the send button to submit. During a running turn, **Steer** submits follow-up input to that turn and **Stop** interrupts it. On mobile, **Stop** sits immediately left of **Steer**, keeping an empty composer the same height as when idle. Typed multiline text still expands the input.
 - Paste an image into the prompt, drop one onto the composer, or tap **＋** to choose an image on desktop or mobile. A thumbnail appears before sending; **×** removes it. You can send the image by itself or with text. Each message supports one PNG, JPEG or GIF up to 10 MiB, 16 million pixels and 8,192 pixels per side. If a mobile clipboard does not expose image files to the browser, use **＋** and the photo/file picker. Image drafts stay with their session in browser memory and are cleared only after acknowledgment; they are never resent automatically. Reloading or signing out clears them. Saved conversation and Telegram history show an **[Image]** placeholder.
-- The same **＋** control accepts other files, including PDFs, text files, spreadsheets and archives, up to **10 MiB** each. Files are saved in the selected session's `inbound/` directory. Sending a file without text only saves it; sending it with text includes its saved path in the prompt or steers the current turn. See [uploading files](#uploading-files).
+- The same **＋** control accepts other files, including PDFs, text files, spreadsheets and archives, up to **20 MiB** each. Files are saved in the selected session's `inbound/` directory. Sending a file without text only saves it; sending it with text includes its saved path in the prompt or steers the current turn. See [uploading files](#uploading-files).
 - With an image attached, **/tgsteer** optionally followed by instructions sends both to the active turn, just like **Steer**. An image-only **/tgsteer** is also supported. With no running turn, the image and text stay in the composer for editing. Other slash commands require removing the image first.
 - Prompts sent through Telegram appear live in an open web UI for the same session when Codex accepts them; prompts queued behind a running turn appear when that queued turn starts. Prompts sent through the web UI or Codex CLI appear in Telegram as a bot message labeled **You · Codex**, following the selected session or multisession mode. Accepted Telegram prompts are not echoed back, and replayed native events do not duplicate prompts. The worker subscribes before enabling a newly opened web session, including sessions restored from disk.
 - Model and reasoning names in the status bar are plain text. Use **/model** to choose a model and then its reasoning effort, or **/reasoning** to change effort. These settings apply to subsequent turns; changes require an idle session. Confirmed model and effort changes from a browser, Telegram or attached native client update other open web views of the same session through WebSocket notifications. Historical usage data and delayed command acknowledgments cannot overwrite the confirmed selection. Missing runtime model metadata leaves the session defaults available.
@@ -287,10 +287,15 @@ The web UI uses the admin authentication boundary and therefore grants the same 
 
 On desktop or mobile, press **＋** beside the prompt to choose a file, or drop
 one onto the composer. Pasting a file also works when the browser exposes it
-through the clipboard. Each message accepts one attachment of at most
-**10 MiB (10,485,760 bytes)**. PNG, JPEG and GIF images keep their existing image
-preview and Codex image-input behavior; other files show their name and size.
+through the clipboard. Each message accepts one attachment. Files can be up to
+**20 MiB (20,971,520 bytes)**. PNG, JPEG and GIF images support up to
+**10 MiB (10,485,760 bytes)** and keep their image preview and Codex image-input
+behavior. Other files show their name and size.
 Use **×** to remove an attachment before sending.
+
+Files above 10 MiB require both the gateway and the selected worker to support
+the 20 MiB limit. If the worker needs an update, the interface explains this and
+keeps the attachment available to retry after the update.
 
 The owning worker creates `<session working directory>/inbound/` when needed
 and saves the file there. For example, a session in `~/CODEX/Session_name` uses
