@@ -464,6 +464,7 @@ const selected = { session_id: sessionID, codex_thread_id: 'thread', worker_name
     await logoutScreenshot('mobile-confirmation');
     await page.locator('#logout-cancel').click();
     assert.equal(await page.locator('#auth').isHidden(), true, 'Mobile Cancel keeps authentication');
+    await page.waitForFunction(() => document.activeElement === document.querySelector('#show-sessions'));
     assert.equal(await page.locator('#show-sessions').evaluate(element => document.activeElement === element), true, 'Mobile Cancel returns focus to the closed drawer trigger');
     await openSidebar(page);
     await page.locator('#open-logout').click(); await page.locator('#logout-confirm').click();
