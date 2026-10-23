@@ -1,7 +1,10 @@
 name: CI
 
 on:
+  # Release tags receive the same checks in release.yml.
   push:
+    branches:
+      - '**'
   pull_request:
   schedule:
     - cron: '17 6 * * *'
