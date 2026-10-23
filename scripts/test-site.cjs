@@ -40,9 +40,9 @@ const server = http.createServer((request, response) => {
       assert.equal(await page.title(), 'MACT — Multi Agent Control Tower');
       assert.equal(await page.locator('meta[property="og:url"]').getAttribute('content'), 'https://arizzi74.github.io/MACT/');
       assert.equal(await page.locator('meta[property="og:image"]').getAttribute('content'), 'https://arizzi74.github.io/MACT/assets/screenshots/webui-desktop.png');
-      assert.match(await page.locator('h1').innerText(), /Your Codex\s+control hub/);
-      assert.match(await page.locator('.hero-description').textContent(), /^Boost your development workflow with a single control hub for Codex\./);
-      assert.match(await page.locator('.hero-description').textContent(), /Manage multiple Codex installations across servers/);
+      assert.match(await page.locator('h1').innerText(), /Your coding agent\s+control hub/);
+      assert.match(await page.locator('.hero-description').textContent(), /^Boost your development workflow with a single control hub for coding agents\./);
+      assert.match(await page.locator('.hero-description').textContent(), /Manage multiple coding agent installations across servers/);
       assert.equal(await page.getByRole('link', { name: 'MACT · Multi Agent Control Tower home', exact: true }).count(), 1);
       assert.equal(await page.locator('.gateway-node > strong').textContent(), 'MACT Gateway');
       assert.equal(await page.locator('.worker-node > strong').textContent(), 'MACT Worker');
