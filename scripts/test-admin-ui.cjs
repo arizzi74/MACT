@@ -34,11 +34,15 @@ const data = {
   const page = await browser.newPage({ viewport: { width: 390, height: 844 }, hasTouch: true });
   const errors = [];
   const consoleMessages = [];
+  if (process.env.ADMIN_UI_SCREENSHOTS) fs.mkdirSync(process.env.ADMIN_UI_SCREENSHOTS, { recursive: true });
   page.on('pageerror', error => errors.push(error.message));
   page.on('console', message => consoleMessages.push(message.text()));
   let dashboardStatus = 200;
   let loginStatus = 200;
   let browserID = 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa';
+  const currentDeviceID = 'dddddddd-1111-4111-8111-dddddddddddd';
+  const otherDeviceID = 'dddddddd-2222-4222-8222-dddddddddddd';
+  let trustedDeadline = null, pendingTrust = {};
   let nearExpiry = false;
   let holdLoginFinish = false;
   let releaseLoginFinish = null;
@@ -46,6 +50,7 @@ const data = {
   let loginFinishStatus = 200;
   let loginFinishCalls = 0;
   let staleFreshAuth = false;
+  let freshAuthAgeMS = 0;
   let enrollmentPostStatus = 200;
   let enrollmentDeleteStatus = 204;
   let enrollmentNetworkFailure = '';
@@ -78,21 +83,25 @@ const data = {
       else if (url.pathname.endsWith('/admin/session')) {
         status = loginStatus;
         const now = await page.evaluate(() => Date.now());
-        body = { authenticated: true, session_id: browserID, server_time: new Date(now).toISOString(), expires_at: new Date(now + (nearExpiry ? 240000 : 8 * 3600000)).toISOString(), reauthenticated_at: new Date(now - (staleFreshAuth ? 360000 : 0)).toISOString() };
+        trustedDeadline ??= now + 30 * 86400000;
+        body = { authenticated: true, session_id: browserID, device_id: currentDeviceID, trusted_device: true, device_name: 'My iPhone', browser_label: 'Safari on iOS', authentication_method: 'passkey', server_time: new Date(now).toISOString(), expires_at: new Date(nearExpiry ? now + 240000 : trustedDeadline).toISOString(), reauthenticated_at: new Date(now - (staleFreshAuth ? 360000 : freshAuthAgeMS)).toISOString() };
       }
-      else if (url.pathname.endsWith('/login/begin')) body = { ceremony_id: 'ceremony', publicKey: { challenge: 'dGVzdC1jaGFsbGVuZ2U', rpId: 'admin.test' } };
+      else if (url.pathname.endsWith('/login/begin')) { pendingTrust = request.postDataJSON(); body = { ceremony_id: 'ceremony', publicKey: { challenge: 'dGVzdC1jaGFsbGVuZ2U', rpId: 'admin.test' } }; }
       else if (url.pathname.endsWith('/login/finish')) {
         loginFinishCalls++;
         if (holdLoginFinish) await new Promise(resolve => { releaseLoginFinish = resolve; markFinishStarted?.(); });
         status = loginFinishStatus;
-        if (status === 200) { browserID = 'cccccccc-3333-4333-8333-cccccccccccc'; nearExpiry = false; staleFreshAuth = false; }
+        if (status === 200) {
+          browserID = 'cccccccc-3333-4333-8333-cccccccccccc'; nearExpiry = false; staleFreshAuth = false; freshAuthAgeMS = 0;
+          if (pendingTrust.trust_device === true) trustedDeadline = await page.evaluate(() => Date.now()) + 30 * 86400000;
+        }
         body = { ok: status === 200 };
       }
       else if (url.pathname.endsWith('/admin/sessions')) body = { sessions: [
-        { session_id: browserID, browser_label: 'Safari on iOS', current: true, created_at: time, last_seen_at: time, expires_at: time },
-        ...(!otherBrowserRevoked ? [{ session_id: otherBrowserID, browser_label: 'Browser ' + malicious, current: false, created_at: time, last_seen_at: time, expires_at: time }] : []),
+        { session_id: browserID, device_id: currentDeviceID, device_name: 'My iPhone', trusted_device: true, browser_label: 'Safari on iOS', authentication_method: 'passkey', current: true, created_at: time, last_seen_at: time, expires_at: new Date(trustedDeadline).toISOString() },
+        ...(!otherBrowserRevoked ? [{ session_id: otherBrowserID, device_id: otherDeviceID, device_name: 'My other browser ' + malicious, trusted_device: true, browser_label: 'Browser ' + malicious, authentication_method: 'passkey', current: false, created_at: time, last_seen_at: time, expires_at: new Date(trustedDeadline).toISOString() }] : []),
       ] };
-      else if (url.pathname.endsWith('/admin/sessions/' + otherBrowserID) && request.method() === 'DELETE') { otherBrowserRevoked = true; status = 204; }
+      else if (url.pathname.endsWith('/admin/sessions/' + otherDeviceID) && request.method() === 'DELETE') { otherBrowserRevoked = true; status = 204; }
       else if (url.pathname.endsWith('/admin/logout')) { loginStatus = 401; status = 204; }
       else if (url.pathname.endsWith('/passkeys')) body = [{ id: 'test-passkey', created_at: time }];
       else if (url.pathname.endsWith('/rotate-token')) body = { token: 'one-time-secret' };
@@ -163,6 +172,24 @@ const data = {
     }
     await page.locator('#audio-section > summary').click();
     await page.locator('#password-section > summary').click();
+    const currentBrowser = page.locator('.browser-session[data-device-id="' + currentDeviceID + '"]');
+    const otherBrowser = page.locator('.browser-session[data-device-id="' + otherDeviceID + '"]');
+    assert.equal(await currentBrowser.locator('.browser-device-name').textContent(), 'My iPhone · This browser');
+    assert.match(await currentBrowser.innerText(), /Safari on iOS/);
+    assert.equal(await currentBrowser.locator('.browser-session-current').count(), 1, 'The active trusted device is identified separately from other browsers');
+    assert.equal(await currentBrowser.locator('.browser-session-trust').count(), 1);
+    assert.equal(await otherBrowser.locator('.browser-device-name').textContent(), 'My other browser ' + malicious);
+    assert.equal(await otherBrowser.locator('img').count(), 0, 'Device names are rendered as text');
+    assert.equal(await page.locator('#current-device-trust').isChecked(), false, 'Renewing existing trust requires another explicit unchecked choice');
+    assert.equal(await page.locator('#current-device-name').inputValue(), 'My iPhone');
+    assert.equal(await page.locator('#login-trust-device').isChecked(), false, 'An existing trusted session does not preselect the next sign-in choice');
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'Trusted-device names and controls fit a narrow screen');
+    if (process.env.ADMIN_UI_SCREENSHOTS) {
+      await page.locator('#browser-session-section').screenshot({ path: path.join(process.env.ADMIN_UI_SCREENSHOTS, 'admin-trusted-devices-mobile.png') });
+      await page.setViewportSize({ width: 1440, height: 1000 });
+      await page.locator('#browser-session-section').screenshot({ path: path.join(process.env.ADMIN_UI_SCREENSHOTS, 'admin-trusted-devices-desktop.png') });
+      await page.setViewportSize({ width: 390, height: 844 });
+    }
     const sectionStates = () => page.locator('#console > .console-section').evaluateAll(sections => sections.map(section => ({ id: section.id, open: section.open })));
     const sessionSection = page.locator('#session-section');
     const sessionToggle = sessionSection.locator(':scope > summary');
@@ -195,7 +222,7 @@ const data = {
     assert.equal(await page.evaluate(() => window.injected), undefined);
     await page.waitForSelector('.browser-session');
     assert.equal(await page.locator('.browser-session').count(), 2);
-    assert.match(await page.locator('#browser-sessions').innerText(), /Safari on iOS · This browser/);
+    assert.match(await page.locator('#browser-sessions').innerText(), /My iPhone · This browser/);
     assert.equal(await page.locator('#browser-sessions img').count(), 0, 'Browser labels must remain plain text');
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'Mobile layout must fit viewport');
     await firstSession.locator('.session-details > summary').click();
@@ -254,6 +281,8 @@ const data = {
     });
     // The POST and token dialog finish before load() disables Refresh. An
     // already-enabled button does not prove that the resulting refresh ran.
+    freshAuthAgeMS = 299999;
+    const beforeFreshBoundary = loginFinishCalls;
     await Promise.all([
       nextDashboardResponse(),
       page.getByRole('button', { name: 'Rotate token', exact: true }).click(),
@@ -262,6 +291,17 @@ const data = {
     assert.ok(mutations.some(entry => entry.path.endsWith('/worker-1/rotate-token') && entry.method === 'POST'));
     assert.ok(dialogs.some(dialog => dialog.value === 'one-time-secret'));
     assert.equal((await page.locator('body').innerText()).includes('one-time-secret'), false);
+    assert.equal(loginFinishCalls, beforeFreshBoundary, 'Trusted devices retain the five-minute fresh-auth allowance');
+    freshAuthAgeMS = 300000;
+    const deadlineBeforeFreshBoundary = trustedDeadline;
+    await Promise.all([
+      nextDashboardResponse(),
+      page.getByRole('button', { name: 'Rotate token', exact: true }).click(),
+    ]);
+    await page.waitForFunction(() => !document.getElementById('refresh').disabled);
+    assert.equal(loginFinishCalls, beforeFreshBoundary + 1, 'Sensitive actions require a passkey again at the five-minute boundary');
+    assert.equal(Object.hasOwn(pendingTrust, 'trust_device'), false, 'Fresh authentication omits the explicit trust-grant flag');
+    assert.equal(trustedDeadline, deadlineBeforeFreshBoundary, 'Fresh authentication at five minutes does not grant another thirty days');
     const activeWorker = page.locator('#worker-list .worker').filter({ hasText: 'Worker ID: worker-1' });
     const revokedWorker = page.locator('#worker-list .worker').filter({ hasText: 'Worker ID: worker-revoked' });
     const deleteWorker = revokedWorker.getByRole('button', { name: 'Delete', exact: true });
@@ -301,10 +341,14 @@ const data = {
     // An explicit fresh-auth rejection reauthenticates once, then refreshes on success.
     workerPurgeStatuses.push(403, 204);
     const beforeDeleteLogin = loginFinishCalls;
+    const beforeSensitiveDeadline = trustedDeadline;
     await deleteWorker.click();
     await page.waitForFunction(() => ![...document.querySelectorAll('#worker-list .worker')].some(worker => worker.textContent.includes('Worker ID: worker-revoked')));
     await page.waitForFunction(() => !document.getElementById('refresh').disabled);
     assert.equal(loginFinishCalls, beforeDeleteLogin + 1);
+    assert.equal(Object.hasOwn(pendingTrust, 'trust_device'), false, 'Sensitive-action fresh authentication does not silently request renewed trust');
+    assert.equal(trustedDeadline, beforeSensitiveDeadline, 'Fresh authentication preserves the existing trusted-device deadline');
+    assert.equal(await page.evaluate(() => sessionAuth.snapshot().expires_at), new Date(beforeSensitiveDeadline).toISOString());
     assert.equal(purgeCalls().length, 3);
     assert.ok(purgeCalls().every(entry => entry.method === 'DELETE' && entry.csrf === 'test-csrf'));
     assert.ok(purgeCalls().every(entry => JSON.parse(entry.body).confirmed === true));
@@ -452,10 +496,12 @@ const data = {
     assert.equal((await page.locator('body').innerText()).includes('one-time-secret'), false);
     await Promise.all([
       nextDashboardResponse(),
-      page.locator('.browser-session').nth(1).getByRole('button', { name: 'Sign out', exact: true }).click(),
+      otherBrowser.getByRole('button', { name: 'Sign out', exact: true }).click(),
     ]);
     await page.waitForFunction(() => document.querySelectorAll('.browser-session').length === 1);
-    assert.ok(mutations.some(entry => entry.path.endsWith('/sessions/' + otherBrowserID) && entry.method === 'DELETE'));
+    assert.ok(mutations.some(entry => entry.path.endsWith('/sessions/' + otherDeviceID) && entry.method === 'DELETE'), 'Individual revocation targets the stable device identity after session rotation');
+    assert.equal(await currentBrowser.count(), 1, 'Revoking another device preserves the current trusted browser');
+    assert.equal(mutations.some(entry => entry.path.endsWith('/sessions/revoke-all')), false);
     await page.setViewportSize({ width: 1440, height: 1000 });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     const desktopSections = await sectionStates();
@@ -550,7 +596,17 @@ const data = {
     const logoutCalls = mutations.slice(beforeLogout);
     assert.ok(logoutCalls.some(entry => entry.path.endsWith('/webui/push/unsubscribe') && JSON.parse(entry.body).subscription_id === device), 'Sign-out disables the current device');
     assert.ok(logoutCalls.findIndex(entry => entry.path.endsWith('/webui/push/unsubscribe')) < logoutCalls.findIndex(entry => entry.path.endsWith('/admin/logout')), 'Device cleanup starts while the login is still valid');
+    await page.waitForSelector('#auth:not([hidden])');
+    assert.equal(await page.locator('#login-trust-device').isChecked(), false, 'Signing out resets the optional trust choice');
+    if (process.env.ADMIN_UI_SCREENSHOTS) {
+      await page.screenshot({ path: path.join(process.env.ADMIN_UI_SCREENSHOTS, 'admin-trust-sign-in-desktop.png'), fullPage: true });
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.locator('#login-trust-device').check();
+      await page.locator('#login-device-name').fill('My personal phone');
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'Trust sign-in controls fit a narrow screen');
+      await page.screenshot({ path: path.join(process.env.ADMIN_UI_SCREENSHOTS, 'admin-trust-sign-in-mobile.png'), fullPage: true });
+    }
     assert.deepEqual(errors, []);
-    console.log('Admin browser checks passed: all Admin sections collapsed by default, mobile touch/desktop keyboard controls, section state retained through manual/15-second refreshes, session statistics/filters, safe rendering, revoked-worker deletion, enrollment URL lifecycle, no secret persistence, renewal/poll races, failed-finish recovery and session expiry.');
+    console.log('Admin browser checks passed: all Admin sections collapsed by default, mobile touch/desktop keyboard controls, section state retained through refreshes, session statistics/filters, safe device identification and individual revocation after session rotation, trusted fresh-auth deadline preservation, revoked-worker deletion, enrollment URL lifecycle, no secret persistence, renewal/poll races, failed-finish recovery and session expiry.');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

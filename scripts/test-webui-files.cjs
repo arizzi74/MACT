@@ -9,13 +9,26 @@ const first = '11111111-2222-4333-8444-555555555555', second = 'aaaaaaaa-bbbb-4c
 const reportPath = '/home/ubuntu/CODEX/CodeNow/docs/NOW-LLM-ARTIFACT-BENCHMARK.md';
 const reportName = path.basename(reportPath);
 const reportLabel = 'Complete artifact matrix and performance report';
+const pdfPath = '/home/ubuntu/CODEX/MCP_NASK/otto_panel/distribution/Otto_Panel_Response_Comparison_Checklist.pdf';
 const targets = [
   [reportLabel, reportPath], ['Relative report', 'docs/report.md:12:3'], ['Home report', '~/report.md#L12'],
   ['Encoded file', 'file:///home/ubuntu/matrix%20report.md#L8'], ['Localhost file', 'file://localhost/home/ubuntu/report.md'],
-  ['Spaced report', '/home/ubuntu/Complete report (final).md'], ['Bare filename', 'report.md:12']
+  ['Spaced report', '/home/ubuntu/Complete report (final).md'], ['Bare filename', 'report.md:12'],
+  ['Download the step-by-step PDF', pdfPath, ' '], ['Trailing space', pdfPath, '', ' '],
+  ['Padded tabs', pdfPath, ' \t', '\t '], ['Padded spaced report', '/home/ubuntu/Complete report (final).md', ' \t', '\t ']
 ];
-const unsafe = [ ['Unsafe script', 'javascript:alert(1)'], ['Unsafe numeric script', 'javascript:12'], ['Unsafe data', 'data:text/html;base64,PHNjcmlwdD4='], ['Remote file', 'file://remote.invalid/report.md'], ['Remote relative', '//remote.invalid/report.md'], ['Fragment', '#section'], ['Null path', '/home/ubuntu/bad\0name.md'], ['Vertical tab path', '/home/ubuntu/bad\vname.md'], ['Terminal path', '/home/ubuntu/\u001b[31mname.md'], ['Nested null path', '/dir(foo)/bad\0name.md'], ['Nested tab path', '/dir(foo)/bad\vname.md'], ['Nested terminal path', '/dir(foo)/\u001b[31mname.md'] ];
-const markdown = targets.map(([label, target]) => '[' + label + '](' + (target.includes(' ') ? '<' + target + '>' : target) + ')').join('\n\n') + '\n\n' + unsafe.map(([label, target]) => '[' + label + '](' + target + ')').join(' ') + '\n\n[Documentation](https://example.com/docs)\n\n> [Quoted report](./quoted.md)\n\n| File | Description |\n| --- | --- |\n| [Table report](./table.md) | Results |';
+const unsafe = [
+  ['Unsafe script', 'javascript:alert(1)'], ['Unsafe numeric script', 'javascript:12'], ['Unsafe data', 'data:text/html;base64,PHNjcmlwdD4='],
+  ['Remote file', 'file://remote.invalid/report.md'], ['Remote relative', '//remote.invalid/report.md'], ['Fragment', '#section'],
+  ['Null path', '/home/ubuntu/bad\0name.md'], ['Vertical tab path', '/home/ubuntu/bad\vname.md'], ['Terminal path', '/home/ubuntu/\u001b[31mname.md'],
+  ['Nested null path', '/dir(foo)/bad\0name.md'], ['Nested tab path', '/dir(foo)/bad\vname.md'], ['Nested terminal path', '/dir(foo)/\u001b[31mname.md'],
+  ['Padded unsafe script', ' \tjavascript:alert(1)\t '], ['Padded sandbox path', ' sandbox:/mnt/data/Otto_Panel_Response_Comparison_Checklist.pdf '],
+  ['Padded null path', ' /home/ubuntu/bad\0name.md '], ['Padded tab within path', ' /home/ubuntu/bad\tname.md '],
+  ['Leading control before padding', '\0 ' + pdfPath], ['Trailing control after padding', pdfPath + ' \v'],
+  ['Leading terminal escape before padding', '\u001b[31m ' + pdfPath], ['Padded angle target with control', ' </home/ubuntu/bad\0 name.md> '],
+  ['Padded angle control with parentheses', ' </home/ubuntu/bad(\0 name.md> ']
+];
+const markdown = targets.map(([label, target, leading = '', trailing = '']) => '[' + label + '](' + leading + (target.includes(' ') ? '<' + target + '>' : target) + trailing + ')').join('\n\n') + '\n\n' + unsafe.map(([label, target]) => '[' + label + '](' + target + ')').join(' ') + '\n\n[Documentation]( \thttps://example.com/docs\t )\n\n' + pdfPath + '\n\n`' + pdfPath + '`\n\n> [Quoted report](./quoted.md)\n\n| File | Description |\n| --- | --- |\n| [Table report](./table.md) | Results |';
 const sessions = [first, second].map((id, index) => ({ session_id: id, codex_thread_id: 'thread-' + id, worker_id: 'worker-' + index, worker_name: 'Artifact worker ' + (index + 1), runtime_name: 'Codex', name: 'Conversation ' + (index + 1), cwd: '/projects/demo', state: 'idle' }));
 const contents = Buffer.from('# Complete artifact matrix\n\nPerformance results: 42 ms.\n');
 (async () => {
@@ -107,6 +120,7 @@ const contents = Buffer.from('# Complete artifact matrix\n\nPerformance results:
   try {
     await page.goto('https://files.test/tgw/webui/?session_id=' + first); await ready();
     assert.equal(requests.length, 0, 'Rendering file links makes no file requests');
+    for (const [label] of targets) assert.equal(await link(label).count(), 1, label + ' renders as a file action');
     assert.equal(await link(reportLabel).getAttribute('title'), reportPath, 'The full worker path is exposed without replacing its label');
     assert.equal(await link(reportLabel).getAttribute('target'), null, 'Local files stay in this application');
     assert.equal(await link('Documentation').getAttribute('target'), '_blank', 'External links keep existing browser behavior');
@@ -116,7 +130,18 @@ const contents = Buffer.from('# Complete artifact matrix\n\nPerformance results:
     assert.equal(await link('Quoted report').count(), 1, 'Nested Markdown keeps file actions');
     assert.equal(await link('Table report').count(), 1, 'Table Markdown keeps file actions');
     assert.equal(await page.locator('#messages table a.file-link').count(), 1);
+    assert.equal(await link(pdfPath).count(), 0, 'Plain paths and inline code stay inert');
+    const malformedDuration = await page.evaluate(() => {
+      const started = performance.now();
+      for (const destination of ['\ufffd'.repeat(1600), '\ufffd'.repeat(1600) + '<', ' '.repeat(1600) + '<']) {
+        const fragment = window.CodexFormat.markdown('[Unclosed destination](' + destination);
+        if (fragment.querySelector('a.file-link')) throw new Error('An unclosed destination became a file action');
+      }
+      return performance.now() - started;
+    });
+    assert.ok(malformedDuration < 1000, 'Malformed destinations stay responsive (' + Math.round(malformedDuration) + ' ms)');
     for (const [label, target] of targets) {
+      assert.equal(await link(label).getAttribute('data-file-path'), target, 'Destination padding is excluded from the worker path');
       await link(label).click(); await detailsReady();
       assert.deepEqual(requests.at(-1), { session_id: first, path: target, download: false, csrf: 'file-test-csrf', method: 'POST' }, 'The raw target and its rendered session are sent with CSRF protection');
       assert.equal(await page.locator('#file-name').textContent(), reportName);

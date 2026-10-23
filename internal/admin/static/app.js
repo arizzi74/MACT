@@ -50,6 +50,8 @@ const requestedReturn = new URLSearchParams(location.search).get('next') || '';
 const returnToWebUI = requestedReturn === '/tgw/webui/' ||
   (requestedReturn.length === '/tgw/webui/?session_id='.length + 36 && /^\/tgw\/webui\/\?session_id=[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(requestedReturn))
   ? requestedReturn : '';
+const loginTrust = window.CodexSessionAuth.bindTrustControls($('login-trust-device'), $('login-device-name'), $('login-device-name-field'));
+const currentDeviceTrust = window.CodexSessionAuth.bindTrustControls($('current-device-trust'), $('current-device-name'), $('current-device-name-field'), enabled => { $('trust-current-device').disabled = !enabled; });
 
 function b64(bytes) {
   return btoa(String.fromCharCode(...new Uint8Array(bytes))).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
@@ -122,7 +124,8 @@ async function enroll(bootstrap = '') {
   msg('Passkey saved. You can now sign in.');
 }
 async function login() {
-  await sessionAuth.login();
+  const preferences = loginTrust.preferences();
+  if (preferences) await sessionAuth.login('passkey', preferences);
 }
 
 // Build dynamic content with text nodes; session titles, messages, and names are untrusted.
@@ -210,6 +213,8 @@ function lockConsole(reason) {
   $('console').hidden = true;
   $('logout').hidden = true;
   $('auth').hidden = false;
+  loginTrust.reset(); currentDeviceTrust.reset();
+  $('current-device-status').textContent = ''; $('current-device-message').textContent = '';
   for (const id of ['session-list', 'bot-info', 'worker-list', 'keys', 'browser-sessions']) $(id).replaceChildren();
   const instruction = sessionAuth.hasPassword() ? 'Choose a sign-in method to continue.' : 'Continue with your passkey.';
   msg(reason === 'expired' ? 'Your session expired. ' + instruction : reason?.startsWith('Signed out') ? reason : instruction);
@@ -1021,20 +1026,32 @@ function renderBrowserSessions(sessions) {
   $('browser-sessions').replaceChildren();
   for (const session of sessions || []) {
     const row = el('div', 'key browser-session');
+    row.dataset.deviceId = session.device_id || session.session_id;
     const info = el('div');
-    info.append(el('b', '', (session.browser_label || 'Browser') + (session.current ? ' · This browser' : '')),
+    const heading = el('div', 'browser-device-heading');
+    heading.append(el('b', 'browser-device-name', (session.device_name || session.browser_label || 'Browser') + (session.current ? ' · This browser' : '')));
+    if (session.current) heading.append(el('span', 'badge good browser-session-current', 'Current device'));
+    if (session.trusted_device) heading.append(el('span', 'badge browser-session-trust', 'Trusted for 30 days'));
+    info.append(heading,
+      el('div', 'muted', session.browser_label || 'Browser'),
+      el('div', 'muted mono browser-device-id', 'Device ID: ' + (session.device_id || session.session_id)),
       el('div', 'muted', 'Signed in ' + timestamp(session.created_at)),
       el('div', 'muted', 'Last seen ' + timestamp(session.last_seen_at || session.created_at)),
-      el('div', 'muted', 'Expires ' + timestamp(session.expires_at)));
+      el('div', 'muted', (session.trusted_device ? 'Trust expires ' : 'Expires ') + timestamp(session.expires_at)));
     if (['password', 'passkey'].includes(session.authentication_method)) info.append(el('div', 'muted', 'Sign-in method: ' + (session.authentication_method === 'password' ? 'Password' : 'Passkey')));
     row.append(info, button('Sign out', 'danger', async () => {
-      if (!confirm(session.current ? 'Sign out of this browser?' : 'End access for this browser session?')) return;
-      await call('/sessions/' + encodeURIComponent(session.session_id), { method: 'DELETE', body: '{}' });
+      if (!confirm(session.current ? 'Sign out of this browser?' : 'End access for ' + (session.device_name || session.browser_label || 'this device') + '?')) return;
+      await call('/sessions/' + encodeURIComponent(session.device_id || session.session_id), { method: 'DELETE', body: '{}' });
       if (session.current) signedOut('Signed out.');
       else await load(false);
     }));
     $('browser-sessions').append(row);
   }
+}
+function renderCurrentDevice(session) {
+  const identity = session.device_name || session.browser_label || 'This browser';
+  const expiry = session.trusted_device ? 'Trusted until ' + timestamp(session.expires_at) + '. This date does not move while you use it.' : 'Sign-in expires ' + timestamp(session.expires_at) + '.';
+  $('current-device-status').textContent = identity + ' · ' + expiry + (session.device_id ? ' Device ID: ' + session.device_id : '');
 }
 function renderPasswordSettings() {
   $('password-edit').hidden = !passwordSettings;
@@ -1487,6 +1504,11 @@ async function copyEnrollmentURL() {
   }
 }
 $('login').addEventListener('click', () => login().catch(error => msg(error.message)));
+$('current-device-trust-form').addEventListener('submit', event => {
+  event.preventDefault();
+  const preferences = currentDeviceTrust.preferences();
+  if (preferences?.trustDevice) sessionAuth.login('passkey', preferences).catch(() => {});
+});
 $('bot-connect').addEventListener('click', () => openBotToken());
 $('bot-token-form').addEventListener('submit', submitBotToken);
 for (const id of ['bot-token-close', 'bot-token-cancel']) $(id).addEventListener('click', closeBotToken);
@@ -1583,16 +1605,18 @@ sessionAuth = window.CodexSessionAuth.create({
     $('worker-enrollment').inert = true;
     $('bot-token-dialog').inert = true; $('bot-create-dialog').inert = true; $('bot-remove-dialog').inert = true; $('bot-request-dialog').inert = true;
   },
-  onAuthenticated: async () => {
+  onAuthenticated: async session => {
     rotationPending = false; $('console').inert = false; $('logout').disabled = false;
     $('worker-enrollment').inert = false;
     $('bot-token-dialog').inert = false; $('bot-create-dialog').inert = false; $('bot-remove-dialog').inert = false; $('bot-request-dialog').inert = false;
-    authEpoch++; authenticated = true; await load();
+    loginTrust.reset(); currentDeviceTrust.reset(session.device_name || '');
+    authEpoch++; authenticated = true; renderCurrentDevice(session); await load();
   },
   onExpired: lockConsole,
   onRenewing: busy => {
     $('login').disabled = busy;
     $('password-login').disabled = busy;
+    loginTrust.setBusy(busy); currentDeviceTrust.setBusy(busy);
     if (!busy && rotationPending) {
       // A failed finish may have left either the old or new cookie valid.
       // Check once before resuming reads; never replay the login mutation.
@@ -1611,6 +1635,7 @@ sessionAuth = window.CodexSessionAuth.create({
     $('auth-title').textContent = options.password ? 'MACT Gateway access' : 'Passkey access';
     $('auth-description').textContent = options.password ? 'Use a personal passkey or your MACT Gateway password to administer MACT Gateway.' : 'Use a personal passkey to administer MACT Gateway.';
   },
-  onStatus: msg,
+  onVerified: renderCurrentDevice,
+  onStatus: value => { msg(value); $('current-device-message').textContent = authenticated ? value : ''; },
 });
 sessionAuth.verify('initial').catch(error => { if (error.status !== 401) msg(error.message); });

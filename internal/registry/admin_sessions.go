@@ -8,6 +8,8 @@ import (
 	"errors"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 )
@@ -17,6 +19,9 @@ import (
 // authentication time. Activity never extends ExpiresAt.
 type AdminBrowserSession struct {
 	ID                   uuid.UUID `json:"session_id"`
+	DeviceID             uuid.UUID `json:"device_id"`
+	DeviceName           string    `json:"device_name"`
+	TrustedDevice        bool      `json:"trusted_device"`
 	BrowserLabel         string    `json:"browser_label"`
 	AuthenticationMethod string    `json:"authentication_method"`
 	CreatedAt            time.Time `json:"created_at"`
@@ -29,9 +34,9 @@ type AdminBrowserSession struct {
 
 func (s *Store) AdminSessionInfo(ctx context.Context, token string) (AdminBrowserSession, error) {
 	var a AdminBrowserSession
-	err := s.pool.QueryRow(ctx, `SELECT a.session_id,a.browser_label,a.created_at,COALESCE(a.last_seen_at,a.created_at),a.expires_at,c.user_handle,c.kind
+	err := s.pool.QueryRow(ctx, `SELECT a.session_id,COALESCE(a.device_id,a.session_id),a.device_name,a.trusted_device,a.browser_label,a.created_at,COALESCE(a.last_seen_at,a.created_at),a.expires_at,c.user_handle,c.kind
  FROM admin_sessions a JOIN admin_credentials c ON c.credential_id=a.credential_id
- WHERE a.token_hash=$1 AND a.revoked_at IS NULL AND a.expires_at>`+sqliteNow+` AND c.revoked_at IS NULL`, hashSecret(token)).Scan(&a.ID, &a.BrowserLabel, &a.CreatedAt, &a.LastSeenAt, &a.ExpiresAt, &a.UserHandle, &a.AuthenticationMethod)
+ WHERE a.token_hash=$1 AND a.revoked_at IS NULL AND a.expires_at>`+sqliteNow+` AND c.revoked_at IS NULL`, hashSecret(token)).Scan(&a.ID, &a.DeviceID, &a.DeviceName, &a.TrustedDevice, &a.BrowserLabel, &a.CreatedAt, &a.LastSeenAt, &a.ExpiresAt, &a.UserHandle, &a.AuthenticationMethod)
 	if errors.Is(err, sql.ErrNoRows) {
 		return AdminBrowserSession{}, ErrAdminSessionInvalid
 	}
@@ -50,7 +55,7 @@ func (s *Store) AdminBrowserSessions(ctx context.Context, token string) ([]Admin
 	if err != nil {
 		return nil, err
 	}
-	rows, err := tx.Query(ctx, `SELECT a.session_id,a.browser_label,a.created_at,COALESCE(a.last_seen_at,a.created_at),a.expires_at,c.kind
+	rows, err := tx.Query(ctx, `SELECT a.session_id,COALESCE(a.device_id,a.session_id),a.device_name,a.trusted_device,a.browser_label,a.created_at,COALESCE(a.last_seen_at,a.created_at),a.expires_at,c.kind
  FROM admin_sessions a JOIN admin_credentials c ON c.credential_id=a.credential_id
  WHERE c.user_handle=$1 AND c.revoked_at IS NULL AND a.revoked_at IS NULL AND a.expires_at>`+sqliteNow+`
  ORDER BY a.last_seen_at DESC,a.created_at DESC,a.session_id`, handle)
@@ -60,7 +65,7 @@ func (s *Store) AdminBrowserSessions(ctx context.Context, token string) ([]Admin
 	result := make([]AdminBrowserSession, 0)
 	for rows.Next() {
 		var a AdminBrowserSession
-		if err := rows.Scan(&a.ID, &a.BrowserLabel, &a.CreatedAt, &a.LastSeenAt, &a.ExpiresAt, &a.AuthenticationMethod); err != nil {
+		if err := rows.Scan(&a.ID, &a.DeviceID, &a.DeviceName, &a.TrustedDevice, &a.BrowserLabel, &a.CreatedAt, &a.LastSeenAt, &a.ExpiresAt, &a.AuthenticationMethod); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -101,9 +106,21 @@ func (s *Store) RevokeAdminBrowserSessions(ctx context.Context, token string, ta
 	}
 	var id any
 	if target != nil {
-		id = *target
+		// Accept both the stable device ID and an inventory's older session
+		// ID. Rotation may have completed since that inventory was read.
+		var deviceID uuid.UUID
+		err = tx.QueryRow(ctx, `SELECT COALESCE(a.device_id,a.session_id)
+ FROM admin_sessions a JOIN admin_credentials c ON c.credential_id=a.credential_id
+ WHERE c.user_handle=$1 AND (a.session_id=$2 OR a.device_id=$2) LIMIT 1`, handle, *target).Scan(&deviceID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrAdminSessionInvalid
+		}
+		if err != nil {
+			return err
+		}
+		id = deviceID
 	}
-	predicate := `credential_id IN (SELECT credential_id FROM admin_credentials WHERE user_handle=$1) AND ($2 IS NULL OR session_id=$2)`
+	predicate := `credential_id IN (SELECT credential_id FROM admin_credentials WHERE user_handle=$1) AND ($2 IS NULL OR COALESCE(device_id,session_id)=$2)`
 	if _, err = tx.Exec(ctx, `DELETE FROM webpush_subscriptions WHERE admin_session_id IN (SELECT session_id FROM admin_sessions WHERE `+predicate+`)`, handle, id); err != nil {
 		return err
 	}
@@ -146,11 +163,16 @@ func (s *Store) CompleteAdminLogin(ctx context.Context, ceremonyID uuid.UUID, bi
 	}
 	var predecessor []byte
 	var label string
-	if err = tx.QueryRow(ctx, `SELECT predecessor_token_hash,browser_label FROM admin_challenges WHERE challenge_id=$1`, ceremonyID).Scan(&predecessor, &label); err != nil {
+	var trust sql.NullBool
+	var options AdminLoginOptions
+	if err = tx.QueryRow(ctx, `SELECT predecessor_token_hash,browser_label,trust_device,device_name FROM admin_challenges WHERE challenge_id=$1`, ceremonyID).Scan(&predecessor, &label, &trust, &options.DeviceName); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			err = ErrAdminCeremonyInvalid
 		}
 		return "", err
+	}
+	if trust.Valid {
+		options.TrustDevice = &trust.Bool
 	}
 	if err = claimAdminCeremony(ctx, tx, ceremonyID, "authentication", binding); err != nil {
 		return "", err
@@ -158,7 +180,7 @@ func (s *Store) CompleteAdminLogin(ctx context.Context, ceremonyID uuid.UUID, bi
 	if _, err = tx.Exec(ctx, `UPDATE admin_credentials SET credential_json=$2,sign_count=$3,last_used_at=`+sqliteNow+` WHERE credential_id=$1 AND kind='passkey' AND revoked_at IS NULL`, credential.ID, credential.CredentialJSON, record.Authenticator.SignCount); err != nil {
 		return "", err
 	}
-	token, err := issueAdminSession(ctx, tx, credential.ID, handle, predecessor, label)
+	token, err := issueAdminSession(ctx, tx, credential.ID, handle, predecessor, label, options)
 	if err != nil {
 		return "", err
 	}
@@ -170,12 +192,16 @@ func (s *Store) CompleteAdminLogin(ctx context.Context, ceremonyID uuid.UUID, bi
 
 // Both login methods use the same account-bound rotation. A captured session
 // may be expired, but revocation after authentication began always fences it.
-func issueAdminSession(ctx context.Context, tx *dbTx, credentialID, handle, predecessor []byte, label string) (string, error) {
+func issueAdminSession(ctx context.Context, tx *dbTx, credentialID, handle, predecessor []byte, label string, options AdminLoginOptions) (string, error) {
 	var oldID uuid.UUID
+	var deviceID uuid.UUID
+	var oldName string
+	var oldTrusted bool
+	var oldExpiry time.Time
 	if len(predecessor) > 0 {
 		var oldHandle []byte
-		err := tx.QueryRow(ctx, `SELECT a.session_id,c.user_handle FROM admin_sessions a JOIN admin_credentials c ON c.credential_id=a.credential_id
-    WHERE a.token_hash=$1 AND a.revoked_at IS NULL AND c.revoked_at IS NULL`, predecessor).Scan(&oldID, &oldHandle)
+		err := tx.QueryRow(ctx, `SELECT a.session_id,COALESCE(a.device_id,a.session_id),a.device_name,a.trusted_device,a.expires_at,c.user_handle FROM admin_sessions a JOIN admin_credentials c ON c.credential_id=a.credential_id
+    WHERE a.token_hash=$1 AND a.revoked_at IS NULL AND c.revoked_at IS NULL`, predecessor).Scan(&oldID, &deviceID, &oldName, &oldTrusted, &oldExpiry, &oldHandle)
 		if err != nil || subtle.ConstantTimeCompare(oldHandle, handle) != 1 {
 			if err == nil || errors.Is(err, sql.ErrNoRows) {
 				err = ErrAdminSessionInvalid
@@ -183,13 +209,39 @@ func issueAdminSession(ctx context.Context, tx *dbTx, credentialID, handle, pred
 			return "", err
 		}
 	}
+	// Use the same database clock and precision as all other session issuance.
+	var now time.Time
+	if err := tx.QueryRow(ctx, `SELECT `+sqliteNow).Scan(&now); err != nil {
+		return "", err
+	}
+	trusted := false
+	expires := now.Add(adminSessionTTL)
+	if options.TrustDevice != nil {
+		if *options.TrustDevice {
+			trusted = true
+			expires = now.Add(adminTrustedDeviceTTL)
+		}
+	} else if oldTrusted && oldExpiry.After(now) {
+		trusted = true
+		expires = oldExpiry
+	}
+	name := options.DeviceName
+	if name == "" {
+		name = oldName
+	}
+	if name == "" {
+		name = label
+	}
 	token, err := randomSecret(32)
 	if err != nil {
 		return "", err
 	}
 	newID := uuid.New()
-	if _, err = tx.Exec(ctx, `INSERT INTO admin_sessions(session_id,credential_id,token_hash,expires_at,browser_label,last_seen_at)
- VALUES($1,$2,$3,(strftime('%Y-%m-%dT%H:%M:%f','now','+8 hours') || '000000Z'),$4,`+sqliteNow+`)`, newID, credentialID, hashSecret(token), label); err != nil {
+	if deviceID == uuid.Nil {
+		deviceID = newID
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO admin_sessions(session_id,credential_id,token_hash,expires_at,browser_label,last_seen_at,created_at,device_id,device_name,trusted_device)
+ VALUES($1,$2,$3,$4,$5,$6,$6,$7,$8,$9)`, newID, credentialID, hashSecret(token), expires, label, now, deviceID, name, trusted); err != nil {
 		return "", err
 	}
 	if oldID != uuid.Nil {
@@ -206,6 +258,19 @@ func issueAdminSession(ctx context.Context, tx *dbTx, credentialID, handle, pred
 		}
 	}
 	return token, nil
+}
+
+func normalizeAdminDeviceName(name string) (string, bool) {
+	if !utf8.ValidString(name) || len(name) > 320 {
+		return "", false
+	}
+	for _, r := range name {
+		if unicode.IsControl(r) || r == '<' || r == '>' {
+			return "", false
+		}
+	}
+	name = strings.TrimSpace(name)
+	return name, utf8.RuneCountInString(name) <= 80
 }
 
 // No raw user-agent bytes enter session inventories (which may contain device

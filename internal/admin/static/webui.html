@@ -33,7 +33,7 @@
       <p id="sessions-status" class="muted small" role="status">Loading sessions…</p>
       <p id="activity-status" class="muted small" role="status" data-state="connecting">Connecting live updates…</p>
       <nav id="session-list" aria-label="Available sessions"></nav>
-      <footer class="sidebar-footer"><button id="open-settings" type="button" aria-haspopup="dialog" aria-controls="settings-dialog" aria-expanded="false">Settings</button></footer>
+      <footer class="sidebar-footer"><button id="open-settings" type="button" aria-haspopup="dialog" aria-controls="settings-dialog" aria-expanded="false">Settings</button><button id="open-logout" type="button" aria-haspopup="dialog" aria-controls="logout-dialog" aria-expanded="false" hidden disabled>Log out</button></footer>
     </aside>
     <button id="sidebar-backdrop" aria-label="Close sessions" hidden></button>
     <section id="workspace" aria-label="Conversation">
@@ -46,7 +46,15 @@
         <button id="disconnect" class="quiet" hidden>Disconnect</button>
       </header>
       <div id="connection" data-state="connecting" role="status" aria-live="polite"><span id="connection-dot" aria-hidden="true"></span><span id="connection-summary"><span id="connection-text">Connecting to gateway…</span><span id="telegram-bot-status" role="status" hidden></span></span><button id="reconnect" class="quiet" hidden>Reconnect</button><span class="telegram-bot-binding"><label for="telegram-bot">Bind Telegram bot</label><select id="telegram-bot" aria-describedby="telegram-bot-status" disabled><option value="">&lt;no bot&gt;</option></select></span></div>
-      <div id="auth" class="welcome" hidden><span class="welcome-mark" aria-hidden="true">›_</span><h2 id="auth-title">Sign in to MACT</h2><p id="auth-description">Use your MACT Gateway passkey to open your sessions.</p><button id="auth-login" type="button" class="primary">Continue with passkey</button><button id="auth-password" type="button" class="quiet" hidden>Use password</button><p id="auth-status" role="status"></p><a id="auth-manage" class="muted small" href="/tgw/admin/?next=/tgw/webui/">Manage passkeys</a></div>
+      <div id="auth" class="welcome" hidden>
+        <span class="welcome-mark" aria-hidden="true">›_</span><h2 id="auth-title">Sign in to MACT</h2><p id="auth-description">Use your MACT Gateway passkey to open your sessions.</p>
+        <div class="session-trust-options">
+          <label class="session-trust-choice"><input id="auth-trust-device" type="checkbox" aria-describedby="auth-trust-help"><span>Trust this device for 30 days</span></label>
+          <p id="auth-trust-help" class="session-trust-help">Passkey only. Otherwise, sign-in lasts 8 hours. Trust ends on a fixed date, even while you use this device.</p>
+          <label id="auth-device-name-field" class="session-device-name" hidden>Device name (optional)<input id="auth-device-name" type="text" maxlength="80" autocomplete="off" placeholder="e.g. My phone" aria-describedby="auth-device-name-help"><small id="auth-device-name-help">Helps you recognize this device in the admin console.</small></label>
+        </div>
+        <button id="auth-login" type="button" class="primary">Continue with passkey</button><button id="auth-password" type="button" class="quiet" hidden>Use password</button><p id="auth-status" role="status"></p><a id="auth-manage" class="muted small" href="/tgw/webui/admin/?next=/tgw/webui/">Manage passkeys</a>
+      </div>
       <div id="empty" class="welcome" hidden><span class="welcome-mark" aria-hidden="true">›_</span><h2>Pick up where you left off.</h2><p>Select a session, or use + beside a worker to create one. Your conversation and running work stay on its worker when you disconnect.</p><button id="empty-sessions" class="primary mobile-only">Choose a session</button></div>
       <div id="transcript" tabindex="0" aria-label="Conversation history" hidden>
         <button id="older" class="quiet older" hidden>Load 20 earlier messages</button>
@@ -97,7 +105,13 @@
       <h3 id="notification-settings-title">Notifications</h3>
       <div class="notifications-control"><button id="toggle-notifications" class="quiet" type="button" aria-describedby="notifications-status" aria-pressed="false" disabled>Notifications</button><p id="notifications-status" role="status">Sign in to manage notifications.</p></div>
     </section>
-    <div class="settings-console"><a href="/tgw/admin/">Open operations console ↗</a></div>
+    <div class="settings-console"><a href="/tgw/webui/admin/">Open operations console</a></div>
+  </dialog>
+  <dialog id="logout-dialog" aria-labelledby="logout-title" aria-describedby="logout-description">
+    <h2 id="logout-title">Log out?</h2>
+    <p id="logout-description">You will be signed out of this browser or app, and its device trust will end. Unsent drafts and attachments in this app will be cleared. Running sessions will continue.</p>
+    <p id="logout-error" role="alert" hidden></p>
+    <div class="logout-actions"><button id="logout-cancel" type="button" class="quiet" autofocus>Cancel</button><button id="logout-confirm" type="button" class="primary">Log out</button></div>
   </dialog>
   <dialog id="edit-session-dialog" aria-labelledby="edit-session-title" aria-describedby="edit-session-description">
     <div class="settings-heading"><h2 id="edit-session-title">Edit session</h2><button id="edit-session-close" type="button" class="quiet" aria-label="Close session editor" autofocus>×</button></div>

@@ -35,6 +35,8 @@ func (s *Server) session(w http.ResponseWriter, r *http.Request) {
 		"authenticated": true, "session_id": info.ID, "server_time": time.Now().UTC(),
 		"expires_at": info.ExpiresAt, "reauthenticated_at": info.ReauthenticatedAt,
 		"authentication_method": credential.Kind,
+		"trusted_device":        info.TrustedDevice, "device_name": info.DeviceName,
+		"browser_label": info.BrowserLabel, "device_id": info.DeviceID,
 	})
 }
 
@@ -119,7 +121,13 @@ func (s *Server) browserSession(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if target == nil || *target == info.ID {
+	currentRevoked := target == nil || *target == info.ID || *target == info.DeviceID
+	if !currentRevoked {
+		// A stale inventory can name a previous token of this same device.
+		_, err = s.store.AdminSessionInfo(r.Context(), cookie.Value)
+		currentRevoked = errors.Is(err, registry.ErrAdminSessionInvalid)
+	}
+	if currentRevoked {
 		s.clearSession(w)
 		// This screen offers sign-in without a navigation after revocation.
 		// Issue a fresh CSRF cookie for either authentication method.

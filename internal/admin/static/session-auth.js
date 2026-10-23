@@ -28,6 +28,27 @@
     if (credential.getClientExtensionResults) value.clientExtensionResults = credential.getClientExtensionResults();
     return value;
   }
+  function bindTrustControls(checkbox, input, field, onChange) {
+    let busy = false;
+    function update() {
+      field.hidden = !checkbox.checked;
+      checkbox.disabled = busy; input.disabled = busy || !checkbox.checked;
+      onChange?.(checkbox.checked && !busy);
+    }
+    checkbox.addEventListener('change', update);
+    input.addEventListener('input', () => input.setCustomValidity(''));
+    update();
+    return {
+      preferences() {
+        const name = input.value.trim();
+        input.setCustomValidity(checkbox.checked && ([...name].length > 80 || /[\p{Cc}<>]/u.test(name)) ? 'Use up to 80 characters without control characters or < >.' : '');
+        if (checkbox.checked && !input.reportValidity()) return null;
+        return { trustDevice: checkbox.checked, deviceName: name };
+      },
+      reset(name = '') { checkbox.checked = false; input.value = name; input.setCustomValidity(''); update(); },
+      setBusy(value) { busy = value; update(); },
+    };
+  }
   // Passwords exist only in these inputs and the pending request. They never
   // enter browser storage, cross-tab messages, or application status text.
   function passwordDialog(config = {}) {
@@ -96,7 +117,16 @@
     const button = document.createElement('button'); button.type = 'button'; button.textContent = 'Continue with passkey';
     const passwordButton = document.createElement('button'); passwordButton.type = 'button'; passwordButton.className = 'session-auth-password'; passwordButton.textContent = 'Use password'; passwordButton.hidden = true;
     const status = document.createElement('small'); status.className = 'session-auth-status'; status.setAttribute('role', 'status'); status.hidden = true;
-    banner.append(text, button, passwordButton, status);
+    const trustOptions = document.createElement('div'); trustOptions.className = 'session-trust-options session-auth-trust';
+    const trustLabel = document.createElement('label'); trustLabel.className = 'session-trust-choice';
+    const trustCheckbox = document.createElement('input'); trustCheckbox.type = 'checkbox'; trustCheckbox.className = 'session-auth-trust-device';
+    const trustText = document.createElement('span'); trustText.textContent = 'Trust this device for 30 days'; trustLabel.append(trustCheckbox, trustText);
+    const trustHelp = document.createElement('p'); trustHelp.className = 'session-trust-help'; trustHelp.id = 'session-trust-help-' + crypto.randomUUID(); trustHelp.textContent = 'Passkey only. Otherwise, sign-in lasts 8 hours. Trust expires on a fixed date.'; trustCheckbox.setAttribute('aria-describedby', trustHelp.id);
+    const nameLabel = document.createElement('label'); nameLabel.className = 'session-device-name'; nameLabel.textContent = 'Device name (optional)';
+    const nameInput = document.createElement('input'); nameInput.type = 'text'; nameInput.maxLength = 80; nameInput.autocomplete = 'off'; nameInput.placeholder = 'e.g. My phone'; nameLabel.append(nameInput);
+    trustOptions.append(trustLabel, trustHelp, nameLabel);
+    const bannerTrust = bindTrustControls(trustCheckbox, nameInput, nameLabel);
+    banner.append(text, button, passwordButton, trustOptions, status);
     (options.mount || document.body).prepend(banner);
     function message(value = '') { status.textContent = value; status.hidden = !value; options.onStatus?.(value); }
     function hasPassword() { return loginOptions.password || session?.authentication_method === 'password'; }
@@ -120,12 +150,18 @@
       if (ms <= 0) { expire('expired'); verify('expiry-check').catch(() => {}); return; }
       const warning = ms <= 300000;
       banner.hidden = !warning;
+      button.textContent = session.trusted_device ? 'Renew 30-day trust with passkey' : 'Continue with passkey';
+      passwordButton.textContent = session.trusted_device ? 'Use password (8 hours)' : 'Use password';
+      trustOptions.hidden = session.trusted_device === true;
       if (warning) text.textContent = 'Sign-in expires in ' + Math.max(1, Math.ceil(ms / 60000)) + ' min. Your running work will continue.';
       options.onWarning?.(warning ? { remainingMS: ms, expiresAt: session.expires_at } : null);
-      timer = setTimeout(schedule, warning ? Math.min(ms, 30000) : ms - 300000);
+      // Browsers store timeout delays in a signed 32-bit integer; 30 days
+      // would overflow and cause an immediate expiry-check loop.
+      timer = setTimeout(schedule, Math.min(2147483647, warning ? Math.min(ms, 30000) : ms - 300000));
     }
     function expire(reason = 'expired') {
       serial++; const hadSession = session !== null; session = null; clearTimeout(timer); timer = null;
+      bannerTrust.reset();
       updateLoginOptions();
       banner.hidden = true; message(); options.onWarning?.(null);
       // Repeated transport failures can report the same expired cookie.
@@ -168,11 +204,15 @@
       }
       return response.json();
     }
-    function login(method = 'passkey') {
+    function login(method = 'passkey', preferences) {
       if (loginPromise) return loginPromise;
       loginPromise = (async () => {
-        button.disabled = true; passwordButton.disabled = true; options.onRenewing?.(true, method); message(method === 'password' ? 'Enter your gateway password.' : 'Waiting for your passkey…');
+        button.disabled = true; passwordButton.disabled = true; bannerTrust.setBusy(true); options.onRenewing?.(true, method); message(method === 'password' ? 'Enter your gateway password.' : 'Waiting for your passkey…');
         try {
+          // An installed app can stay open beyond both cookie deadlines.
+          // Reestablish its CSRF cookie before starting another ceremony.
+          if (!cookie('__Host-telegramgw-csrf')) await refreshLoginOptions();
+          if (!cookie('__Host-telegramgw-csrf')) throw new Error('Could not prepare sign-in. Check your connection and try again.');
           if (method === 'password') {
             return await passwordDialog({
               // Ambiguous failures can happen after cookie rotation. Close the
@@ -189,7 +229,14 @@
               },
             });
           }
-          const begin = await post('/login/begin', {});
+          // Only explicit sign-in choices change trust. Sensitive-action
+          // reauthentication omits these fields to retain the fixed deadline.
+          const request = {};
+          if (typeof preferences?.trustDevice === 'boolean') {
+            request.trust_device = preferences.trustDevice;
+            if (preferences.trustDevice) request.device_name = String(preferences.deviceName || '').trim();
+          }
+          const begin = await post('/login/begin', request);
           const credential = await navigator.credentials.get({ publicKey: publicOptions(begin) });
           if (!credential) throw new DOMException('Cancelled', 'NotAllowedError');
           // Fence work tied to the old cookie before the server revokes it.
@@ -202,12 +249,13 @@
           serial++;
           const result = await verify('login');
           if (!result) throw new Error('Sign-in could not be confirmed. Try again.');
+          bannerTrust.reset();
           broadcast('renewed');
           return result;
         } catch (error) {
           message(error.name === 'NotAllowedError' || error.name === 'AbortError' ? (method === 'password' ? 'Password sign-in cancelled. Choose a sign-in method to try again.' : 'Passkey cancelled. Tap the button to try again.') : error.message || 'Sign-in failed. Please try again.');
           throw error;
-        } finally { button.disabled = false; passwordButton.disabled = false; loginPromise = null; options.onRenewing?.(false, method); }
+        } finally { button.disabled = false; passwordButton.disabled = false; bannerTrust.setBusy(false); loginPromise = null; options.onRenewing?.(false, method); }
       })();
       return loginPromise;
     }
@@ -223,7 +271,10 @@
     function incoming(value) { if (value && ['renewed', 'logout', 'revoked'].includes(value.kind)) { refreshLoginOptions(); verify(value.kind === 'renewed' ? 'other-tab' : value.kind).catch(error => message(error.message)); } }
     function storage(event) { if (event.key === channelName && event.newValue) { try { incoming(JSON.parse(event.newValue)); } catch (_) { /* Ignore malformed hints. */ } } }
     try { channel = new BroadcastChannel(channelName); channel.onmessage = event => incoming(event.data); } catch (_) { window.addEventListener('storage', storage); }
-    button.addEventListener('click', () => login().catch(() => {}));
+    button.addEventListener('click', () => {
+      const preferences = session?.trusted_device ? { trustDevice: true, deviceName: session.device_name || '' } : bannerTrust.preferences();
+      if (preferences) login('passkey', preferences).catch(() => {});
+    });
     passwordButton.addEventListener('click', () => login('password').catch(() => {}));
     document.addEventListener('visibilitychange', foreground);
     window.addEventListener('pageshow', foreground);
@@ -236,5 +287,5 @@
       destroy() { destroyed = true; serial++; clearTimeout(timer); channel?.close(); banner.remove(); document.removeEventListener('visibilitychange', foreground); window.removeEventListener('pageshow', foreground); window.removeEventListener('online', foreground); window.removeEventListener('storage', storage); },
     };
   }
-  window.CodexSessionAuth = { create, cookie, publicOptions, serialize, passwordDialog };
+  window.CodexSessionAuth = { create, cookie, publicOptions, serialize, passwordDialog, bindTrustControls };
 })();

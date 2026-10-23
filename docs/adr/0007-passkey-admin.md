@@ -16,3 +16,12 @@ default and cannot bootstrap the first owner. Argon2id hashes are stored in
 SQLite, and password sessions share the existing account, eight-hour lifetime,
 recent-authentication checks and revocation controls. Changing or disabling the
 password revokes its sessions; at least one passkey must remain available.
+
+Amendment (2026-10-23): passkey sign-in can explicitly opt in to a persistent,
+30-day trusted-device session. Its deadline is absolute: activity does not extend
+it, and reauthentication for sensitive actions preserves it. Explicit renewal
+with a verified passkey starts a new 30-day period. Password sign-in retains its
+eight-hour limit. Device names are user-provided labels, and browser/platform
+labels are approximate; neither is evidence of hardware identity. A stable
+device identifier ties successive login tokens together so an administrator can
+revoke the device even if its token rotated after the device list was loaded.

@@ -254,7 +254,9 @@ func (s *Store) completeAdminPasswordLogin(ctx context.Context, snapshot adminPa
 		subtle.ConstantTimeCompare(handle, snapshot.handle) != 1 {
 		return "", ErrAdminPasswordInvalid
 	}
-	token, err := issueAdminSession(ctx, tx, currentID, handle, snapshot.predecessor, label)
+	// Password verification never grants or carries a trusted-device lifetime.
+	untrusted := false
+	token, err := issueAdminSession(ctx, tx, currentID, handle, snapshot.predecessor, label, AdminLoginOptions{TrustDevice: &untrusted})
 	if err != nil {
 		return "", err
 	}

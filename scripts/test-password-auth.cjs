@@ -99,7 +99,11 @@ const assets = path.resolve(__dirname, '../internal/admin/static');
     assert.equal(await page.locator('#auth-password').isHidden(), true);
     state.enabled = true; state.username = 'admin'; state.password = '  correct secret  ';
     await page.reload(); await page.waitForSelector('#auth-password:not([hidden])');
+    assert.equal(await page.locator('#auth-trust-device').isChecked(), false, 'Trust is optional when a password alternative is available');
+    await page.locator('#auth-trust-device').check();
+    await page.locator('#auth-device-name').fill('Passkey-only trust choice');
     await page.locator('#auth-password').click();
+    assert.equal(await dialog().getByRole('checkbox').count(), 0, 'Password sign-in never offers persistent trust');
     assert.equal(await dialog().locator('[name=username]').getAttribute('autocomplete'), 'username');
     assert.equal(await dialog().locator('[name=password]').getAttribute('autocomplete'), 'current-password');
     await fillPassword('admin', 'wrong password'); await submit();
@@ -117,6 +121,7 @@ const assets = path.resolve(__dirname, '../internal/admin/static');
     holdPassword = false; releasePassword(); releasePassword = null; await waitWebUI();
     assert.equal(posts.at(-1).body.username, 'admin', 'Username whitespace is trimmed');
     assert.equal(posts.at(-1).body.password, '  correct secret  ', 'Password whitespace is preserved');
+    assert.deepEqual(Object.keys(posts.at(-1).body).sort(), ['password', 'username'], 'Password sign-in cannot inherit the passkey trust choice or device name');
     assert.equal(posts.at(-1).csrf, 'password-csrf');
     assert.equal(await dialog().count(), 0);
 
@@ -150,7 +155,11 @@ const assets = path.resolve(__dirname, '../internal/admin/static');
     // Admin sign-in uses the same alternative; password changes invalidate the current browser.
     state.authenticated = false;
     await page.goto(origin + '/tgw/admin/'); await page.waitForSelector('#password-login:not([hidden])');
+    assert.equal(await page.locator('#login-trust-device').isChecked(), false, 'Admin trust starts unchecked');
+    await page.locator('#login-trust-device').check();
+    await page.locator('#login-device-name').fill('Admin passkey-only trust choice');
     await page.locator('#password-login').click(); await fillPassword('admin', state.password); await submit(); await waitConsole();
+    assert.deepEqual(Object.keys(posts.at(-1).body).sort(), ['password', 'username'], 'Admin password sign-in also ignores passkey trust controls');
     await page.waitForSelector('#password-edit:not([hidden])');
     state.stale = true;
     await page.locator('#password-edit').click(); await page.waitForSelector('.session-password-dialog');
@@ -201,6 +210,6 @@ const assets = path.resolve(__dirname, '../internal/admin/static');
     for (const secret of ['correct secret', 'backup password secret', 'mobile password secret', newPassword]) { assert.ok(!storage.includes(secret)); assert.ok(!logs.join('\n').includes(secret)); }
     assert.ok(mutations.every(value => value.csrf.startsWith('password-csrf')));
     assert.deepEqual(errors, []);
-    console.log('Password browser checks passed: optional discovery, both login screens, wrong password, whitespace/UTF-8 policy, cancellation/focus, renewal/expiry, fresh password auth, enable/change/disable/invalidation, passkey continuity, mobile layout, and secret erasure.');
+    console.log('Password browser checks passed: optional discovery, both login screens, passkey-only trust isolation, wrong password, whitespace/UTF-8 policy, cancellation/focus, renewal/expiry, fresh password auth, enable/change/disable/invalidation, passkey continuity, mobile layout, and secret erasure.');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

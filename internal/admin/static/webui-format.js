@@ -14,10 +14,13 @@ window.CodexFormat = (() => {
   // removing terminal controls from the surrounding message.
   function cleanMarkdown(value) {
     const raw = String(value ?? '');
-    // The sentinel preserves offsets, and lets the same target grammar match
-    // invalid whitespace controls before clean() could remove them.
-    const guarded = raw.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '\ufffd');
-    const references = /\[[^\]\n]+\]\((<[^<>\n]+>|(?:\\.|[^\s\\()]|\((?:\\.|[^\s\\()])*\))+)\)/g;
+    // Preserve offsets and mark entire terminal escapes before clean() can
+    // remove them. Invalid controls around destination padding stay guarded too.
+    const guard = value => '\ufffd'.repeat(value.length);
+    const guarded = raw.replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, guard).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, guard).replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '\ufffd');
+    // The guard also accepts malformed destination whitespace. Keep padding
+    // out of the generic branch to avoid ambiguous sentinel partitions.
+    const references = /\[[^\]\n]+\]\((?:[ \t\ufffd]*<[^<>\n]+>[ \t\ufffd]*|(?:\\.|[^\n\\()]|\((?:\\.|[^\n\\()])*\))+)\)/g;
     let result = '', cursor = 0;
     for (const match of guarded.matchAll(references)) {
       result += raw.slice(cursor, match.index) + match[0];
@@ -47,7 +50,7 @@ window.CodexFormat = (() => {
   function inline(parent, value, depth = 0) {
     const text = cleanMarkdown(value);
     if (depth > 8) { parent.append(document.createTextNode(text)); return; }
-    const pattern = /(`+)([^`\n]+?)\1|\[([^\]\n]+)\]\((<[^<>\n]+>|(?:\\.|[^\s\\()]|\((?:\\.|[^\s\\()])*\))+)\)|\*\*([^*\n]+)\*\*|__([^_\n]+)__|~~([^~\n]+)~~|\*([^*\n]+)\*|_([^_\n]+)_|https?:\/\/[^\s<>]+/g;
+    const pattern = /(`+)([^`\n]+?)\1|\[([^\]\n]+)\]\([ \t]*(<[^<>\n]+>|(?:\\.|[^\s\\()]|\((?:\\.|[^\s\\()])*\))+)[ \t]*\)|\*\*([^*\n]+)\*\*|__([^_\n]+)__|~~([^~\n]+)~~|\*([^*\n]+)\*|_([^_\n]+)_|https?:\/\/[^\s<>]+/g;
     let cursor = 0;
     for (const match of text.matchAll(pattern)) {
       parent.append(document.createTextNode(text.slice(cursor, match.index)));

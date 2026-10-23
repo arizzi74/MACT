@@ -93,7 +93,7 @@ func (s *Server) webuiPage(w http.ResponseWriter, r *http.Request) {
 	}
 	// The shell contains no private data. API and streaming endpoints require
 	// the same passkey session as the admin console.
-	s.setCSRF(w)
+	s.setRequestCSRF(w, r)
 	page, err := versionedWebUIPage()
 	if err != nil {
 		fail(w, err)

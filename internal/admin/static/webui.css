@@ -79,10 +79,11 @@
 }
 
 .draft-recovery-control{font-size:.75rem;line-height:1.5;margin-bottom:12px}.draft-recovery-control label{display:flex;align-items:flex-start;gap:8px}.draft-recovery-control input{width:auto;flex-shrink:0;margin-top:3px}.draft-recovery-control p{font-size:.9em;margin:6px 0 0}#draft-recovery-offer{padding:10px 20px;background:var(--panel);border-top:1px solid var(--border);font-size:.85rem;flex-shrink:0}#draft-recovery-offer p{margin:0 0 8px;line-height:1.5}#draft-recovery-offer button{margin:0 8px 0 0;font-size:inherit}#auth-status{white-space:pre-wrap;overflow-wrap:anywhere}#auth a{display:block;margin-top:18px}
+#auth{min-height:0;flex-shrink:1;overflow:auto;width:100%;overscroll-behavior:contain}#auth .session-trust-options{max-width:400px;margin:18px auto}#auth .session-trust-help{margin:4px 0 12px;line-height:1.5}#auth .welcome-mark{line-height:1.2}#auth h2{margin:12px 0}#auth-description{margin:0 0 16px}
 /* Keep the session list tall; optional controls live in the Settings modal. */
-.sidebar-footer{flex-shrink:0;margin-top:8px;padding:4px 0 0;border-top:1px solid var(--border)}
-#open-settings{align-self:flex-start;min-height:40px;padding:6px 8px;border:0;background:transparent;color:var(--accent);font-size:.9rem;text-align:left}
-#open-settings:hover{text-decoration:underline;background:var(--surface)}
+.sidebar-footer{flex-shrink:0;gap:0;margin-top:8px;padding:4px 0 0;border-top:1px solid var(--border)}
+#open-settings,#open-logout{align-self:flex-start;min-height:44px;padding:6px 8px;border:0;background:transparent;color:var(--accent);font-size:.9rem;text-align:left}
+#open-settings:hover:not(:disabled),#open-logout:hover:not(:disabled){text-decoration:underline;background:var(--surface)}
 #settings-dialog{position:fixed;inset:0;width:min(520px,calc(100% - 32px));max-height:calc(var(--viewport-height,100dvh) - 32px);overflow:auto;margin:auto;padding:20px 24px;border:1px solid var(--border);border-radius:12px;background:var(--panel);color:var(--text);font:inherit;line-height:1.6;overscroll-behavior:contain;overflow-wrap:anywhere}
 #settings-dialog::backdrop{background:#000a}
 .settings-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:6px}
@@ -99,6 +100,10 @@
 .settings-console a{display:inline-flex;align-items:center;min-height:44px;text-decoration:none}
 .settings-console a:hover{text-decoration:underline}
 @media(max-width:650px){#settings-dialog{padding:16px 18px}.settings-section{padding:16px 0}}
+
+#logout-dialog{position:fixed;inset:0;width:min(480px,calc(100% - 32px));max-height:calc(var(--viewport-height,100dvh) - 32px);overflow:auto;margin:auto;padding:20px 24px;border:1px solid var(--border);border-radius:12px;background:var(--panel);color:var(--text);font:inherit;line-height:1.6;overscroll-behavior:contain;overflow-wrap:anywhere}
+#logout-dialog::backdrop{background:#000a}#logout-title{font-size:1.2rem;margin:0 0 12px}#logout-description{margin:0}#logout-error{color:var(--error);white-space:pre-wrap;margin:14px 0 0}.logout-actions{display:flex;justify-content:flex-end;flex-wrap:wrap;gap:10px;margin-top:20px}.logout-actions button{min-height:44px}
+@media(max-width:650px){#logout-dialog{padding:16px 18px}}
 
 #show-goal{flex-shrink:0;white-space:nowrap;color:var(--success);border-color:var(--success);background:color-mix(in srgb,var(--success) 8%,var(--panel));box-shadow:0 0 10px #75cd6840;animation:goal-glow 2.2s ease-in-out infinite}
 #show-goal:hover{border-color:var(--success);background:color-mix(in srgb,var(--success) 14%,var(--panel))}

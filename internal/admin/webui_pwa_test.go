@@ -65,3 +65,64 @@ func TestWebUINotificationAssetsAreScopedAndUncached(t *testing.T) {
 		}
 	}
 }
+
+func TestInstalledConsoleStaysInAppScopeAndSharesAuthentication(t *testing.T) {
+	store := adminIntegrationStore(t)
+	token := webuiTestLogin(t, store)
+	s, err := New(store, Config{Origin: passkeyTestOrigin})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := func(method, path, auth string) *httptest.ResponseRecorder {
+		t.Helper()
+		r := httptest.NewRequest(method, path, nil)
+		if auth != "" {
+			r.AddCookie(&http.Cookie{Name: adminCookie, Value: auth})
+		}
+		w := httptest.NewRecorder()
+		s.ServeHTTP(w, r)
+		return w
+	}
+	manifestResponse := request(http.MethodGet, "/tgw/webui/manifest.webmanifest", "")
+	var manifest struct {
+		Scope string `json:"scope"`
+	}
+	if err := json.Unmarshal(manifestResponse.Body.Bytes(), &manifest); err != nil {
+		t.Fatal(err)
+	}
+	const consolePath = "/tgw/webui/admin/"
+	if manifest.Scope != "/tgw/webui/" || !strings.HasPrefix(consolePath, manifest.Scope) {
+		t.Fatal("console escaped the existing installed-app scope")
+	}
+	const nextQuery = "?next=%2Ftgw%2Fwebui%2F"
+	redirect := request(http.MethodGet, strings.TrimSuffix(consolePath, "/")+nextQuery, token)
+	if redirect.Code != http.StatusTemporaryRedirect || redirect.Header().Get("Location") != consolePath+nextQuery {
+		t.Fatalf("console slash redirect lost scope or return destination: %d %q", redirect.Code, redirect.Header().Get("Location"))
+	}
+	canonical := request(http.MethodGet, "/tgw/admin/", token)
+	console := request(http.MethodGet, consolePath, token)
+	if console.Code != http.StatusOK || console.Header().Get("Location") != "" || console.Body.String() != canonical.Body.String() {
+		t.Fatalf("in-app console redirected or differs from the canonical shell: %d", console.Code)
+	}
+	if console.Header().Get("Cache-Control") != "no-store" || console.Header().Get("Content-Security-Policy") != canonical.Header().Get("Content-Security-Policy") {
+		t.Fatal("in-app console changed shell security headers")
+	}
+	if !strings.Contains(console.Body.String(), `rel="manifest" href="/tgw/webui/manifest.webmanifest"`) || !strings.Contains(console.Body.String(), `href="/tgw/webui/"`) {
+		t.Fatal("console lost installed app identity or return link")
+	}
+	for _, c := range console.Result().Cookies() {
+		if c.Name == adminCookie {
+			t.Fatal("console navigation changed the existing login")
+		}
+	}
+	if request(http.MethodGet, "/tgw/api/v1/admin/session", token).Code != http.StatusOK || request(http.MethodGet, "/tgw/api/v1/admin/session", "").Code != http.StatusUnauthorized {
+		t.Fatal("in-app console does not share the existing authenticated API")
+	}
+	if request(http.MethodPost, consolePath, token).Code != http.StatusMethodNotAllowed {
+		t.Fatal("in-app shell accepted a mutation")
+	}
+	page := request(http.MethodGet, "/tgw/webui/", token)
+	if !strings.Contains(page.Body.String(), `href="/tgw/webui/admin/"`) || !strings.Contains(page.Body.String(), `href="/tgw/webui/admin/?next=/tgw/webui/"`) {
+		t.Fatal("console or sign-in management link still leaves the app scope")
+	}
+}

@@ -11,18 +11,44 @@ const selected = { session_id: sessionID, codex_thread_id: 'thread', worker_name
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ viewport: { width: 1280, height: 850 } });
   let now = Date.now(), expiry = now + 600000, auth = true, loginID = 1, finishCount = 0, sessionChecks = 0;
+  let trusted = false, deviceName = '', pendingTrust = {}, holdSessionCheck = false, releaseSessionCheck = null;
+  let csrfValue = 'csrf-1', csrfBootstraps = 0;
+  let logoutFails = false, holdLogout = false, releaseLogout = null;
+  const logoutRequests = [], apiMutations = [];
   const errors = [], posts = [], drafts = new Map(), rotationSockets = [];
   let finishFails = false, activePage = null;
   await context.addCookies([{ name: '__Host-telegramgw-csrf', value: 'csrf-1', url: 'https://auth.test', secure: true, sameSite: 'Strict' }]);
   await context.route('https://auth.test/**', async route => {
     const url = new URL(route.request().url());
     const json = (value, status = 200, headers = {}) => route.fulfill({ status, headers, contentType: 'application/json', body: JSON.stringify(value) });
-    if (url.pathname === '/tgw/api/v1/admin/login/options') return json({ passkey: true, password: false });
+    if (url.pathname.startsWith('/tgw/api/') && !['GET', 'HEAD'].includes(route.request().method())) apiMutations.push({ path: url.pathname, method: route.request().method() });
+    if (url.pathname === '/tgw/api/v1/admin/logout') {
+      logoutRequests.push({ method: route.request().method(), csrf: route.request().headers()['x-csrf-token'], body: route.request().postDataJSON() });
+      if (route.request().method() !== 'POST') return json({}, 405);
+      if (logoutRequests.at(-1).csrf !== csrfValue) return json({ code: 'invalid_csrf' }, 403);
+      if (holdLogout) await new Promise(resolve => { releaseLogout = resolve; });
+      if (logoutFails) { logoutFails = false; return json({ error: 'Gateway temporarily unavailable' }, 503); }
+      auth = false;
+      return route.fulfill({ status: 204 });
+    }
+    if (url.pathname === '/tgw/api/v1/admin/login/options') {
+      if (!route.request().headers().cookie?.includes('__Host-telegramgw-csrf=')) {
+        csrfValue = 'csrf-expired-login-' + ++csrfBootstraps;
+        return json({ passkey: true, password: false }, 200, { 'Set-Cookie': '__Host-telegramgw-csrf=' + csrfValue + '; Path=/; Secure; SameSite=Strict' });
+      }
+      return json({ passkey: true, password: false });
+    }
     if (url.pathname === '/tgw/api/v1/admin/session') {
       sessionChecks++;
-      return json({ authenticated: true, owner_id: 'owner', session_id: 'login-' + loginID, server_time: new Date(now).toISOString(), expires_at: new Date(expiry).toISOString(), reauthenticated_at: new Date(now).toISOString() }, auth && now < expiry ? 200 : 401);
+      if (holdSessionCheck) await new Promise(resolve => { releaseSessionCheck = resolve; });
+      return json({ authenticated: true, owner_id: 'owner', session_id: 'login-' + loginID, device_id: 'device-' + loginID, trusted_device: trusted, device_name: deviceName, browser_label: 'Chrome on Linux', authentication_method: 'passkey', server_time: new Date(now).toISOString(), expires_at: new Date(expiry).toISOString(), reauthenticated_at: new Date(now).toISOString() }, auth && now < expiry ? 200 : 401);
     }
-    if (url.pathname === '/tgw/api/v1/admin/login/begin') { posts.push({ route: 'begin', csrf: route.request().headers()['x-csrf-token'] }); return json({ ceremony_id: 'ceremony', publicKey: { challenge: 'AQID', rpId: 'auth.test', allowCredentials: [] } }); }
+    if (url.pathname === '/tgw/api/v1/admin/login/begin') {
+      const csrf = route.request().headers()['x-csrf-token'];
+      if (!csrf || csrf !== csrfValue) return json({ code: 'invalid_csrf' }, 403);
+      pendingTrust = route.request().postDataJSON(); posts.push({ route: 'begin', csrf, body: pendingTrust });
+      return json({ ceremony_id: 'ceremony', publicKey: { challenge: 'AQID', rpId: 'auth.test', allowCredentials: [] } });
+    }
     if (url.pathname === '/tgw/api/v1/admin/login/finish') {
       if (activePage) {
         rotationSockets.push(await activePage.evaluate(() => window.authSockets.filter(socket => socket.readyState === 1).length));
@@ -30,8 +56,11 @@ const selected = { session_id: sessionID, codex_thread_id: 'thread', worker_name
         await activePage.evaluate(() => { for (const socket of window.authSockets) socket.originalClose?.({ code: 4401 }); });
       }
       if (finishFails) { finishFails = false; return json({}, 503); }
-      posts.push({ route: 'finish', csrf: route.request().headers()['x-csrf-token'], body: route.request().postDataJSON() }); finishCount++; loginID++; auth = true; expiry = now + 28800000;
-      return json({ ok: true }, 200, { 'Set-Cookie': '__Host-telegramgw-csrf=csrf-' + loginID + '; Path=/; Secure; SameSite=Strict' });
+      posts.push({ route: 'finish', csrf: route.request().headers()['x-csrf-token'], body: route.request().postDataJSON() }); finishCount++; loginID++; auth = true;
+      if (typeof pendingTrust.trust_device === 'boolean') { trusted = pendingTrust.trust_device; deviceName = trusted ? pendingTrust.device_name || '' : ''; expiry = now + (trusted ? 30 * 86400000 : 28800000); }
+      else if (!trusted) expiry = now + 28800000;
+      csrfValue = 'csrf-' + loginID;
+      return json({ ok: true }, 200, { 'Set-Cookie': '__Host-telegramgw-csrf=' + csrfValue + '; Path=/; Secure; SameSite=Strict' });
     }
     if (url.pathname.startsWith('/tgw/api/v1/webui/drafts/')) {
       if (!auth) return json({}, 401);
@@ -52,6 +81,7 @@ const selected = { session_id: sessionID, codex_thread_id: 'thread', worker_name
     window.authSockets = []; window.authFrames = []; window.passkeyMode = 'success'; window.holdSend = false;
     Object.defineProperty(navigator, 'credentials', { configurable: true, value: { get: async () => {
       if (window.passkeyMode === 'cancel') throw new DOMException('Cancelled', 'NotAllowedError');
+      if (window.passkeyMode === 'hold') await new Promise(resolve => { window.releasePasskey = resolve; });
       return { id: 'passkey', rawId: new Uint8Array([1, 2]), type: 'public-key', response: { clientDataJSON: new Uint8Array([3]), authenticatorData: new Uint8Array([4]), signature: new Uint8Array([5]), userHandle: null }, getClientExtensionResults: () => ({}) };
     } } });
     window.testHidden = false;
@@ -84,7 +114,13 @@ const selected = { session_id: sessionID, codex_thread_id: 'thread', worker_name
   }, { sessionID });
   const page = await context.newPage(); activePage = page; page.on('pageerror', error => errors.push(error.message));
   await page.clock.install({ time: now });
-  const ready = async target => { await target.waitForFunction(() => document.querySelector('#connection').dataset.state === 'connected' && !document.querySelector('#composer').hidden); };
+  const ready = async target => {
+    try { await target.waitForFunction(() => document.querySelector('#connection').dataset.state === 'connected' && !document.querySelector('#composer').hidden); }
+    catch (error) {
+      console.error('UI state:', await target.evaluate(() => ({ url: location.href, connection: document.querySelector('#connection').textContent, authHidden: document.querySelector('#auth').hidden, authStatus: document.querySelector('#auth-status').textContent, notice: document.querySelector('#notice').textContent, sessions: document.querySelectorAll('.session-button').length, sockets: window.authSockets.map(socket => ({ activity: socket.activity, readyState: socket.readyState })), frames: window.authFrames.map(frame => frame.method) })));
+      throw error;
+    }
+  };
   const viewerCount = () => page.evaluate(() => window.authSockets.filter(value => !value.activity).length);
   const anchor = target => target.evaluate(() => { const view = document.querySelector('#transcript'); const item = [...document.querySelector('#messages').children].find(row => row.getBoundingClientRect().bottom > view.getBoundingClientRect().top); return { id: item?.dataset.itemId, offset: Math.round(item.getBoundingClientRect().top - view.getBoundingClientRect().top) }; });
   try {
@@ -98,8 +134,13 @@ const selected = { session_id: sessionID, codex_thread_id: 'thread', worker_name
     await page.waitForFunction(() => document.querySelector('.session-auth-status').textContent.includes('cancelled'));
     assert.equal(finishCount, 0, 'Cancelling a passkey does not renew authentication');
     assert.equal(await page.locator('#prompt').inputValue(), 'An unsent private draft');
-    await page.locator('#older').click();
+    await page.waitForFunction(() => document.querySelectorAll('#messages article').length === 20 && !document.querySelector('#older').hidden && !document.querySelector('#older').disabled);
+    // Scrolling an offscreen history button into view already loads a page.
+    // Use the reader's upward wheel action so click retries cannot page twice.
+    await page.locator('#transcript').hover();
+    await page.mouse.wheel(0, -await page.locator('#transcript').evaluate(element => element.scrollHeight));
     await page.waitForFunction(() => document.querySelectorAll('#messages article').length === 40);
+    assert.deepEqual(await page.evaluate(() => window.authFrames.filter(frame => frame.method === 'thread/items/list' && frame.params.cursor).map(frame => frame.params.cursor)), ['20'], 'Upward history navigation loads exactly one earlier page');
     await page.evaluate(() => { const view = document.querySelector('#transcript'); view.dispatchEvent(new WheelEvent('wheel', { deltaY: -1 })); view.scrollTop = 1600; });
     const before = await anchor(page);
     finishFails = true;
@@ -111,8 +152,13 @@ const selected = { session_id: sessionID, codex_thread_id: 'thread', worker_name
     assert.equal(await page.locator('#prompt').inputValue(), 'An unsent private draft', 'Finish failure reconnects the still-authorized view without losing its draft');
     assert.equal(await page.locator('.session-auth-banner').isVisible(), true);
     const socketsBefore = await viewerCount();
-    await page.evaluate(() => { window.passkeyMode = 'success'; });
+    await page.evaluate(() => { window.passkeyMode = 'hold'; });
     await page.locator('.session-auth-banner button:not(.session-auth-password)').click();
+    await page.waitForFunction(() => typeof window.releasePasskey === 'function');
+    assert.equal(await page.locator('#open-logout').isDisabled(), true, 'Logout is disabled while passkey renewal is pending');
+    await page.locator('#open-logout').dispatchEvent('click');
+    assert.equal(await page.locator('#logout-dialog').isHidden(), true, 'A queued sidebar click cannot start logout during renewal');
+    await page.evaluate(() => { window.passkeyMode = 'success'; window.releasePasskey(); delete window.releasePasskey; });
     await page.waitForFunction(count => window.authSockets.filter(socket => !socket.activity).length > count, socketsBefore); await ready(page);
     await page.waitForFunction(() => document.querySelectorAll('#messages article').length === 40);
     assert.equal(await viewerCount(), socketsBefore + 1, 'Renewal reconnects the selected session using the rotated cookie');
@@ -134,7 +180,11 @@ const selected = { session_id: sessionID, codex_thread_id: 'thread', worker_name
     assert.equal(await page.locator('.session-button').count(), 0);
     assert.equal(await page.evaluate(() => window.authSockets.every(socket => socket.readyState === 3)), true);
     assert.equal(await page.evaluate(() => Object.keys(sessionStorage).length), 0, 'Default expiry retains no drafts or conversation in browser storage');
+    assert.equal(await page.locator('#auth-trust-device').isChecked(), false, 'Trust is an unchecked choice on the sign-in screen');
+    assert.equal(await page.locator('#auth-device-name-field').isHidden(), true);
     await page.locator('#auth-login').click(); await ready(page);
+    assert.equal(posts.findLast(row => row.route === 'begin').body.trust_device, false, 'Ordinary sign-in does not opt into persistent trust');
+    assert.equal(expiry - now, 8 * 3600000, 'Ordinary sign-in uses an eight-hour session');
     await page.waitForFunction(() => document.querySelectorAll('#messages article').length === 40);
     assert.deepEqual(await anchor(page), before, 'Expired login resumes the selected session and previous scroll anchor');
     assert.equal(await page.locator('#prompt').inputValue(), '');
@@ -183,7 +233,7 @@ const selected = { session_id: sessionID, codex_thread_id: 'thread', worker_name
     await page.locator('#close-settings').click();
 
     const other = await context.newPage(); other.on('pageerror', error => errors.push(error.message));
-    await other.clock.install({ time: now }); await other.goto('https://auth.test/tgw/webui/?session_id=' + sessionID); await ready(other);
+    await other.goto('https://auth.test/tgw/webui/?session_id=' + sessionID); await ready(other);
     const otherBefore = await other.evaluate(() => window.authSockets.filter(socket => !socket.activity).length);
     // Simulate a login in an operations-console tab. Its non-secret hint must
     // cause both web views to fetch the authoritative new session themselves.
@@ -201,7 +251,11 @@ const selected = { session_id: sessionID, codex_thread_id: 'thread', worker_name
     await other.close();
 
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.locator('#auth-login').click(); await ready(page);
+    await page.locator('#auth-login').click();
+    await page.locator('.session-button').waitFor({ state: 'attached' });
+    assert.equal(await page.locator('.session-button[aria-current="true"]').count(), 0, 'Cross-tab logout also forgets the previously selected session');
+    await page.locator('#show-sessions').click();
+    await page.locator('.session-button[data-session-id="' + sessionID + '"]').click(); await ready(page);
     await page.evaluate(() => window.visibility(true));
     const checksBefore = sessionChecks; auth = false;
     await page.evaluate(() => window.visibility(false)); await page.waitForSelector('#auth:not([hidden])');
@@ -218,8 +272,205 @@ const selected = { session_id: sessionID, codex_thread_id: 'thread', worker_name
     const messagesAfterForeground = await page.evaluate(() => { window.visibility(false); return document.querySelectorAll('#messages article').length; });
     assert.equal(messagesAfterForeground, 0, 'Suspended mobile expiry fails closed using wall time before the network check');
     await page.waitForSelector('#auth:not([hidden])');
+
+    // Thirty days exceeds the signed 32-bit browser timer limit. Capture the
+    // requested delays, capping only invalid values so a regression reports an
+    // assertion instead of creating an immediate-timeout loop in Chromium.
+    await page.evaluate(() => {
+      window.trustTimeoutDelays = [];
+      const nativeSetTimeout = window.setTimeout;
+      window.setTimeout = (callback, delay, ...args) => {
+        window.trustTimeoutDelays.push(Number(delay) || 0);
+        return nativeSetTimeout(callback, Math.min(Number(delay) || 0, 0x7fffffff), ...args);
+      };
+    });
+    assert.equal(await page.locator('#auth-trust-device').isChecked(), false, 'Trust is not remembered after the previous session expires');
+    await page.locator('#auth-trust-device').check();
+    await page.locator('#auth-device-name').fill('My personal phone');
+    await page.locator('#auth-login').click(); await ready(page);
+    const trustedDeadline = expiry;
+    assert.equal(trusted, true);
+    assert.equal(expiry - now, 30 * 86400000, 'Explicit passkey trust receives a thirty-day absolute deadline');
+    assert.deepEqual(posts.findLast(row => row.route === 'begin').body, { trust_device: true, device_name: 'My personal phone' }, 'The explicit trust choice and optional device name are bound at ceremony creation');
+    assert.ok((await page.evaluate(() => window.trustTimeoutDelays)).every(delay => delay <= 0x7fffffff), 'Thirty-day trust never overflows the browser timer limit');
+    assert.equal(await page.locator('.session-auth-banner').isHidden(), true);
+    // Playwright's own clock accepts a signed 32-bit step; cross the browser
+    // checkpoint in two valid steps without overflowing the test harness.
+    for (const days of [20, 5]) { now += days * 86400000; await page.clock.fastForward(days * 86400000); }
+    await page.evaluate(() => window.visibility(false)); await ready(page);
+    assert.equal(expiry, trustedDeadline, 'Foreground verification does not silently extend the trusted-device deadline');
+    assert.equal(await page.locator('.session-auth-banner').isHidden(), true, 'A long-lived trusted session stays usable after the first timer checkpoint');
+    await page.locator('#prompt').fill('Private trusted-device draft');
+    if (await page.locator('#show-sessions').getAttribute('aria-expanded') !== 'true') await page.locator('#show-sessions').click();
+    await page.locator('#open-settings').click();
+    await page.evaluate(() => window.visibility(true));
+    const trustedSuspendedMS = expiry - now + 1000;
+    const trustedResumedWall = await page.evaluate(() => Date.now()) + trustedSuspendedMS;
+    now += trustedSuspendedMS; auth = false; holdSessionCheck = true;
+    await page.clock.setSystemTime(trustedResumedWall);
+    const trustedAfterForeground = await page.evaluate(() => {
+      window.visibility(false);
+      return { messages: document.querySelectorAll('#messages article').length, draft: document.querySelector('#prompt').value, sessions: document.querySelectorAll('.session-button').length, settingsOpen: document.querySelector('#settings-dialog').open, socketsClosed: window.authSockets.every(socket => socket.readyState === 3) };
+    });
+    assert.deepEqual(trustedAfterForeground, { messages: 0, draft: '', sessions: 0, settingsOpen: false, socketsClosed: true }, 'Trusted-device expiry clears private state synchronously before the foreground network reply');
+    while (!releaseSessionCheck) await new Promise(resolve => setTimeout(resolve, 10));
+    holdSessionCheck = false; releaseSessionCheck(); releaseSessionCheck = null;
+    await page.waitForSelector('#auth:not([hidden])');
+    // The browser may delete both thirty-day cookies while an installed web
+    // app remains open. Its next login must bootstrap CSRF without a reload.
+    await context.clearCookies();
+    await page.evaluate(() => { window.expiryPageSentinel = 'same loaded page'; });
+    const beforeCookieBootstrap = csrfBootstraps;
+    await page.locator('#auth-login').click(); await ready(page);
+    assert.ok(csrfBootstraps > beforeCookieBootstrap, 'An expired CSRF cookie is reacquired through login options before sign-in');
+    assert.match(posts.findLast(row => row.route === 'begin').csrf, /^csrf-expired-login-/);
+    assert.equal(await page.evaluate(() => window.expiryPageSentinel), 'same loaded page', 'Cookie-expired sign-in succeeds without reloading the installed web app');
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+
+    // Explicit logout has its own confirmation and must leave active worker
+    // work alone. The only intentional mutations are auth revocation and
+    // deleting this browser's optional encrypted draft recovery copy.
+    await page.setViewportSize({ width: 1280, height: 850 });
+    const openSidebar = async target => {
+      if (await target.locator('#show-sessions').isVisible() && await target.locator('#show-sessions').getAttribute('aria-expanded') !== 'true') await target.locator('#show-sessions').click();
+    };
+    const attachPrivateFile = async (target, file) => {
+      const chooser = target.waitForEvent('filechooser'); await target.locator('#attach-image').click();
+      await (await chooser).setFiles(file);
+    };
+    const privateState = target => target.evaluate(() => ({
+      draft: document.querySelector('#prompt').value,
+      selected: document.querySelector('.session-button[aria-current="true"]')?.dataset.sessionId,
+      messages: document.querySelectorAll('#messages article').length,
+      sockets: window.authSockets.filter(socket => socket.readyState === 1).length,
+      turn: document.querySelector('#turn-state').textContent,
+      attachment: document.querySelector('#file-description').textContent,
+      recovery: JSON.parse(sessionStorage.getItem('codex-webui-encrypted-text-draft-v1') || 'null')?.key,
+    }));
+    const erased = async (target, label) => {
+      await target.waitForSelector('#auth:not([hidden])');
+      assert.deepEqual(await target.evaluate(() => ({
+        draft: document.querySelector('#prompt').value,
+        messages: document.querySelectorAll('#messages article').length,
+        sessions: document.querySelectorAll('.session-button').length,
+        questions: document.querySelectorAll('#questions > *').length,
+        socketsClosed: window.authSockets.every(socket => socket.readyState === 3),
+        imageHidden: document.querySelector('#image-preview').hidden,
+        fileHidden: document.querySelector('#file-preview').hidden,
+        imageInput: document.querySelector('#image-file').value,
+        recovery: sessionStorage.getItem('codex-webui-encrypted-text-draft-v1'),
+        settingsOpen: document.querySelector('#settings-dialog').open,
+        logoutOpen: document.querySelector('#logout-dialog').open,
+      })), { draft: '', messages: 0, sessions: 0, questions: 0, socketsClosed: true, imageHidden: true, fileHidden: true, imageInput: '', recovery: null, settingsOpen: false, logoutOpen: false }, label + ' erases private browser content and closes transports and dialogs');
+    };
+    const logoutScreenshot = async name => {
+      if (!process.env.WEBUI_AUTH_SCREENSHOTS) return;
+      fs.mkdirSync(process.env.WEBUI_AUTH_SCREENSHOTS, { recursive: true });
+      await page.screenshot({ path: path.join(process.env.WEBUI_AUTH_SCREENSHOTS, name + '.png') });
+    };
+    await openSidebar(page);
+    assert.deepEqual(await page.locator('.sidebar-footer > button').allTextContents(), ['Settings', 'Log out'], 'Log out follows Settings in the sidebar footer');
+    await page.locator('#prompt').fill('Private draft kept when logout is cancelled');
+    await attachPrivateFile(page, { name: 'private-notes.txt', mimeType: 'text/plain', buffer: Buffer.from('Unsent private attachment') });
+    await page.locator('#file-preview').waitFor();
+    await page.locator('#open-settings').click();
+    await page.locator('#draft-recovery-enabled').check();
+    await page.locator('#close-settings').click();
+    await page.waitForFunction(() => !!sessionStorage.getItem('codex-webui-encrypted-text-draft-v1'));
+    await page.evaluate(() => {
+      window.logoutHints = [];
+      window.logoutObserver = new BroadcastChannel('codex-gateway-auth');
+      window.logoutObserver.onmessage = event => window.logoutHints.push(event.data);
+      window.authSockets.findLast(socket => !socket.activity && socket.readyState === 1).emit({ method: 'turn/started', params: { threadId: 'thread', turn: { id: 'running-during-logout', status: 'inProgress' } } });
+    });
+    await page.waitForFunction(() => document.querySelector('#turn-state').textContent === 'Working');
+    await logoutScreenshot('desktop-sidebar');
+    const logoutBefore = await privateState(page), framesBeforeLogout = await page.evaluate(() => window.authFrames.length), mutationsBeforeLogout = apiMutations.length;
+    for (const cancel of ['button', 'Escape']) {
+      await page.locator('#open-logout').click();
+      assert.equal(await page.getByRole('dialog', { name: 'Log out?', exact: true }).isVisible(), true);
+      assert.equal(await page.locator('#logout-cancel').evaluate(element => document.activeElement === element), true, 'Confirmation focuses Cancel');
+      if (cancel === 'button') await logoutScreenshot('desktop-confirmation');
+      if (cancel === 'button') await page.locator('#logout-cancel').click(); else await page.keyboard.press('Escape');
+      assert.equal(await page.locator('#logout-dialog').isHidden(), true);
+      assert.equal(await page.locator('#open-logout').evaluate(element => document.activeElement === element), true, 'Cancelling restores focus to the sidebar action');
+      assert.deepEqual(await privateState(page), logoutBefore, cancel + ' cancellation preserves auth, the selected session, running turn, attachment, text draft, and recovery key');
+      assert.equal(logoutRequests.length, 0, 'Opening or cancelling confirmation never calls logout');
+    }
+    assert.equal(await page.evaluate(() => window.authFrames.length), framesBeforeLogout, 'Opening or cancelling logout sends no worker commands');
+    assert.equal(apiMutations.length, mutationsBeforeLogout, 'Opening or cancelling logout makes no API mutations');
+    logoutFails = true;
+    await page.locator('#open-logout').click(); await page.locator('#logout-confirm').click();
+    await page.waitForFunction(() => !document.querySelector('#logout-error').hidden && !!document.querySelector('#logout-error').textContent && !document.querySelector('#logout-confirm').disabled);
+    assert.equal(await page.locator('#logout-dialog').isVisible(), true, 'Server failure keeps confirmation open for retry');
+    assert.deepEqual(await privateState(page), logoutBefore, 'Server failure preserves the authorized conversation, running work, and unsent drafts');
+    assert.equal(auth, true);
+    assert.deepEqual(await page.evaluate(() => window.logoutHints), [], 'A failed logout never broadcasts revocation');
+    assert.deepEqual(logoutRequests[0], { method: 'POST', csrf: csrfValue, body: {} }, 'Logout uses the existing authenticated endpoint with CSRF');
+
+    const sibling = await context.newPage(); sibling.on('pageerror', error => errors.push(error.message));
+    await sibling.goto('https://auth.test/tgw/webui/?session_id=' + sessionID);
+    // Clock installation applies to the entire context. Resume its inherited
+    // clock after the long expiry jumps so new-page socket timers can run.
+    await page.clock.resume();
+    await sibling.locator('.session-button').waitFor({ state: 'attached' });
+    await page.clock.runFor(1000); await ready(sibling);
+    await sibling.locator('#prompt').fill('Private sibling draft');
+    await attachPrivateFile(sibling, { name: 'private-image.png', mimeType: 'image/png', buffer: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jZzoAAAAASUVORK5CYII=', 'base64') });
+    await sibling.locator('#image-preview').waitFor();
+    await sibling.waitForFunction(() => !!sessionStorage.getItem('codex-webui-encrypted-text-draft-v1'));
+    await sibling.locator('#open-settings').click();
+    csrfValue = 'csrf-logout-retry';
+    await context.addCookies([{ name: '__Host-telegramgw-csrf', value: csrfValue, url: 'https://auth.test', secure: true, sameSite: 'Strict' }]);
+    holdLogout = true;
+    await page.locator('#logout-confirm').click();
+    await page.waitForFunction(() => document.querySelector('#logout-confirm').disabled);
+    assert.equal(await page.locator('#logout-cancel').isDisabled(), true, 'Pending confirmation cannot be cancelled midway through revocation');
+    // Dispatch directly as well as pressing Enter: a disabled button alone is
+    // insufficient protection against duplicate handlers or queued actions.
+    await page.locator('#logout-confirm').dispatchEvent('click'); await page.keyboard.press('Enter'); await page.keyboard.press('Escape');
+    assert.equal(await page.locator('#logout-dialog').isVisible(), true, 'Escape cannot hide a pending logout request');
+    assert.equal(logoutRequests.length, 2, 'Repeated confirmation while pending sends only one retry');
+    assert.deepEqual(logoutRequests[1], { method: 'POST', csrf: csrfValue, body: {} }, 'Retry reads the current CSRF cookie');
+    assert.deepEqual(await privateState(page), logoutBefore, 'A pending request leaves the current session intact until the server responds');
+    assert.ok(releaseLogout, 'The server received the held request');
+    const checksBeforeConfirmedLogout = sessionChecks;
+    holdLogout = false; releaseLogout(); releaseLogout = null;
+    await erased(page, 'Confirmed logout'); await erased(sibling, 'Sibling logout');
+    assert.ok(sessionChecks > checksBeforeConfirmedLogout, 'The sibling tab verifies the logout hint against the server');
+    assert.equal(await page.evaluate(() => window.logoutHints.filter(hint => hint.kind === 'logout').length), 1, 'Successful logout broadcasts one sibling hint');
+    assert.equal(await page.evaluate(() => window.authFrames.length), framesBeforeLogout, 'Logging out a running turn sends no interrupt, disconnect, or other worker RPC');
+    assert.ok(apiMutations.slice(mutationsBeforeLogout).every(request => request.path === '/tgw/api/v1/admin/logout' || request.path.startsWith('/tgw/api/v1/webui/drafts/')), 'Logout never mutates a worker, runtime, or session');
+    await sibling.close();
+    assert.equal(new URL(page.url()).searchParams.has('session_id'), false, 'Explicit logout removes the previous selected session from the URL');
+    await page.locator('#auth-login').click();
+    await page.waitForSelector('.session-button');
+    await page.waitForSelector('#auth', { state: 'hidden' });
+    assert.equal(await page.locator('.session-button[aria-current="true"]').count(), 0, 'Signing in after logout requires choosing a session again');
+    assert.equal(await page.locator('#prompt').inputValue(), '', 'Signing in after logout does not restore an unsent private draft');
+    assert.equal(await page.locator('#draft-recovery-offer').isHidden(), true, 'Logout discards the key needed to recover previous drafts');
+    await page.locator('.session-button[data-session-id="' + sessionID + '"]').click(); await ready(page);
+
+    await page.setViewportSize({ width: 390, height: 844 }); await openSidebar(page);
+    const mobileLogout = await page.evaluate(() => {
+      const settings = document.querySelector('#open-settings').getBoundingClientRect(), logout = document.querySelector('#open-logout').getBoundingClientRect();
+      return { below: logout.top >= settings.bottom, fits: logout.left >= 0 && logout.right <= innerWidth && logout.bottom <= innerHeight, height: logout.height, noOverflow: document.documentElement.scrollWidth <= innerWidth };
+    });
+    assert.equal(mobileLogout.below && mobileLogout.fits && mobileLogout.noOverflow, true, 'Mobile logout stays visible below Settings without horizontal overflow');
+    assert.ok(mobileLogout.height >= 44, 'Mobile logout has an accessible touch target');
+    await logoutScreenshot('mobile-sidebar');
+    await page.locator('#open-logout').click();
+    assert.equal(await page.locator('#logout-dialog').evaluate(element => { const rect = element.getBoundingClientRect(); return rect.left >= 0 && rect.right <= innerWidth && rect.top >= 0 && rect.bottom <= innerHeight; }), true, 'Mobile confirmation fits the viewport');
+    await logoutScreenshot('mobile-confirmation');
+    await page.locator('#logout-cancel').click();
+    assert.equal(await page.locator('#auth').isHidden(), true, 'Mobile Cancel keeps authentication');
+    assert.equal(await page.locator('#show-sessions').evaluate(element => document.activeElement === element), true, 'Mobile Cancel returns focus to the closed drawer trigger');
+    await openSidebar(page);
+    await page.locator('#open-logout').click(); await page.locator('#logout-confirm').click();
+    await erased(page, 'Mobile logout');
+    assert.equal(logoutRequests.length, 3);
+    assert.equal(await page.locator('#open-logout').isDisabled(), true, 'The logout action is disabled after signing out');
     assert.deepEqual(errors, []);
-    console.log('Web UI auth checks passed: warning, passkey cancel/finish-failure/rotation-race/renewal, CSRF rotation, history anchor restore, expiry erasure/Settings dismissal, encrypted opt-in/Settings preference persistence/explicit recovery/no uncertain-send replay, cross-tab renewal/logout, mobile foreground and suspended-clock expiry.');
+    console.log('Web UI auth checks passed: warning, passkey cancel/finish-failure/rotation-race/renewal, CSRF rotation/bootstrap after cookie expiry, history anchor restore, expiry erasure/Settings dismissal, encrypted opt-in/Settings preference persistence/explicit recovery/no uncertain-send replay, cross-tab renewal/logout, optional eight-hour/thirty-day trust, safe long timers, fixed trust deadlines, foreground expiry erasure before network replies, and desktop/mobile confirmed logout with cancellation, failure/retry, duplicate protection, CSRF, private-state erasure, sibling propagation, and uninterrupted worker work.');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>MACT Gateway · Operations console</title>
+  <link rel="manifest" href="/tgw/webui/manifest.webmanifest">
   <link rel="stylesheet" href="/tgw/admin/static/app.css">
   <link rel="stylesheet" href="/tgw/admin/static/session-auth.css">
 </head>
@@ -17,6 +18,11 @@
   <section id="auth" class="card">
     <h2 id="auth-title">Passkey access</h2>
     <p id="auth-description">Use a personal passkey to administer MACT Gateway.</p>
+    <div class="session-trust-options">
+      <label class="session-trust-choice"><input id="login-trust-device" type="checkbox" aria-describedby="login-trust-help"><span>Trust this device for 30 days</span></label>
+      <p id="login-trust-help" class="session-trust-help">Passkey only. Otherwise, sign-in lasts 8 hours. Trust ends on a fixed date, even while you use this device.</p>
+      <label id="login-device-name-field" class="session-device-name" hidden>Device name (optional)<input id="login-device-name" type="text" maxlength="80" autocomplete="off" placeholder="e.g. My phone" aria-describedby="login-device-name-help"><small id="login-device-name-help">Helps you recognize this device in Browser sessions.</small></label>
+    </div>
     <button id="login">Continue with passkey</button>
     <button id="password-login" class="secondary" hidden>Use password</button>
     <details>
@@ -126,6 +132,19 @@
       <summary><h2 id="browser-session-heading">Browser sessions</h2></summary>
       <div class="section-content">
       <div class="row"><p>Review signed-in browsers and end access you no longer need. Browser labels are approximate.</p><button id="logout-everywhere" class="danger">Sign out everywhere</button></div>
+      <section class="current-device" aria-labelledby="current-device-heading">
+        <h3 id="current-device-heading">This device</h3>
+        <p id="current-device-status" class="muted" role="status"></p>
+        <form id="current-device-trust-form">
+          <div class="session-trust-options">
+            <label class="session-trust-choice"><input id="current-device-trust" type="checkbox" aria-describedby="current-device-trust-help"><span>Trust this device for 30 days</span></label>
+            <p id="current-device-trust-help" class="session-trust-help">Confirm with a passkey to start a new fixed 30-day period. Sensitive admin actions still require recent verification.</p>
+            <label id="current-device-name-field" class="session-device-name" hidden>Device name (optional)<input id="current-device-name" type="text" maxlength="80" autocomplete="off" placeholder="e.g. My phone"></label>
+          </div>
+          <button id="trust-current-device" type="submit" class="secondary" disabled>Confirm with passkey</button>
+        </form>
+        <p id="current-device-message" class="muted" role="status"></p>
+      </section>
       <div id="browser-sessions"></div>
       </div>
     </details>

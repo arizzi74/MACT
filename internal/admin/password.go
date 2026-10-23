@@ -19,6 +19,12 @@ func (s *Server) loginOptions(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
+	// An open PWA can outlive both trusted cookies. Restore only a missing
+	// CSRF cookie so sign-in works without a reload or rotating another tab's
+	// still valid token. All authentication POSTs retain strict CSRF checks.
+	if c, err := r.Cookie(csrfCookie); err != nil || c.Value == "" {
+		s.setRequestCSRF(w, r)
+	}
 	writeJSON(w, http.StatusOK, map[string]bool{"passkey": true, "password": settings.Enabled})
 }
 

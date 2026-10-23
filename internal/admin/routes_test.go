@@ -21,6 +21,9 @@ func TestAdminRoutesUseTGWPrefix(t *testing.T) {
 	}{
 		{"/tgw/admin", http.StatusTemporaryRedirect, "/tgw/admin/"},
 		{"/tgw/admin/", http.StatusOK, `/tgw/admin/static/app.js`},
+		{"/tgw/webui/admin", http.StatusTemporaryRedirect, "/tgw/webui/admin/"},
+		{"/tgw/webui/admin/", http.StatusOK, `/tgw/admin/static/app.js`},
+		{"/tgw/webui/admin/unrecognized", http.StatusNotFound, ""},
 		{"/tgw/admin/static/app.css", http.StatusOK, "font-family"},
 		{"/tgw/admin/static/app.js", http.StatusOK, "const api = '/tgw/api/v1/admin'"},
 		{"/tgw/api/v1/admin/dashboard", http.StatusUnauthorized, ""},

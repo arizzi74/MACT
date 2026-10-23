@@ -100,6 +100,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (s *Server) routes() {
 	s.webuiRoutes()
 	s.mux.HandleFunc("/tgw/admin/", s.ui)
+	// Keep console navigation inside already-installed apps' /tgw/webui/
+	// scope. Redirecting to /tgw/admin/ would switch to a separate browser.
+	s.mux.HandleFunc("/tgw/webui/admin/", s.ui)
 	s.mux.HandleFunc("/tgw/admin/static/app.css", s.css)
 	s.mux.HandleFunc("/tgw/admin/static/app.js", s.js)
 	s.mux.HandleFunc("/tgw/admin/static/webui-icon.svg", func(w http.ResponseWriter, r *http.Request) {
@@ -144,7 +147,7 @@ func (s *Server) securityHeaders(w http.ResponseWriter) {
 	w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 }
 func (s *Server) ui(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/tgw/admin/" {
+	if r.URL.Path != "/tgw/admin/" && r.URL.Path != "/tgw/webui/admin/" {
 		http.NotFound(w, r)
 		return
 	}
@@ -152,7 +155,7 @@ func (s *Server) ui(w http.ResponseWriter, r *http.Request) {
 		method(w)
 		return
 	}
-	s.setCSRF(w)
+	s.setRequestCSRF(w, r)
 	serveAsset(w, r, "static/index.html", "text/html; charset=utf-8")
 }
 func (s *Server) css(w http.ResponseWriter, r *http.Request) {
@@ -332,6 +335,10 @@ func (s *Server) loginBegin(w http.ResponseWriter, r *http.Request) {
 	if !s.allowLogin(w, r, s.loginBegins) {
 		return
 	}
+	var options registry.AdminLoginOptions
+	if !decode(w, r, &options, true) {
+		return
+	}
 	assertion, sd, err := s.webauthn.BeginDiscoverableLogin(wa.WithLoginOrigin(s.origin), wa.WithUserVerification(protocol.VerificationRequired))
 	if err != nil {
 		fail(w, err)
@@ -342,8 +349,12 @@ func (s *Server) loginBegin(w http.ResponseWriter, r *http.Request) {
 	if cookie, cookieErr := r.Cookie(adminCookie); cookieErr == nil {
 		predecessor = cookie.Value
 	}
-	c, err := s.store.NewAdminLoginCeremony(r.Context(), raw, predecessor, r.UserAgent())
+	c, err := s.store.NewAdminLoginCeremony(r.Context(), raw, predecessor, r.UserAgent(), options)
 	if err != nil {
+		if errors.Is(err, registry.ErrAdminDeviceNameInvalid) {
+			bad(w)
+			return
+		}
 		if errors.Is(err, registry.ErrAdminCeremonyLimit) {
 			tooManyRequests(w)
 			return
@@ -418,7 +429,16 @@ func (s *Server) loginFinish(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
-	s.setSession(w, token)
+	info, err := s.store.AdminSessionInfo(r.Context(), token)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	if info.TrustedDevice {
+		s.setSession(w, token, info.ExpiresAt)
+	} else {
+		s.setSession(w, token)
+	}
 	clearCeremony(w)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
@@ -660,15 +680,31 @@ func clearCeremony(w http.ResponseWriter) {
 	c.MaxAge = -1
 	http.SetCookie(w, c)
 }
-func (s *Server) setSession(w http.ResponseWriter, token string) {
-	http.SetCookie(w, cookie(adminCookie, token, true))
-	s.setCSRF(w)
+func persistentCookie(c *http.Cookie, expires []time.Time) *http.Cookie {
+	if len(expires) > 0 && !expires[0].IsZero() {
+		c.Expires = expires[0].UTC().Truncate(time.Second)
+		c.MaxAge = max(1, int(time.Until(c.Expires)/time.Second))
+	}
+	return c
 }
-func (s *Server) setCSRF(w http.ResponseWriter) {
+func (s *Server) setSession(w http.ResponseWriter, token string, expires ...time.Time) {
+	http.SetCookie(w, persistentCookie(cookie(adminCookie, token, true), expires))
+	s.setCSRF(w, expires...)
+}
+func (s *Server) setCSRF(w http.ResponseWriter, expires ...time.Time) {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err == nil {
-		http.SetCookie(w, cookie(csrfCookie, base64.RawURLEncoding.EncodeToString(b), false))
+		http.SetCookie(w, persistentCookie(cookie(csrfCookie, base64.RawURLEncoding.EncodeToString(b), false), expires))
 	}
+}
+func (s *Server) setRequestCSRF(w http.ResponseWriter, r *http.Request) {
+	if c, err := r.Cookie(adminCookie); err == nil {
+		if info, err := s.store.AdminSessionInfo(r.Context(), c.Value); err == nil && info.TrustedDevice {
+			s.setCSRF(w, info.ExpiresAt)
+			return
+		}
+	}
+	s.setCSRF(w)
 }
 func (s *Server) clearSession(w http.ResponseWriter) {
 	for _, name := range []string{adminCookie, csrfCookie} {
@@ -677,12 +713,15 @@ func (s *Server) clearSession(w http.ResponseWriter) {
 		http.SetCookie(w, c)
 	}
 }
-func decode(w http.ResponseWriter, r *http.Request, v any) bool {
+func decode(w http.ResponseWriter, r *http.Request, v any, allowEmpty ...bool) bool {
 	r.Body = http.MaxBytesReader(w, r.Body, maxBody)
 	defer r.Body.Close()
 	d := json.NewDecoder(r.Body)
 	d.DisallowUnknownFields()
 	if err := d.Decode(v); err != nil {
+		if err == io.EOF && len(allowEmpty) > 0 && allowEmpty[0] {
+			return true
+		}
 		bad(w)
 		return false
 	}

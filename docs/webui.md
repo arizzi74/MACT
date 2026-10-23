@@ -1,8 +1,23 @@
 # Codex web interface
 
-Open `https://gateway.example.com/tgw/webui/` and sign in with the gateway's admin passkey, or with its username/password if password access has been enabled in the [administrator console](admin.md#optional-username-and-password). Select a worker/session in the sidebar. On a phone, use the menu button to open the session picker. Admin enrollment and worker management remain at `/tgw/admin/`.
+Open `https://gateway.example.com/tgw/webui/` and sign in with the gateway's admin passkey, or with its username/password if password access has been enabled in the [administrator console](admin.md#optional-username-and-password). Select a worker/session in the sidebar. On a phone, use the menu button to open the session picker. **Settings → Open operations console** opens `/tgw/webui/admin/` within the installed app's existing scope, retaining its browser login. The same console is also available directly at `/tgw/admin/`.
+
+Installed apps and separate browsers can have different login cookies. Console
+and sign-in management links stay under `/tgw/webui/` so navigation can remain
+inside the app instead of opening another browser. This uses the existing app
+scope and does not require reinstalling it. **Open MACT** returns to the chat;
+**Sign out** in the console ends that app/browser's login. Sensitive operations
+can still ask for recent authentication. See Apple's explanation of
+[web-app scope and separate cookies](https://developer.apple.com/videos/play/wwdc2023/10120/).
 
 The sidebar reserves its space for sessions. **Settings** at the bottom opens a dialog with draft recovery, notification controls, and **Open operations console**. Close it with its close button, Escape, or a tap outside the dialog. On phones, opening Settings closes the session drawer and keeps the keyboard closed.
+
+**Log out**, directly below **Settings**, asks for confirmation before ending
+this browser or app's login, including any 30-day device trust. Confirming clears
+its unsent drafts and attachments and returns to sign-in in the same window.
+Running sessions continue on their workers. **Cancel** or Escape leaves you
+signed in. **Disconnect** in the chat header only disconnects the selected
+conversation view; it does not log you out.
 
 Workers appear in the sidebar even before they have a session. Use **＋** beside
 a worker's name to create its first session or another session on that worker.
@@ -95,14 +110,32 @@ this project backup.
 
 ## Sign-in and recovery
 
-Browser logins expire eight hours after the last successful sign-in.
+Browser logins normally expire eight hours after successful sign-in. Select
+the unchecked **Trust this device for 30 days** option before signing in with
+a passkey to keep this browser or installed app signed in until a fixed 30-day
+deadline. An optional device name helps identify it later. Trust is granted
+only after passkey verification; password sign-in always lasts eight hours.
+Using the app does not extend either deadline.
+
 Five minutes before expiry, **Continue with passkey**, or password sign-in when
-configured, lets you renew access in
-place. If access expires, the interface locks and removes private conversation
-data. Signing in again restores the selected conversation and reading position;
+configured, lets you renew access in place. Trusted logins instead offer
+**Renew 30-day trust with passkey**, which starts another fixed period only
+after you choose it and verify. At expiry, signing in requires another explicit
+trust choice to receive 30 days again. If access expires, the interface locks
+and removes private conversation data. Signing in again restores the selected
+conversation and reading position;
 running turns continue on the worker. On phones, returning to the foreground
 checks authentication again instead of relying on background timers. Other open
 tabs recheck their login after renewal or sign-out.
+
+In the [administrator console](admin.md#browser-sessions), **Browser sessions**
+lists each login's chosen name, device ID, approximate browser/platform label,
+trust status and expiry. Use its individual **Sign out** button to revoke a
+device remotely. **This device** also lets an already signed-in browser opt in
+with a passkey. Device entries identify browser/app logins, not verified physical
+hardware; an installed app can initially share its source browser's login.
+Sensitive admin actions still need recent verification, and that verification
+does not extend an existing trusted deadline.
 
 **Recover encrypted text drafts after sign-in**, available in **Settings**, is optional and off by default.
 When enabled, the browser encrypts per-session text drafts with AES-GCM before
@@ -126,7 +159,7 @@ check the conversation before submitting again.
 - Telegram questions and approvals go to the session's assigned bot by default. Enable **Broadcast session questions to all bots** in that bot's Admin configuration to notify all enabled bot chats. A session showing `<no bot>` always notifies all eligible bot chats. This preference changes Telegram notifications; questions remain available in the session's Web UI.
 - Search entries expand to show their full queries or page actions and any results supplied by Codex. Context compaction is a plain status line; other tool entries only expand when they have details to display. Compaction loaded from a still-running turn uses a neutral label until a live event confirms its state.
 - An accepted **Steer** message shows **Message queued** above the input for four seconds. This temporary confirmation also applies to **/tgsteer** and disappears when the turn ends, the session changes or the viewer disconnects. It is not added to conversation history. Failed or unconfirmed sends do not display this confirmation.
-- Connection and history-loading errors disappear after the session successfully reloads. A successful retry also clears an older-history loading error. Codex errors marked as retryable clear when output resumes for that same turn or it completes successfully. Merely opening a socket does not clear an unresolved error; other Codex errors and uncertain-send warnings remain visible.
+- Connection and history-loading errors disappear after the session successfully reloads. A successful retry also clears an older-history loading error. Native retries are labeled **Codex is retrying** and refer to the runtime's connection, independently of the browser's **Connected** indicator. They clear when a completed assistant message or public reasoning summary arrives for the same turn, or that turn completes successfully. This works with the worker's normal filtering of raw text deltas. Heartbeats and background tool or subagent activity alone do not confirm recovery; other Codex errors and uncertain-send warnings remain visible.
 - On phones, the status bar uses two lines: model/reasoning, permissions and turn state, then context percentage with account limits. The numeric token count is omitted. Long names are shortened to keep the rows compact.
 - The permission label shows the connected session's confirmed mode, such as **On request**, **Auto review**, **Full access**, or **Read only**. Named profiles keep their name; other policy combinations show **Custom**. Hover for sandbox, approval and reviewer details, and use **/permissions** to change the setting. Native WebSocket notifications update other connected views when permissions change through the browser, Telegram or the CLI. Reconnecting clears the old label until the runtime confirms it; missing metadata shows **Permissions ?** rather than guessing from previous turns.
 - Selecting a session loads its latest 20 conversation entries in chronological order. Scroll to the top to retrieve 20 earlier entries without losing your reading position, or use **Load 20 earlier messages**. Tool calls and reasoning summaries count as entries; a long turn does not cause the browser to load its entire history.
@@ -245,6 +278,12 @@ On iPhone or iPad with iOS/iPadOS 16.4 or newer:
 
 Apple requires a Home Screen web app and a direct button press before requesting notification permission. Supported Android and desktop browsers use the same notification control. See [WebKit's Web Push requirements](https://webkit.org/blog/13878/web-push-for-web-apps-on-ios-and-ipados/).
 
+On macOS Sonoma 14 or later, open the gateway's `/tgw/webui/` page in Safari and
+choose **File → Add to Dock** (or **Share → Add to Dock**). Name it **MACT** and
+choose **Add**. It opens in its own app window from the Dock or Spotlight, using
+the supplied app icon. Open **Settings → Enable notifications** inside that app
+to enable turn-completion alerts. See [Apple's Safari web app instructions](https://support.apple.com/en-us/104996).
+
 Alerts use generic text without prompts, answers, session titles or filesystem paths. Tapping one opens its session; normal passkey authentication still applies. Notifications are optional, and the browser or operating system can delay or silence them through its notification and Focus settings. Use **Disable notifications** to stop alerts on this device. Explicitly signing out disables its subscription; revoking a passkey disables subscriptions registered with that passkey. Normal login-cookie expiry does not stop background alerts.
 
 The existing gateway sends encrypted pushes through the browser's push provider. Its SQLite database retains subscriptions, signing keys and a bounded delivery queue, so there is no additional daemon or manually configured push-provider account. The service worker does not cache conversation data or authenticated API responses. The application stores only an opaque device subscription ID in local storage; the browser manages its own push subscription.
@@ -280,6 +319,12 @@ drafts; successful sign-in can recover an opted-in encrypted text copy.
 The interface follows new output only while you are near the bottom. Selecting a session scrolls fully to its latest entry and keeps it visible while status text, questions, font metrics and image previews settle above the composer. Reading earlier messages keeps your scroll position; **Latest messages** returns to the end. Mobile layouts account for the visible keyboard viewport. Reduced-motion preferences disable working and question animations while keeping their status colors. The official runtime's existing limitation with clearing TUI question displays after answers from another client still applies; this interface does not patch the Codex runtime.
 
 Embedded stylesheet and script URLs include a content fingerprint so a page reload after deployment loads a matching set of assets. An already open tab needs a browser refresh to use the new interface.
+
+Installed apps on Mac and iPhone use the same deployed interface; reinstalling
+the app is unnecessary. Open the sidebar (use **☰** on a phone) and select
+**MACT** at the top to load a fresh page. The **↻** beside session search refreshes
+only the session list. Copy or send unsent text before reloading; running turns
+continue and a valid browser login remains active.
 
 The web UI uses the admin authentication boundary and therefore grants the same trusted operator access. HTTPS, secure session cookies, exact WebSocket Origin checks, selected-session authorization, and the worker's existing execution permissions apply. Message rendering builds DOM text nodes rather than accepting HTML. Remote image embeds are not fetched. HTTP, HTTPS, and mail links open normally. Links to worker project files open the download dialog described below; unsupported schemes remain text. Assets are served by the gateway; no third-party hosts are contacted. Mermaid's separate sandbox permits diagram styles without relaxing the application or admin console's content security policy.
 
@@ -340,6 +385,15 @@ small download indicator. Select a link to open a dialog showing the worker,
 file path and size, then choose **Download**. The Web UI remains on the current
 conversation. This also works for links in saved history on desktop and mobile;
 external website links retain their usual behavior.
+
+When delivering a generated file, use an ordinary Markdown link to its real
+path on the session's worker, for example
+`[Download the report](./reports/report.pdf)`. Optional spaces or tabs around
+the destination inside parentheses are accepted. For a filename containing
+spaces, wrap the destination in angle brackets:
+`[Download the report](<./reports/Final report.pdf>)`. Plain paths and inline
+code are not download links. ChatGPT-style `sandbox:/mnt/data/...` links are
+not worker project paths and are not supported by MACT.
 
 Absolute paths, paths relative to the session project, home-relative paths and
 local `file:` URLs are resolved by the owning worker. Editor line anchors such

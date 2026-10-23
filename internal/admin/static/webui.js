@@ -9,6 +9,7 @@
   let draftRecovery = null, recoveredDrafts = null, draftSaveTimer = null, draftDirty = false;
   const uncertainDrafts = new Set();
   let sessionInventoryAbort = null, sessionInventoryEpoch = 0, authRotationPending = false;
+  let authRenewing = false, logoutPending = null;
   const sessionUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   const requestedSession = new URL(location.href).searchParams.get('session_id') || '';
   let notificationSessionID = sessionUUID.test(requestedSession) ? requestedSession.toLowerCase() : '';
@@ -68,7 +69,7 @@
   function notificationLocation(id = '') {
     const destination = '/tgw/webui/' + (id && sessionUUID.test(id) ? '?session_id=' + id.toLowerCase() : '');
     history.replaceState(null, '', destination);
-    $('auth').querySelector('a').href = '/tgw/admin/?next=' + encodeURIComponent(destination);
+    $('auth').querySelector('a').href = '/tgw/webui/admin/?next=' + encodeURIComponent(destination);
   }
   function openNotification(url) {
     let destination;
@@ -236,6 +237,69 @@
     if (!dialog.open) dialog.showModal();
     $('open-settings').setAttribute('aria-expanded', 'true');
     $('close-settings').focus({ preventScroll: true });
+  }
+  function renderLogout() {
+    const disabled = !state.authenticated || authRenewing || authRotationPending || !!logoutPending;
+    $('open-logout').hidden = !state.authenticated;
+    $('open-logout').disabled = disabled;
+    $('logout-confirm').disabled = disabled;
+    $('logout-cancel').disabled = !!logoutPending;
+    $('logout-confirm').textContent = logoutPending ? 'Logging out…' : 'Log out';
+    $('logout-dialog').setAttribute('aria-busy', String(!!logoutPending));
+  }
+  function logoutError(message = '') {
+    $('logout-error').textContent = message;
+    $('logout-error').hidden = !message;
+  }
+  function openLogout() {
+    if (!state.authenticated || authRenewing || authRotationPending || logoutPending) return;
+    blurEditable(); showSessions(false); logoutError(); renderLogout();
+    if (!$('logout-dialog').open) $('logout-dialog').showModal();
+    $('open-logout').setAttribute('aria-expanded', 'true');
+    $('logout-cancel').focus({ preventScroll: true });
+  }
+  async function clearLogoutPush() {
+    try { localStorage.removeItem('codex-webui-push-subscription'); } catch (_) { /* Storage can be disabled. */ }
+    const generation = state.authGeneration;
+    let timer, active = true;
+    const current = () => active && generation === state.authGeneration && !state.authenticated;
+    try {
+      if (navigator.serviceWorker) await Promise.race([
+        navigator.serviceWorker.getRegistration('/tgw/webui/').then(registration => current() ? registration?.pushManager?.getSubscription() : null).then(subscription => current() ? subscription?.unsubscribe() : null),
+        new Promise(resolve => { timer = setTimeout(resolve, 3000); }),
+      ]);
+    } catch (_) { /* Server logout already revokes push devices bound to this login. */ }
+    finally { active = false; clearTimeout(timer); }
+  }
+  async function confirmLogout() {
+    if (!$('logout-dialog').open || !state.authenticated || authRenewing || authRotationPending || logoutPending) return;
+    const operation = { sessionID: sessionAuth.snapshot()?.session_id };
+    logoutPending = operation; logoutError(); renderLogout();
+    try {
+      // Logging out needs the current cookie and CSRF token, without a new
+      // passkey ceremony. Renewal is fenced until this request settles.
+      const response = await fetch('/tgw/api/v1/admin/logout', { method: 'POST', credentials: 'same-origin', cache: 'no-store', signal: AbortSignal.timeout(15000),
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': window.CodexSessionAuth.cookie('__Host-telegramgw-csrf') }, body: '{}' });
+      if (logoutPending !== operation) return;
+      if (!response.ok && response.status !== 401) throw new Error('Log out could not be confirmed (' + response.status + '). Try again.');
+      logoutPending = null;
+      // A concurrent expiry check may already have locked the view. Explicit
+      // logout must still discard the recovery key and remembered selection.
+      const alreadyLocked = !state.authenticated && !sessionAuth.snapshot();
+      sessionAuth.expire('logout');
+      if (alreadyLocked) lockAuthentication('logout');
+      sessionAuth.broadcast('logout');
+      void clearLogoutPush();
+    } catch (error) {
+      if (logoutPending !== operation) return;
+      const message = error.name === 'AbortError' || error.name === 'TimeoutError' || error instanceof TypeError
+        ? 'Log out could not be confirmed. Check your connection and try again. You may still be signed in.' : error.message;
+      if ($('logout-dialog').open) logoutError(message);
+      else $('auth-status').textContent = message;
+    } finally {
+      if (logoutPending === operation) logoutPending = null;
+      renderLogout();
+    }
   }
   function goalContextAvailable() {
     const session = state.selected;
@@ -693,6 +757,10 @@
   function expire() { if (sessionAuth) sessionAuth.expire('expired'); else lockAuthentication('expired'); }
   function lockAuthentication(reason) {
     captureAuthPosition();
+    if (['logout', 'revoked'].includes(reason)) {
+      authRestore = null; uncertainSend = false; uncertainDrafts.clear();
+      notificationSessionID = ''; notificationLocation();
+    }
     window.CodexDiagrams?.clear();
     clearTimeout(draftSaveTimer); draftSaveTimer = null; draftDirty = false;
     if (['logout', 'revoked'].includes(reason)) draftRecovery?.clear();
@@ -714,6 +782,8 @@
     state.stopped = true;
     closeSocket();
     state.authenticated = false;
+    renderLogout();
+    if ($('logout-dialog').open) $('logout-dialog').close();
     if ($('settings-dialog').open) $('settings-dialog').close();
     notificationUI?.setAuthenticated(false);
     closeActivity(); activity.sessions.clear(); activity.inventoryRevision = ''; activity.attempts = 0; activityStatus('disconnected', 'Sign in for live updates');
@@ -749,6 +819,7 @@
     $('auth').hidden = false;
     $('auth-title').textContent = authRestore ? 'Unlock your sessions' : 'Sign in to MACT';
     updateAuthDescription();
+    if (reason === 'logout') $('auth-status').textContent = 'Signed out.';
     showSessions(false);
     notice();
     connection('disconnected', 'Sign in required');
@@ -1139,6 +1210,7 @@
       state.selected = { ...state.selected, ...session };
       $('session-title').textContent = title(state.selected);
       $('session-location').textContent = [state.selected.worker_name, state.selected.runtime_name].filter(Boolean).join(' / ');
+      sessionConnectionReady();
     }
     renderSessions();
   }
@@ -1489,7 +1561,11 @@
         notice('This session is no longer active. Choose another session.');
       }
       const selectedSnapshot = state.sessions.find(session => session.session_id === state.selected?.session_id && !session.archived && !session.deleted);
-      if (selectedSnapshot) { state.selected = { ...state.selected, ...selectedSnapshot }; $('session-title').textContent = title(state.selected); }
+      if (selectedSnapshot) {
+        state.selected = { ...state.selected, ...selectedSnapshot };
+        $('session-title').textContent = title(state.selected);
+        sessionConnectionReady();
+      }
 
       state.workers = Array.isArray(data.workers) ? data.workers : [];
       state.runtimes = Array.isArray(data.runtimes) ? data.runtimes : [];
@@ -2012,7 +2088,11 @@
     if (!method) return; // Transport heartbeats must not repaint an idle transcript.
     if (p.threadId && p.threadId !== state.selected?.codex_thread_id) return;
     if (handleGoalEvent(message)) return;
-    if (p.turnId && p.delta && ['item/agentMessage/delta', 'item/reasoning/summaryTextDelta'].includes(method)) recoverNotice('retry:' + p.turnId);
+    // Workers withhold raw deltas so secrets split across frames cannot leak.
+    // Completed public model output is the recovery signal on that transport;
+    // an already-running tool or subagent can finish while Codex still retries.
+    const modelOutput = method === 'item/completed' && ['agentMessage', 'reasoning'].includes(p.item?.type) && clean(itemText(p.item)).trim();
+    if (p.turnId && (modelOutput || (p.delta && ['item/agentMessage/delta', 'item/reasoning/summaryTextDelta'].includes(method)))) recoverNotice('retry:' + p.turnId);
     if (method === 'thread/settings/updated') {
       // Older workers can already relay this native notification to viewers.
       // Once the versioned activity feed has confirmed settings, its ordered
@@ -2068,7 +2148,11 @@
     } else if (method === 'thread/tokenUsage/updated') { updateUsage(p.tokenUsage || p); return; }
     else if (method === 'serverRequest/resolved') { questionRevision++; state.questions.delete(String(p.requestId)); renderQuestions(); refreshQuestions(); return; }
     else if (method === 'error') {
-      notice(p.error?.message || p.message || 'Codex reported an error.', p.willRetry === true && p.turnId && p.turnId === state.turn ? 'retry:' + p.turnId : '');
+      const retrying = p.willRetry === true;
+      const text = p.error?.message || p.message || 'Codex reported an error.';
+      // The native event owns its turn ID even if the active-turn snapshot is
+      // still catching up. Do not turn that transient retry into a sticky error.
+      notice((retrying ? 'Codex is retrying: ' : '') + text, retrying && p.turnId ? 'retry:' + p.turnId : '');
       return;
     }
     else return;
@@ -2453,6 +2537,15 @@
   $('close-sessions').addEventListener('click', () => showSessions(false));
   $('sidebar-backdrop').addEventListener('click', () => showSessions(false));
   $('open-settings').addEventListener('click', openSettings);
+  $('open-logout').addEventListener('click', openLogout);
+  $('logout-confirm').addEventListener('click', confirmLogout);
+  $('logout-cancel').addEventListener('click', () => { if (!logoutPending) $('logout-dialog').close(); });
+  $('logout-dialog').addEventListener('cancel', event => { if (logoutPending) event.preventDefault(); });
+  $('logout-dialog').addEventListener('close', () => {
+    $('open-logout').setAttribute('aria-expanded', 'false'); logoutError();
+    const target = !state.authenticated ? $('auth-login') : matchMedia('(max-width:650px)').matches ? $('show-sessions') : $('open-logout');
+    if (target.getClientRects().length) target.focus({ preventScroll: true });
+  });
   $('show-goal').addEventListener('click', openGoal);
   $('close-goal').addEventListener('click', () => $('goal-dialog').close());
   $('goal-dialog').addEventListener('close', () => {
@@ -2675,14 +2768,18 @@
   if (notificationSessionID) notificationLocation(notificationSessionID);
   // Activity is pushed independently of the selected session. No history or
   // session-list polling runs while idle, and no transcript is persisted here.
+  const loginTrust = window.CodexSessionAuth.bindTrustControls($('auth-trust-device'), $('auth-device-name'), $('auth-device-name-field'));
   sessionAuth = window.CodexSessionAuth.create({
     mount: $('workspace'), isLocked: () => !state.authenticated && !$('auth').hidden,
-    onExpired: lockAuthentication,
+    onExpired: reason => { loginTrust.reset(); lockAuthentication(reason); },
     onRenewing: (busy, method) => {
+      authRenewing = busy; renderLogout();
       $('auth-login').disabled = busy; $('auth-login').textContent = busy && method !== 'password' ? 'Waiting for passkey…' : 'Continue with passkey';
       $('auth-password').disabled = busy;
+      loginTrust.setBusy(busy);
       if (!busy && authRotationPending) {
         authRotationPending = false;
+        renderLogout();
         // A failed finish can leave either the old or new cookie in place.
         // Let the server confirm it before restoring either transport.
         sessionAuth.verify('renewal-recovery').then(value => {
@@ -2699,9 +2796,11 @@
       updateAuthDescription();
     },
     onBeforeRotate: () => {
+      if (logoutPending) throw new Error('Log out is in progress. Wait before signing in again.');
       if (!state.authenticated) return;
       captureAuthPosition(); saveDraft();
       authRotationPending = true;
+      renderLogout();
       state.authGeneration++; state.generation++; resetInventory();
       resetTelegramBots();
       pauseSessionCreationRequests(); pauseSessionOperations();
@@ -2711,7 +2810,12 @@
     onStatus: text => { $('auth-status').textContent = text; },
     onWarning: warning => { if (warning) flushRecoveryDrafts(); },
     onAuthenticated: async (authenticatedSession) => {
+      loginTrust.reset();
       authRotationPending = false;
+      if (logoutPending && logoutPending.sessionID !== authenticatedSession?.session_id) {
+        logoutPending = null;
+        logoutError('Your sign-in changed while logging out. Log out again to end the current sign-in.');
+      }
       const previouslyAuthenticated = state.authenticated;
       const authEpoch = state.authGeneration + 1;
       draftRecovery?.identityChanged();
@@ -2722,6 +2826,7 @@
       resetInventory();
       closeSocket(); closeActivity();
       state.authenticated = true; state.stopped = false;
+      renderLogout();
       recoverSessionOperations(authenticatedSession?.owner_id || '');
       resumeSessionCreationRequests();
       $('auth').hidden = true;
@@ -2782,7 +2887,10 @@
     draftRecovery.consume();
   });
   $('discard-drafts').addEventListener('click', () => { recoveredDrafts = null; $('draft-recovery-offer').hidden = true; draftRecovery.clear(); });
-  $('auth-login').addEventListener('click', () => sessionAuth.login().catch(() => {}));
+  $('auth-login').addEventListener('click', () => {
+    const preferences = loginTrust.preferences();
+    if (preferences) sessionAuth.login('passkey', preferences).catch(() => {});
+  });
   $('auth-password').addEventListener('click', () => sessionAuth.login('password').catch(() => {}));
   sessionAuth.verify('initial').catch(error => { lockAuthentication('unavailable'); $('auth-status').textContent = error.message; });
 })();

@@ -136,9 +136,17 @@ const hostile = '<img src=x onerror="window.injected=true">';
     const confirmed = { ...statuses.get(currentEdit.request_id).session };
     statuses.get(currentEdit.request_id).session.session_id = 'b'; await page.clock.fastForward(1800);
     assert.equal(await page.locator('#session-title').textContent(), 'Session a', 'A mismatched confirmed result cannot rename the selected session');
+    assert.equal(await page.locator('#connection-text').textContent(), 'Connected · Session a', 'An unconfirmed rename keeps the current connection label');
     statuses.get(currentEdit.request_id).session = confirmed; await page.clock.fastForward(1800);
     await page.waitForFunction(() => document.querySelector('#session-title').textContent === 'Current title');
+    assert.equal(await page.locator('#connection-text').textContent(), 'Connected · Current title', 'A confirmed rename updates the connected session label');
     await page.locator('#edit-session-cancel').click();
+
+    sessions.find(row => row.session_id === 'a').name = 'Renamed from another client';
+    await page.locator('#refresh-sessions').click();
+    await page.waitForFunction(() => document.querySelector('#session-title').textContent === 'Renamed from another client');
+    assert.equal(await page.locator('#connection-text').textContent(), 'Connected · Renamed from another client', 'An inventory rename updates the connected session label');
+    assert.equal(await page.evaluate(() => window.testSockets.length), sockets, 'Renaming the selected session preserves its existing connection');
 
     await openEditor('b'); assert.equal(await page.locator('#edit-session-delete-project').isChecked(), false);
     const archived = await waitPost('archive', () => page.locator('#edit-session-archive').click());

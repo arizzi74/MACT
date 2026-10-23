@@ -188,12 +188,17 @@ session pickers, while their records remain in the admin console. Use **Delete**
 beside a revoked worker to permanently purge its gateway database records after
 confirmation; its project files and native Codex sessions stay on the worker.
 
-Browser sign-in can be renewed in place before its eight-hour expiry. Optional
+Browser sign-in normally lasts eight hours. Choose **Trust this device for 30
+days** when signing in with a passkey to stay signed in across app restarts until
+a fixed expiry date. Renewing trust requires another passkey verification;
+ordinary activity never extends it. Optional
 username/password access is configured in the [admin console](docs/admin.md#optional-username-and-password)
 and works in both browser interfaces alongside passkeys. After
 unlocking, the interface restores the selected session and reading position;
 running work continues. Optional encrypted text-draft recovery retains a copy
-for 30 minutes. The admin console lists browser logins and can revoke access.
+for 30 minutes. The admin console lists device names, browser details, last
+activity and expiry, and can sign out one device or all devices. Sensitive admin
+changes still require a recent sign-in.
 See [sign-in and recovery](docs/webui.md#sign-in-and-recovery).
 
 Connection progress distinguishes the live connection from session restoration
@@ -429,7 +434,7 @@ socket. No Codex listener is exposed over the network.
 
 ## Build and test
 
-Requires Go 1.26.9+ and Codex CLI **0.154.0** for live workers.
+Requires Go 1.26.10+ and Codex CLI **0.154.0** for live workers.
 Unit and integration tests use a fake Codex server and need no model credentials.
 All database integration tests run automatically using isolated temporary SQLite
 files. The pure-Go SQLite driver also works with `CGO_ENABLED=0`.

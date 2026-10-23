@@ -458,7 +458,7 @@ itemTimes['timestamp-older-completed'] = { startedAtMs: null, completedAtMs: tim
       const box = selector => { const rect = document.querySelector(selector).getBoundingClientRect(); return { top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right, height: rect.height }; };
       return { sidebar: box('#sidebar'), list: box('#session-list'), footer: box('.sidebar-footer') };
     });
-    assert.ok(geometry.footer.height <= 64, label + ' keeps the Settings footer compact');
+    assert.ok(geometry.footer.height <= 112, label + ' keeps the Settings and Log out footer compact');
     assert.ok(geometry.list.height > geometry.sidebar.height * .6, label + ' reserves most sidebar height for sessions');
     assert.ok(geometry.footer.top - geometry.list.bottom >= -1 && geometry.footer.top - geometry.list.bottom <= 20, label + ' fills the available space above Settings with the session list');
   };
@@ -840,7 +840,7 @@ itemTimes['timestamp-older-completed'] = { startedAtMs: null, completedAtMs: tim
       await page.goto('https://webui.test/tgw/webui/');
       await page.waitForSelector('[data-session-id="a"]');
     }
-    assert.equal((await page.locator('.sidebar-footer').textContent()).trim(), 'Settings', 'Only Settings remains in the sidebar footer');
+    assert.deepEqual(await page.locator('.sidebar-footer > button').allTextContents(), ['Settings', 'Log out'], 'The sidebar footer places Log out directly below Settings');
     assert.equal(await page.locator('#open-settings').getAttribute('aria-haspopup'), 'dialog');
     assert.equal(await page.locator('#settings-dialog').isHidden(), true);
     await settingsLayout('Desktop');
@@ -851,7 +851,7 @@ itemTimes['timestamp-older-completed'] = { startedAtMs: null, completedAtMs: tim
     assert.equal(await page.locator('#settings-dialog #draft-recovery-enabled').isVisible(), true);
     assert.equal(await page.locator('#settings-dialog #toggle-notifications').isVisible(), true);
     assert.equal(await page.locator('#settings-dialog #notifications-status').isVisible(), true);
-    assert.equal(await page.locator('#settings-dialog').getByRole('link', { name: 'Open operations console ↗', exact: true }).getAttribute('href'), '/tgw/admin/');
+    assert.equal(await page.locator('#settings-dialog').getByRole('link', { name: 'Open operations console', exact: true }).getAttribute('href'), '/tgw/webui/admin/');
     await page.keyboard.press('Tab');
     assert.equal(await page.locator('#draft-recovery-enabled').evaluate(element => document.activeElement === element), true, 'Settings preferences are reachable by keyboard');
     await page.keyboard.press('Shift+Tab');
@@ -2150,6 +2150,8 @@ itemTimes['timestamp-older-completed'] = { startedAtMs: null, completedAtMs: tim
     assert.equal(await page.locator('#prompt').inputValue(), 'An uncertain prompt');
     assert.equal(await page.locator('#notice').isVisible(), true, 'Recovery does not hide a lost prompt acknowledgement warning');
     assert.match(await page.locator('#notice').textContent(), /No input was resent/, 'The uncertain submission still requires an explicit user decision after reconnect');
+    await current({ method: 'item/completed', params: { threadId: 'thread-a', turnId: 'started-web', item: { id: 'uncertain-send-later-output', type: 'agentMessage', text: 'Public output arrived after the uncertain submission.' } } });
+    assert.match(await page.locator('#notice').textContent(), /No input was resent/, 'Completed assistant output cannot dismiss an uncertain submission warning');
     assert.match(await page.locator('#image-description').textContent(), /uncertain-image\.png/, 'A lost acknowledgement preserves the unsent image for explicit recovery');
     assert.equal(await page.evaluate(() => window.testSent.filter(frame => frame.method === 'turn/start' && frame.params.input[0].text === 'An uncertain prompt').length), 1);
     await page.evaluate(() => { window.testDropSubmit = false; });
@@ -2202,16 +2204,69 @@ itemTimes['timestamp-older-completed'] = { startedAtMs: null, completedAtMs: tim
     assert.match(await page.locator('#notice').textContent(), /Initial conversation history unavailable/, 'A history failure keeps bootstrap in an error state');
     await page.locator('#reconnect').click(); await connected();
     assert.equal(await page.locator('#notice').isHidden(), true, 'Successful bootstrap retries clear initial history errors');
-    await current({ method: 'turn/started', params: { threadId: 'thread-a', turn: { id: 'retry-recovery-a', status: 'inProgress' } } });
-    await current({ method: 'error', params: { threadId: 'thread-a', turnId: 'retry-recovery-a', willRetry: true, error: { message: 'Retryable network interruption' } } });
-    assert.match(await page.locator('#notice').textContent(), /Retryable network interruption/);
-    await page.evaluate(() => { const socket = window.testActivitySocket; socket.emit({ type: 'heartbeat', version: 3, sequence: socket.sequence }); });
-    assert.equal(await page.locator('#notice').isVisible(), true, 'An activity heartbeat cannot prove a native turn retry recovered');
-    await current({ method: 'item/agentMessage/delta', params: { threadId: 'thread-a', turnId: 'unrelated-turn', itemId: 'unrelated-retry-item', delta: 'Unrelated progress' } });
-    assert.match(await page.locator('#notice').textContent(), /Retryable network interruption/, 'Progress from another turn cannot clear a retry error');
-    await current({ method: 'item/agentMessage/delta', params: { threadId: 'thread-a', turnId: 'retry-recovery-a', itemId: 'recovered-retry-item', delta: 'The active turn resumed producing text.' } });
-    assert.equal(await page.locator('#notice').isHidden(), true, 'Matching assistant progress resolves a retryable native network error');
-    await current({ method: 'turn/completed', params: { threadId: 'thread-a', turn: { id: 'retry-recovery-a', status: 'completed' } } });
+    // The worker deliberately suppresses raw deltas. Recovery must follow the
+    // completed public messages it actually relays to desktop and phone viewers.
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({ width, height: 1000 });
+      const turnId = 'retry-recovery-' + width;
+      const retry = () => current({ method: 'error', params: { threadId: 'thread-a', turnId, willRetry: true, error: { message: 'Reconnecting... 2/5' } } });
+      const completed = (item, scope = {}) => current({ method: 'item/completed', params: { threadId: 'thread-a', turnId, item, ...scope } });
+      await current({ method: 'turn/started', params: { threadId: 'thread-a', turn: { id: turnId, status: 'inProgress' } } });
+      await retry();
+      await page.evaluate(() => { const socket = window.testActivitySocket; socket.emit({ type: 'heartbeat', version: 3, sequence: socket.sequence }); });
+      assert.equal(await page.locator('#notice').isVisible(), true, width + 'px: an activity heartbeat cannot prove a native turn retry recovered');
+      await current({ method: 'item/started', params: { threadId: 'thread-a', turnId, item: { id: 'retry-start-' + width, type: 'reasoning', summary: [] } } });
+      assert.equal(await page.locator('#notice').isVisible(), true, width + 'px: an empty item start cannot prove provider recovery');
+      await current({ method: 'item/started', params: { threadId: 'thread-a', turnId, item: { id: 'retry-start-text-' + width, type: 'agentMessage', text: 'This item is only starting.' } } });
+      assert.equal(await page.locator('#notice').isVisible(), true, width + 'px: an item start cannot resolve a retry before its public output completes');
+      for (const [label, item, scope] of [
+        ['another thread', { type: 'agentMessage', text: 'Another thread progressed.' }, { threadId: 'thread-b' }],
+        ['another turn', { type: 'agentMessage', text: 'Another turn progressed.' }, { turnId: 'unrelated-turn' }],
+        ['user text', { type: 'userMessage', content: [{ type: 'text', text: 'A user message is not provider output.' }] }],
+        ['tool output', { type: 'commandExecution', command: 'check', status: 'completed', aggregatedOutput: 'An earlier tool finished.' }],
+        ['background agent output', { type: 'subAgentActivity', kind: 'completed', agentThreadId: 'child-thread', text: 'An earlier child completed.' }],
+        ['empty assistant text', { type: 'agentMessage', text: ' \n\u001b[31m\u001b[0m\t' }],
+        ['empty public reasoning', { type: 'reasoning', summary: [' \n\u001b[31m\u001b[0m\t'], content: ['Private content is not a public summary.'] }],
+      ]) {
+        await completed({ id: 'retry-unrelated-' + width + '-' + label.replaceAll(' ', '-'), ...item }, scope);
+        assert.match(await page.locator('#notice').textContent(), /Reconnecting\.\.\. 2\/5/, width + 'px: ' + label + ' cannot resolve the retry notice');
+      }
+      await current({ method: 'thread/status/changed', params: { threadId: 'thread-a', status: { type: 'active' } } });
+      await current({ method: 'account/rateLimits/updated', params: { rateLimits } });
+      assert.equal(await page.locator('#notice').isVisible(), true, width + 'px: status and account updates cannot prove provider recovery');
+      await completed({ id: 'retry-assistant-' + width, type: 'agentMessage', text: 'The provider resumed producing public text.' });
+      assert.equal(await page.locator('#notice').isHidden(), true, width + 'px: a completed assistant message clears its matching retry notice without a raw delta');
+      assert.equal(await page.locator('#notice').textContent(), '', width + 'px: a recovered retry removes the stale banner content');
+      assert.equal(await page.locator('#connection').getAttribute('data-state'), 'connected');
+      assert.equal(await page.locator('#activity-status').getAttribute('data-state'), 'live');
+      await retry();
+      assert.equal(await page.locator('#notice').textContent(), 'Codex is retrying: Reconnecting... 2/5', width + 'px: provider retry feedback identifies its source');
+      await completed({ id: 'retry-summary-' + width, type: 'reasoning', summary: [{ text: 'The recovered public reasoning summary.' }] });
+      assert.equal(await page.locator('#notice').isHidden(), true, width + 'px: a completed public reasoning summary clears the matching retry');
+      // Thread status and bootstrap snapshots can leave the active-turn cache
+      // empty or stale; the retry notification still owns its explicit turn ID.
+      for (const activeTurn of [null, 'different-active-turn-' + width]) {
+        if (activeTurn) await current({ method: 'turn/started', params: { threadId: 'thread-a', turn: { id: activeTurn, status: 'inProgress' } } });
+        else await current({ method: 'thread/status/changed', params: { threadId: 'thread-a', status: { type: 'idle' } } });
+        await retry();
+        assert.match(await page.locator('#notice').textContent(), /^Codex is retrying: /, width + 'px: a retry remains scoped when the active-turn cache is ' + (activeTurn ? 'stale' : 'empty'));
+        await completed({ id: 'retry-cache-' + width + '-' + (activeTurn ? 'stale' : 'empty'), type: 'agentMessage', text: 'Recovery belongs to the notification’s turn.' });
+        assert.equal(await page.locator('#notice').isHidden(), true, width + 'px: matching recovery does not depend on the active-turn cache');
+      }
+      for (const status of ['completed', 'interrupted']) {
+        await retry();
+        await current({ method: 'turn/completed', params: { threadId: 'thread-a', turn: { id: turnId, status } } });
+        assert.equal(await page.locator('#notice').isHidden(), true, width + 'px: a matching ' + status + ' turn resolves its retry notice');
+      }
+      // Keep compatibility with workers that do relay a public assistant delta.
+      await retry();
+      await current({ method: 'item/agentMessage/delta', params: { threadId: 'thread-a', turnId, itemId: 'retry-delta-' + width, delta: 'A public assistant delta also confirms recovery.' } });
+      assert.equal(await page.locator('#notice').isHidden(), true, width + 'px: matching assistant deltas still resolve a retry notice');
+      await current({ method: 'error', params: { threadId: 'thread-a', turnId, willRetry: false, error: { message: 'A nonretryable provider error needs attention.' } } });
+      await completed({ id: 'retry-nonretryable-' + width, type: 'agentMessage', text: 'Later output cannot dismiss a nonretryable failure.' });
+      assert.equal(await page.locator('#notice').textContent(), 'A nonretryable provider error needs attention.', width + 'px: completed output preserves nonretryable errors');
+    }
+    await page.setViewportSize({ width: 1440, height: 1000 });
     await current({ method: 'error', params: { threadId: 'thread-a', error: { message: 'Runtime build failure needs attention' } } });
     await page.locator('#disconnect').click(); await page.locator('#reconnect').click(); await connected();
     assert.match(await page.locator('#notice').textContent(), /Runtime build failure needs attention/, 'Unrelated runtime errors survive a successful manual reconnect');
@@ -2921,7 +2976,7 @@ itemTimes['timestamp-older-completed'] = { startedAtMs: null, completedAtMs: tim
     await page.goto('https://webui.test/tgw/webui/?session_id=' + notificationID);
     await page.waitForSelector('[data-session-id="' + notificationID + '"][aria-current="true"]'); await connected();
     assert.equal(await page.locator('#session-title').textContent(), 'Notification target', 'Opening the app from a notification selects its authorized session after loading inventory');
-    assert.equal(await page.locator('#auth a').getAttribute('href'), '/tgw/admin/?next=' + encodeURIComponent('/tgw/webui/?session_id=' + notificationID), 'Passkey sign-in preserves the validated notification target');
+    assert.equal(await page.locator('#auth a').getAttribute('href'), '/tgw/webui/admin/?next=' + encodeURIComponent('/tgw/webui/?session_id=' + notificationID), 'Passkey sign-in preserves the validated notification target inside the installed app');
     await page.goto('https://webui.test/tgw/webui/?session_id=invalid');
     await page.waitForSelector('[data-session-id="a"]');
     assert.equal(await page.evaluate(() => window.testSockets.length), 0, 'An invalid startup deep link cannot attach to a runtime');

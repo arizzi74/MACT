@@ -1,6 +1,8 @@
 # Administrator console
 
-The administrator console is served at `/tgw/admin/`. Passkeys are available by
+The administrator console is served at `/tgw/admin/` and, for navigation inside
+the installed MACT app, `/tgw/webui/admin/`. Both use the same authentication and
+administrative APIs. Passkeys are available by
 default; an administrator can also enable username/password sign-in for both
 this console and the Codex Web UI. The gateway enables the console with
 the configured public origin and Telegram bot management.
@@ -58,13 +60,13 @@ The browser uses these endpoints:
 | --- | --- |
 | `POST /tgw/api/v1/admin/passkeys/register/begin` | Begins bootstrap or an authenticated additional-passkey ceremony. |
 | `POST /tgw/api/v1/admin/passkeys/register/finish` | Verifies and persists a registration response. |
-| `POST /tgw/api/v1/admin/login/begin` / `finish` | Begins and completes a discoverable passkey login. |
+| `POST /tgw/api/v1/admin/login/begin` / `finish` | Begins and completes a discoverable passkey login. Begin accepts optional `trust_device` and `device_name` preferences. |
 | `GET /tgw/api/v1/admin/login/options` | Reports whether password sign-in is enabled, without disclosing the username. |
 | `POST /tgw/api/v1/admin/login/password` | Verifies the configured username/password and creates or renews a browser session. |
 | `GET, PUT, DELETE /tgw/api/v1/admin/password` | Reads, configures or disables optional password access for an authenticated administrator. Writes require recent authentication. |
-| `GET /tgw/api/v1/admin/session` | Returns the current login's identity, authentication method, server time, expiry and last verification time. |
-| `GET /tgw/api/v1/admin/sessions` | Lists this account's active browser logins, approximate browser labels and last-seen times. |
-| `DELETE /tgw/api/v1/admin/sessions/{id}` | Revokes one browser login and its notification subscriptions. |
+| `GET /tgw/api/v1/admin/session` | Returns the current login's identity, authentication method, device ID/name, trust status, server time, expiry and last verification time. |
+| `GET /tgw/api/v1/admin/sessions` | Lists this account's active browser logins, device IDs/names, trust status, approximate browser labels, expiry and last-seen times. |
+| `DELETE /tgw/api/v1/admin/sessions/{id}` | Revokes one device login and its notification subscriptions; accepts its stable device ID or a current/previous session ID. |
 | `POST /tgw/api/v1/admin/sessions/revoke-all` | Signs out every browser belonging to the account. |
 | `GET /tgw/api/v1/admin/dashboard` | Returns visible sessions and statistics, workers, runtimes, bot status, and pending counts. |
 | `GET /tgw/api/v1/admin/telegram-bots` | Lists connected bots and pending managed-bot requests without tokens or webhook secrets. |
@@ -91,22 +93,34 @@ The browser uses these endpoints:
 All state-changing admin requests require the exact configured `Origin`, the strict
 same-site session, and a double-submit `X-CSRF-Token`. Ceremony cookies bind
 the browser to a five-minute, server-persisted WebAuthn session. Admin sessions
-are opaque hashed random tokens, expire after eight hours, and can be revoked.
+are opaque hashed random tokens, normally expire after eight hours, and can be revoked.
 Worker tokens are only included in the installer redemption or legacy
 create/rotate response and are never logged or returned later.
 
-The eight-hour lifetime is absolute: requests, WebSocket traffic and ongoing
-Codex turns do not extend it. Five minutes before expiry, both interfaces show
-**Continue with passkey**, with password renewal also available when enabled.
-Successful verification with either method creates a new eight-hour
-session, invalidates the previous token and transfers that browser's notification
-subscriptions. Cancellation leaves the existing login valid until its original
-expiry. Registration of a passkey itself has no automatic expiry.
+Both sign-in screens offer an unchecked **Trust this device for 30 days**
+option and an optional device name. Trust is granted only after successful
+passkey verification. Password sign-in always creates an eight-hour session,
+even when the checkbox is selected. An already signed-in browser can opt in
+under **Browser sessions → This device**, then confirm with a passkey.
+
+Both lifetimes are absolute: requests, WebSocket traffic and ongoing Codex
+turns do not extend them. A trusted login expires at its fixed 30-day deadline
+and then requires passkey sign-in with another explicit trust choice to receive
+30 days again. Five minutes before expiry, both interfaces offer renewal.
+For a trusted login, **Renew 30-day trust with passkey** explicitly starts a
+new fixed period after verification; ordinary sign-in offers the same unchecked
+trust choice as the initial screen. Password renewal always returns to eight
+hours. Successful renewal invalidates the previous token and transfers that
+browser's notification subscriptions. Cancellation leaves the existing login
+valid until its original expiry. Registration of a passkey itself has no
+automatic expiry.
 
 Adding or removing passkeys and enrolling, revoking, deleting or rotating a
 worker require authentication within the previous five minutes. The console asks for a
 passkey or the configured password when needed; a rejected or cancelled
 verification performs no mutation.
+Passkey verification for these sensitive actions preserves a trusted login's
+existing deadline; it does not silently renew its 30-day period.
 Both stages of additional-passkey registration enforce this check. Browser
 session revocation remains available without another authentication prompt.
 
@@ -456,6 +470,16 @@ classifications, not authenticated device identities. **Last seen** includes
 authenticated background requests. A synced passkey can be used by more than one
 browser. Session cookies remain Secure, HttpOnly and SameSite=Strict; neither
 session tokens nor passkey secrets are exposed in the session inventory.
+
+Each entry shows its optional chosen name, stable device ID, approximate
+browser/platform label, trust status and fixed expiry. A **Current device**
+badge identifies this login. Names and IDs distinguish browser or installed-app
+logins; they do not verify a physical device. An installed app that initially
+copies its source browser's cookie can share that login until it signs in
+separately. The device ID stays the same when passkey verification rotates the
+session token. **Sign out** on an individual entry ends that device login,
+including renewed tokens, without signing out the other entries. This also
+removes its remembered trust, so its next visit requires sign-in.
 
 Login initiation allows 10 attempts per client per minute and 120 globally;
 completion allows 20 per client and 240 globally. Each phase has a separate

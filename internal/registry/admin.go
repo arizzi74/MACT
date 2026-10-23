@@ -16,16 +16,18 @@ import (
 )
 
 var (
-	ErrAdminBootstrapInvalid = errors.New("registry: invalid or expired admin bootstrap token")
-	ErrAdminCeremonyInvalid  = errors.New("registry: invalid or expired admin ceremony")
-	ErrAdminCeremonyLimit    = errors.New("registry: too many outstanding admin ceremonies")
-	ErrAdminSessionInvalid   = errors.New("registry: invalid or expired admin session")
-	ErrAdminCredentialGone   = errors.New("registry: admin credential not found or revoked")
+	ErrAdminBootstrapInvalid  = errors.New("registry: invalid or expired admin bootstrap token")
+	ErrAdminCeremonyInvalid   = errors.New("registry: invalid or expired admin ceremony")
+	ErrAdminCeremonyLimit     = errors.New("registry: too many outstanding admin ceremonies")
+	ErrAdminSessionInvalid    = errors.New("registry: invalid or expired admin session")
+	ErrAdminCredentialGone    = errors.New("registry: admin credential not found or revoked")
+	ErrAdminDeviceNameInvalid = errors.New("registry: device name must be at most 80 characters without control characters or markup")
 )
 
 const (
 	adminBootstrapTTL       = 15 * time.Minute
 	adminSessionTTL         = 8 * time.Hour
+	adminTrustedDeviceTTL   = 30 * 24 * time.Hour
 	maxAdminCeremonies      = 1024
 	adminCeremonyPruneBatch = 256
 )
@@ -86,18 +88,33 @@ func (s *Store) CheckAdminBootstrap(ctx context.Context, token string) error {
 // NewAdminCeremony saves a short-lived WebAuthn SessionData and returns a
 // random cookie binding. Session data is consumed exactly once at completion.
 func (s *Store) NewAdminCeremony(ctx context.Context, purpose string, userHandle []byte, sessionData json.RawMessage) (AdminCeremony, error) {
-	return s.newAdminCeremony(ctx, purpose, userHandle, sessionData, "", "Browser")
+	return s.newAdminCeremony(ctx, purpose, userHandle, sessionData, "", "Browser", AdminLoginOptions{})
+}
+
+// AdminLoginOptions records the explicit trust choice before a passkey is
+// verified. A nil choice preserves a valid predecessor's original deadline.
+type AdminLoginOptions struct {
+	TrustDevice *bool  `json:"trust_device"`
+	DeviceName  string `json:"device_name"`
 }
 
 // NewAdminLoginCeremony binds renewal to the cookie present at login begin.
 // The browser label is classified here rather than persisting a raw UA header.
-func (s *Store) NewAdminLoginCeremony(ctx context.Context, sessionData json.RawMessage, predecessorToken, userAgent string) (AdminCeremony, error) {
-	return s.newAdminCeremony(ctx, "authentication", nil, sessionData, predecessorToken, adminBrowserLabel(userAgent))
+func (s *Store) NewAdminLoginCeremony(ctx context.Context, sessionData json.RawMessage, predecessorToken, userAgent string, options ...AdminLoginOptions) (AdminCeremony, error) {
+	var choice AdminLoginOptions
+	if len(options) > 0 {
+		choice = options[0]
+	}
+	return s.newAdminCeremony(ctx, "authentication", nil, sessionData, predecessorToken, adminBrowserLabel(userAgent), choice)
 }
 
-func (s *Store) newAdminCeremony(ctx context.Context, purpose string, userHandle []byte, sessionData json.RawMessage, predecessorToken, browserLabel string) (AdminCeremony, error) {
+func (s *Store) newAdminCeremony(ctx context.Context, purpose string, userHandle []byte, sessionData json.RawMessage, predecessorToken, browserLabel string, options AdminLoginOptions) (AdminCeremony, error) {
 	if purpose != "registration" && purpose != "authentication" || len(sessionData) == 0 {
 		return AdminCeremony{}, ErrAdminCeremonyInvalid
+	}
+	deviceName, valid := normalizeAdminDeviceName(options.DeviceName)
+	if !valid {
+		return AdminCeremony{}, ErrAdminDeviceNameInvalid
 	}
 	binding, err := randomSecret(32)
 	if err != nil {
@@ -147,8 +164,8 @@ func (s *Store) newAdminCeremony(ctx context.Context, purpose string, userHandle
 		}
 	}
 	_, err = tx.Exec(ctx, `INSERT INTO admin_challenges
-        (challenge_id, purpose, challenge_hash, user_handle, expires_at, session_data, ceremony_binding_hash, predecessor_token_hash, browser_label)
-        VALUES ($1, $2, $3, $4, (strftime('%Y-%m-%dT%H:%M:%f','now','+5 minutes') || '000000Z'), $5, $6, $7, $8)`, id, purpose, sha256Bytes(challenge), nullableBytes(userHandle), sessionData, hashSecret(binding), nullableBytes(predecessorHash), browserLabel)
+		(challenge_id, purpose, challenge_hash, user_handle, expires_at, session_data, ceremony_binding_hash, predecessor_token_hash, browser_label, trust_device, device_name)
+		VALUES ($1, $2, $3, $4, (strftime('%Y-%m-%dT%H:%M:%f','now','+5 minutes') || '000000Z'), $5, $6, $7, $8, $9, $10)`, id, purpose, sha256Bytes(challenge), nullableBytes(userHandle), sessionData, hashSecret(binding), nullableBytes(predecessorHash), browserLabel, options.TrustDevice, deviceName)
 	if err != nil {
 		return AdminCeremony{}, fmt.Errorf("registry: save admin ceremony: %w", err)
 	}
@@ -433,7 +450,7 @@ func (s *Store) CreateAdminSession(ctx context.Context, credentialID []byte) (st
 		return "", err
 	}
 	id := uuid.New()
-	_, err = s.pool.Exec(ctx, `INSERT INTO admin_sessions(session_id,credential_id,token_hash,expires_at) VALUES($1,$2,$3,(strftime('%Y-%m-%dT%H:%M:%f','now','+8 hours') || '000000Z'))`, id, credentialID, hashSecret(token))
+	_, err = s.pool.Exec(ctx, `INSERT INTO admin_sessions(session_id,device_id,credential_id,token_hash,expires_at) VALUES($1,$1,$2,$3,(strftime('%Y-%m-%dT%H:%M:%f','now','+8 hours') || '000000Z'))`, id, credentialID, hashSecret(token))
 	if err != nil {
 		return "", fmt.Errorf("registry: create admin session: %w", err)
 	}
