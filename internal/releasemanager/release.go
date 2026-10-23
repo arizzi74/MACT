@@ -248,6 +248,11 @@ func (m *Manager) FetchRelease(ctx context.Context, repo, version string) (*Rele
 		}
 		suffix = "tags/v" + strings.TrimPrefix(strings.TrimSpace(version), "v")
 	}
+	requestedRepo := repo
+	repo, err := m.releaseRepository(ctx, requestedRepo)
+	if err != nil {
+		return nil, err
+	}
 	data, err := m.Download(ctx, "https://api.github.com/repos/"+repo+"/releases/"+suffix, 4*1024*1024)
 	if err != nil {
 		return nil, err
@@ -277,12 +282,11 @@ func (m *Manager) FetchRelease(ctx context.Context, repo, version string) (*Rele
 			return nil, errors.New("GitHub returned the wrong release version")
 		}
 	}
-	canonicalRepo, err := m.releaseRepository(ctx, repo, metadata.Tag, metadata.HTMLURL)
-	if err != nil {
-		return nil, err
+	if metadata.HTMLURL != "" && metadata.HTMLURL != "https://github.com/"+repo+"/releases/tag/"+metadata.Tag {
+		return nil, errors.New("release URL does not match the selected repository and tag")
 	}
-	release := &Release{Repo: canonicalRepo, RequestedRepo: repo, SourceRepo: canonicalRepo, Tag: metadata.Tag, Assets: map[string]string{}}
-	prefix := "https://github.com/" + canonicalRepo + "/releases/download/" + metadata.Tag + "/"
+	release := &Release{Repo: repo, RequestedRepo: requestedRepo, SourceRepo: repo, Tag: metadata.Tag, Assets: map[string]string{}}
+	prefix := "https://github.com/" + repo + "/releases/download/" + metadata.Tag + "/"
 	for _, asset := range metadata.Assets {
 		if !safeArchivePath(asset.Name) || strings.Contains(asset.Name, "/") || release.Assets[asset.Name] != "" {
 			return nil, errors.New("invalid or duplicate release asset")
@@ -314,7 +318,7 @@ func (m *Manager) FetchRelease(ctx context.Context, repo, version string) (*Rele
 	if m.verifyManifest != nil {
 		verify = m.verifyManifest
 	}
-	if canonicalRepo == RenamedRepo {
+	if repo == RenamedRepo {
 		// Renaming the repository changes asset URLs, but cannot change the
 		// identity in historical certificates. Select an exact identity before
 		// verification; an invalid signature is never retried with another.

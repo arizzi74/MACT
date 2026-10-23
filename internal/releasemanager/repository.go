@@ -27,25 +27,25 @@ func validateRepositoryBridgeInstall(release *Release) error {
 	return nil
 }
 
-func (m *Manager) releaseRepository(ctx context.Context, requested, tag, htmlURL string) (string, error) {
-	if htmlURL == "" || htmlURL == "https://github.com/"+requested+"/releases/tag/"+tag {
+// Resolve the historical official name before fetching a release. The old name
+// now hosts a compatibility repository, so its redirect and repository identity
+// cannot establish the identity of the canonical repository anymore.
+func (m *Manager) releaseRepository(ctx context.Context, requested string) (string, error) {
+	if requested != LegacyRepo {
 		return requested, nil
 	}
-	if requested == LegacyRepo && htmlURL == "https://github.com/"+RenamedRepo+"/releases/tag/"+tag {
-		data, err := m.Download(ctx, "https://api.github.com/repos/"+LegacyRepo, 1024*1024)
-		if err != nil {
-			return "", err
-		}
-		var repository struct {
-			ID       int64  `json:"id"`
-			FullName string `json:"full_name"`
-		}
-		if err := json.Unmarshal(data, &repository); err != nil || repository.ID != officialRepositoryID || repository.FullName != RenamedRepo {
-			return "", errors.New("GitHub did not confirm the authorized repository rename and immutable repository identity")
-		}
-		return RenamedRepo, nil
+	data, err := m.Download(ctx, "https://api.github.com/repos/"+RenamedRepo, 1024*1024)
+	if err != nil {
+		return "", err
 	}
-	return "", errors.New("release URL does not match the selected repository and tag or its authorized rename")
+	var repository struct {
+		ID       int64  `json:"id"`
+		FullName string `json:"full_name"`
+	}
+	if err := json.Unmarshal(data, &repository); err != nil || repository.ID != officialRepositoryID || repository.FullName != RenamedRepo {
+		return "", errors.New("GitHub did not confirm the canonical repository and immutable repository identity")
+	}
+	return RenamedRepo, nil
 }
 
 // Keep the previous official repository while readiness is pending. A failed

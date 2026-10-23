@@ -39,6 +39,28 @@ func repositoryBundle(t *testing.T, repo, tag string) []byte {
 	return []byte(`{"mediaType":"application/vnd.dev.sigstore.bundle.v0.3+json","verificationMaterial":{"certificate":{"rawBytes":"` + base64.StdEncoding.EncodeToString(encoded) + `"}},"dsseEnvelope":{"payloadType":"application/vnd.in-toto+json","payload":"e30=","signatures":[{"sig":"AA=="}]}}`)
 }
 
+func canonicalRepositoryTransport(t *testing.T, tag, source string) coreRoundTripper {
+	t.Helper()
+	bundle := repositoryBundle(t, source, tag)
+	prefix := "https://github.com/" + RenamedRepo + "/releases/download/" + tag + "/"
+	return func(request *http.Request) (*http.Response, error) {
+		var data []byte
+		switch request.URL.String() {
+		case "https://api.github.com/repos/" + RenamedRepo:
+			data = []byte(fmt.Sprintf(`{"id":%d,"full_name":%q}`, officialRepositoryID, RenamedRepo))
+		case "https://api.github.com/repos/" + RenamedRepo + "/releases/latest":
+			data, _ = json.Marshal(map[string]any{"tag_name": tag, "html_url": "https://github.com/" + RenamedRepo + "/releases/tag/" + tag, "draft": false, "prerelease": false, "assets": []map[string]string{{"name": "SHA256SUMS", "browser_download_url": prefix + "SHA256SUMS"}, {"name": "SHA256SUMS.sigstore.json", "browser_download_url": prefix + "SHA256SUMS.sigstore.json"}}})
+		case prefix + "SHA256SUMS":
+			data = []byte(coreHash(nil) + "  program\n")
+		case prefix + "SHA256SUMS.sigstore.json":
+			data = bundle
+		default:
+			t.Fatal("unexpected request, including any request to the recreated legacy repository", request.URL)
+		}
+		return coreResponse(request, data), nil
+	}
+}
+
 func TestDefaultRepositoryUsesCanonicalMACTIdentity(t *testing.T) {
 	if DefaultRepo != RenamedRepo || LegacyRepo != "arizzi74/Codex-Telegram-Gateway" {
 		t.Fatal("default or historical repository identity changed", DefaultRepo, LegacyRepo)
@@ -47,9 +69,8 @@ func TestDefaultRepositoryUsesCanonicalMACTIdentity(t *testing.T) {
 
 func TestRepositoryRenameFetchKeepsCanonicalDownloadsAndHistoricalIdentity(t *testing.T) {
 	for _, tc := range []struct{ name, requested, canonical, source, pin string }{
-		{"before rename latest", LegacyRepo, LegacyRepo, LegacyRepo, ""},
-		{"before rename pinned", LegacyRepo, LegacyRepo, LegacyRepo, "v1.2.3"},
-		{"renamed latest", LegacyRepo, RenamedRepo, RenamedRepo, ""},
+		{"legacy selection ignores recreated repository", LegacyRepo, RenamedRepo, RenamedRepo, ""},
+		{"legacy pinned selection ignores recreated repository", LegacyRepo, RenamedRepo, RenamedRepo, "v0.6.23"},
 		{"renamed historical pin", LegacyRepo, RenamedRepo, LegacyRepo, "v1.2.3"},
 		{"renamed bridge release pin", LegacyRepo, RenamedRepo, LegacyRepo, "v0.6.21"},
 		{"persisted canonical latest", RenamedRepo, RenamedRepo, RenamedRepo, ""},
@@ -75,12 +96,15 @@ func TestRepositoryRenameFetchKeepsCanonicalDownloadsAndHistoricalIdentity(t *te
 				var data []byte
 				prefix := "https://github.com/" + tc.canonical + "/releases/download/" + tag + "/"
 				switch request.URL.String() {
-				case "https://api.github.com/repos/" + tc.requested + "/releases/latest", "https://api.github.com/repos/" + tc.requested + "/releases/tags/" + tag:
+				case "https://api.github.com/repos/" + tc.canonical + "/releases/latest", "https://api.github.com/repos/" + tc.canonical + "/releases/tags/" + tag:
+					if tc.requested == LegacyRepo && repositoryLookups != 1 {
+						t.Fatal("legacy selection fetched metadata before confirming the canonical identity")
+					}
 					data, _ = json.Marshal(map[string]any{"tag_name": tag, "draft": false, "prerelease": false, "html_url": "https://github.com/" + tc.canonical + "/releases/tag/" + tag, "assets": []map[string]string{
 						{"name": "SHA256SUMS", "browser_download_url": prefix + "SHA256SUMS"},
 						{"name": "SHA256SUMS.sigstore.json", "browser_download_url": prefix + "SHA256SUMS.sigstore.json"},
 					}})
-				case "https://api.github.com/repos/" + LegacyRepo:
+				case "https://api.github.com/repos/" + RenamedRepo:
 					repositoryLookups++
 					data = []byte(fmt.Sprintf(`{"id":%d,"full_name":%q}`, officialRepositoryID, RenamedRepo))
 				case prefix + "SHA256SUMS":
@@ -96,7 +120,7 @@ func TestRepositoryRenameFetchKeepsCanonicalDownloadsAndHistoricalIdentity(t *te
 			if err != nil {
 				t.Fatal(err)
 			}
-			if release.Repo != tc.canonical || release.SourceRepo != tc.source || verifications != 1 {
+			if release.Repo != tc.canonical || release.SourceRepo != tc.source || release.RequestedRepo != tc.requested || verifications != 1 {
 				t.Fatalf("unexpected release identity: %+v checks=%d", release, verifications)
 			}
 			wantLookups := 0
@@ -110,13 +134,33 @@ func TestRepositoryRenameFetchKeepsCanonicalDownloadsAndHistoricalIdentity(t *te
 	}
 }
 
+func TestLegacyRepositoryCannotFallBackWhenCanonicalIdentityIsUnavailable(t *testing.T) {
+	m := New(nil)
+	calls := 0
+	m.HTTP.Transport = coreRoundTripper(func(request *http.Request) (*http.Response, error) {
+		calls++
+		if request.URL.String() != "https://api.github.com/repos/"+RenamedRepo {
+			t.Fatal("canonical identity failure caused a release or legacy repository request", request.URL)
+		}
+		response := coreResponse(request, []byte(`{"message":"Not Found"}`))
+		response.StatusCode = http.StatusNotFound
+		return response, nil
+	})
+	if _, err := m.FetchRelease(t.Context(), LegacyRepo, ""); err == nil || calls != 1 {
+		t.Fatalf("canonical identity failure did not stop resolution: calls=%d error=%v", calls, err)
+	}
+}
+
 func TestRepositoryRenameRejectsOtherRepositoriesAndChangedIdentity(t *testing.T) {
 	for _, tc := range []struct{ name, requested, canonical, repositoryJSON, assetRepo string }{
 		{"arbitrary destination", LegacyRepo, "attacker/project", "", "attacker/project"},
+		{"recreated legacy release metadata", LegacyRepo, LegacyRepo, "", LegacyRepo},
 		{"fork cannot migrate", "owner/fork", RenamedRepo, "", RenamedRepo},
 		{"new cannot migrate backwards", RenamedRepo, LegacyRepo, "", LegacyRepo},
 		{"wrong immutable repository", LegacyRepo, RenamedRepo, `{"id":1,"full_name":"arizzi74/MACT"}`, RenamedRepo},
 		{"wrong canonical repository", LegacyRepo, RenamedRepo, fmt.Sprintf(`{"id":%d,"full_name":"attacker/project"}`, officialRepositoryID), RenamedRepo},
+		{"malformed canonical identity", LegacyRepo, RenamedRepo, `{`, RenamedRepo},
+		{"missing canonical identity", LegacyRepo, RenamedRepo, `{}`, RenamedRepo},
 		{"wrong asset repository", LegacyRepo, RenamedRepo, fmt.Sprintf(`{"id":%d,"full_name":"arizzi74/MACT"}`, officialRepositoryID), "attacker/project"},
 		{"mixed old assets", LegacyRepo, RenamedRepo, fmt.Sprintf(`{"id":%d,"full_name":"arizzi74/MACT"}`, officialRepositoryID), LegacyRepo},
 	} {
@@ -127,10 +171,18 @@ func TestRepositoryRenameRejectsOtherRepositoriesAndChangedIdentity(t *testing.T
 				return nil
 			}
 			m.HTTP.Transport = coreRoundTripper(func(request *http.Request) (*http.Response, error) {
-				if request.URL.String() == "https://api.github.com/repos/"+LegacyRepo {
-					return coreResponse(request, []byte(tc.repositoryJSON)), nil
+				if request.URL.String() == "https://api.github.com/repos/"+RenamedRepo {
+					identity := tc.repositoryJSON
+					if identity == "" {
+						identity = fmt.Sprintf(`{"id":%d,"full_name":%q}`, officialRepositoryID, RenamedRepo)
+					}
+					return coreResponse(request, []byte(identity)), nil
 				}
-				if request.URL.Host != "api.github.com" {
+				selected := tc.requested
+				if selected == LegacyRepo {
+					selected = RenamedRepo
+				}
+				if request.URL.String() != "https://api.github.com/repos/"+selected+"/releases/latest" {
 					t.Fatal("invalid metadata caused asset download", request.URL)
 				}
 				data, _ := json.Marshal(map[string]any{"tag_name": "v1.2.3", "draft": false, "prerelease": false, "html_url": "https://github.com/" + tc.canonical + "/releases/tag/v1.2.3", "assets": []map[string]string{{"name": "SHA256SUMS", "browser_download_url": "https://github.com/" + tc.assetRepo + "/releases/download/v1.2.3/SHA256SUMS"}}})
@@ -144,40 +196,28 @@ func TestRepositoryRenameRejectsOtherRepositoriesAndChangedIdentity(t *testing.T
 }
 
 func TestRenamedRepositoryNeverFallsBackAfterSignatureFailure(t *testing.T) {
-	for _, source := range []string{LegacyRepo, RenamedRepo, "attacker/project"} {
-		t.Run(source, func(t *testing.T) {
-			m := New(nil)
-			checks := 0
-			m.verifyManifest = func(repo, tag string, manifest, attestation []byte) error {
-				checks++
-				return errors.New("invalid signature")
-			}
-			m.HTTP.Transport = coreRoundTripper(func(request *http.Request) (*http.Response, error) {
-				prefix := "https://github.com/" + RenamedRepo + "/releases/download/v1.2.3/"
-				var data []byte
-				switch {
-				case request.URL.Host == "api.github.com":
-					data, _ = json.Marshal(map[string]any{"tag_name": "v1.2.3", "draft": false, "prerelease": false, "assets": []map[string]string{{"name": "SHA256SUMS", "browser_download_url": prefix + "SHA256SUMS"}, {"name": "SHA256SUMS.sigstore.json", "browser_download_url": prefix + "SHA256SUMS.sigstore.json"}}})
-				case strings.HasSuffix(request.URL.Path, "/SHA256SUMS"):
-					data = []byte(coreHash(nil) + "  program\n")
-				case strings.HasSuffix(request.URL.Path, "/SHA256SUMS.sigstore.json"):
-					data = repositoryBundle(t, source, "v1.2.3")
-				default:
-					t.Fatal("unauthenticated package download", request.URL)
+	for _, requested := range []string{LegacyRepo, RenamedRepo} {
+		for _, source := range []string{LegacyRepo, RenamedRepo, "attacker/project"} {
+			t.Run(requested+"/"+source, func(t *testing.T) {
+				m := New(nil)
+				checks := 0
+				m.verifyManifest = func(repo, tag string, manifest, attestation []byte) error {
+					checks++
+					return errors.New("invalid signature")
 				}
-				return coreResponse(request, data), nil
+				m.HTTP.Transport = canonicalRepositoryTransport(t, "v1.2.3", source)
+				if _, err := m.FetchRelease(t.Context(), requested, ""); err == nil {
+					t.Fatal("accepted invalid signature")
+				}
+				want := 1
+				if source == "attacker/project" {
+					want = 0
+				}
+				if checks != want {
+					t.Fatalf("verifier calls=%d, want %d; fallback must never occur", checks, want)
+				}
 			})
-			if _, err := m.FetchRelease(t.Context(), RenamedRepo, ""); err == nil {
-				t.Fatal("accepted invalid signature")
-			}
-			want := 1
-			if source == "attacker/project" {
-				want = 0
-			}
-			if checks != want {
-				t.Fatalf("verifier calls=%d, want %d; fallback must never occur", checks, want)
-			}
-		})
+		}
 	}
 }
 
@@ -265,11 +305,13 @@ func TestRequestedWorkerCanonicalRepoMigrationWaitsForReadiness(t *testing.T) {
 		for _, ready := range []bool{false, true} {
 			t.Run(fmt.Sprintf("pending=%v/ready=%v", pending, ready), func(t *testing.T) {
 				l, _, release := updateFixture(t, "worker")
-				release.Repo, release.Tag = RenamedRepo, "v0.6.21"
+				release.Repo, release.Tag = RenamedRepo, "v0.6.23"
 				if err := WriteJSON(l.State, map[string]any{"schema": 1, "component": "worker", "repo": LegacyRepo, "version": release.Tag, "pending": pending}); err != nil {
 					t.Fatal(err)
 				}
-				m := &Manager{ReadyTimeout: 10 * time.Millisecond, PollInterval: time.Millisecond, Run: func(_ context.Context, args ...string) (CommandResult, error) {
+				m := New(nil)
+				m.ReadyTimeout, m.PollInterval = 10*time.Millisecond, time.Millisecond
+				m.Run = func(_ context.Context, args ...string) (CommandResult, error) {
 					if len(args) == 2 && args[1] == "version" {
 						return CommandResult{Output: []byte(release.Tag)}, nil
 					}
@@ -279,8 +321,15 @@ func TestRequestedWorkerCanonicalRepoMigrationWaitsForReadiness(t *testing.T) {
 					}
 					t.Fatal("same-version queued update mutated service", args)
 					return CommandResult{}, nil
-				}}
-				_, err := m.requestedWorkerReleaseStep(t.Context(), l, &requestedWorkerPlan{release: release})
+				}
+				m.HTTP.Transport = canonicalRepositoryTransport(t, release.Tag, RenamedRepo)
+				m.verifyManifest = func(repo, tag string, manifest, attestation []byte) error {
+					if repo != RenamedRepo || tag != release.Tag {
+						t.Fatal("queued update selected wrong canonical provenance", repo, tag)
+					}
+					return nil
+				}
+				_, err := m.requestedWorkerReleaseStep(t.Context(), l, &requestedWorkerPlan{})
 				wantSuccess := !pending || ready
 				if (err == nil) != wantSuccess {
 					t.Fatal("unexpected queued readiness result", err)
@@ -303,22 +352,23 @@ func TestRequestedWorkerCanonicalRepoMigrationWaitsForReadiness(t *testing.T) {
 
 func TestSameVersionCanonicalRepoMigrationHonorsCheckAndPendingReadiness(t *testing.T) {
 	for _, tc := range []struct {
-		name                                               string
-		check, pending, ready, invalidSignature, prebridge bool
+		name                                                                string
+		check, pending, ready, invalidSignature, invalidIdentity, prebridge bool
 	}{
 		{name: "read only check", check: true},
 		{name: "successful same version"},
 		{name: "pending not ready", pending: true},
 		{name: "pending ready", pending: true, ready: true},
 		{name: "invalid signature", invalidSignature: true},
+		{name: "invalid canonical identity", invalidIdentity: true},
 		{name: "prebridge same version", prebridge: true},
 		{name: "prebridge read only check", prebridge: true, check: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m, l := coreWorkerHome(t)
-			tag := "v0.6.21"
+			tag, source := "v0.6.23", RenamedRepo
 			if tc.prebridge {
-				tag = "v0.6.20"
+				tag, source = "v0.6.20", LegacyRepo
 			}
 			if err := AtomicWrite(l.Manager, []byte("bridge manager"), 0755, nil); err != nil {
 				t.Fatal(err)
@@ -329,8 +379,8 @@ func TestSameVersionCanonicalRepoMigrationHonorsCheckAndPendingReadiness(t *test
 			before := updateRead(t, l.State)
 			m.ReadyTimeout, m.PollInterval = 10*time.Millisecond, time.Millisecond
 			m.Run = func(_ context.Context, args ...string) (CommandResult, error) {
-				if tc.prebridge && !tc.check {
-					t.Fatal("prebridge same-version update reached installed commands")
+				if (tc.prebridge && !tc.check) || tc.invalidIdentity {
+					t.Fatal("unapproved same-version update reached installed commands")
 				}
 				if len(args) == 2 && args[0] == l.Binary && args[1] == "version" {
 					return CommandResult{Output: []byte(tag)}, nil
@@ -343,7 +393,10 @@ func TestSameVersionCanonicalRepoMigrationHonorsCheckAndPendingReadiness(t *test
 				return CommandResult{}, nil
 			}
 			m.verifyManifest = func(repo, signedTag string, manifest, attestation []byte) error {
-				if repo != LegacyRepo || signedTag != tag {
+				if tc.invalidIdentity {
+					t.Fatal("invalid canonical identity reached signature verification")
+				}
+				if repo != source || signedTag != tag {
 					t.Fatal("wrong bridge signing identity", repo, signedTag)
 				}
 				if tc.invalidSignature {
@@ -351,26 +404,15 @@ func TestSameVersionCanonicalRepoMigrationHonorsCheckAndPendingReadiness(t *test
 				}
 				return nil
 			}
-			bundle := repositoryBundle(t, LegacyRepo, tag)
-			prefix := "https://github.com/" + RenamedRepo + "/releases/download/" + tag + "/"
+			transport := canonicalRepositoryTransport(t, tag, source)
 			m.HTTP.Transport = coreRoundTripper(func(request *http.Request) (*http.Response, error) {
-				var data []byte
-				switch request.URL.String() {
-				case "https://api.github.com/repos/" + LegacyRepo + "/releases/latest":
-					data, _ = json.Marshal(map[string]any{"tag_name": tag, "html_url": "https://github.com/" + RenamedRepo + "/releases/tag/" + tag, "draft": false, "prerelease": false, "assets": []map[string]string{{"name": "SHA256SUMS", "browser_download_url": prefix + "SHA256SUMS"}, {"name": "SHA256SUMS.sigstore.json", "browser_download_url": prefix + "SHA256SUMS.sigstore.json"}}})
-				case "https://api.github.com/repos/" + LegacyRepo:
-					data = []byte(fmt.Sprintf(`{"id":%d,"full_name":%q}`, officialRepositoryID, RenamedRepo))
-				case prefix + "SHA256SUMS":
-					data = []byte(coreHash(nil) + "  program\n")
-				case prefix + "SHA256SUMS.sigstore.json":
-					data = bundle
-				default:
-					t.Fatal("unexpected network request", request.URL)
+				if tc.invalidIdentity && request.URL.String() == "https://api.github.com/repos/"+RenamedRepo {
+					return coreResponse(request, []byte(`{"id":1,"full_name":"arizzi74/MACT"}`)), nil
 				}
-				return coreResponse(request, data), nil
+				return transport(request)
 			})
 			err := m.execute(t.Context(), options{Action: "update", Component: "worker", Check: tc.check})
-			wantSuccess := !tc.invalidSignature && (!tc.pending || tc.ready) && (!tc.prebridge || tc.check)
+			wantSuccess := !tc.invalidSignature && !tc.invalidIdentity && (!tc.pending || tc.ready) && (!tc.prebridge || tc.check)
 			if (err == nil) != wantSuccess {
 				t.Fatalf("unexpected same-version result: %v", err)
 			}
@@ -385,9 +427,9 @@ func TestSameVersionCanonicalRepoMigrationHonorsCheckAndPendingReadiness(t *test
 			if settings["repo"] != want {
 				t.Fatalf("same-version migration saved wrong repo: %+v", settings)
 			}
-			if tc.prebridge && !tc.check {
+			if (tc.prebridge && !tc.check) || tc.invalidIdentity {
 				if updateRead(t, l.State) != before || FileExists(l.AliasCommand) {
-					t.Fatal("prebridge same-version update mutated state or alias")
+					t.Fatal("unapproved same-version update mutated state or alias")
 				}
 			}
 			if tc.check {

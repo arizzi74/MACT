@@ -41,41 +41,62 @@ The repository has moved from `arizzi74/Codex-Telegram-Gateway` to
 [`arizzi74/MACT`](https://github.com/arizzi74/MACT). Release v0.6.22 uses MACT as
 the default release repository. Current installation commands, documentation and
 website links use the new repository and `https://arizzi74.github.io/MACT/`.
-The old repository name remains an explicitly supported update source through
-GitHub's redirect; custom repository selections remain independent.
 
-The move requires the v0.6.21 compatibility manager on every enabled gateway and
-worker before GitHub is renamed. An installation that missed that prerequisite
-must recover its manager using the bootstrap below before updating its service.
+### v0.6.23 bridge
 
 Installed updaters save their release repository and verify both asset locations
-and Sigstore provenance. A repository redirect alone is insufficient: the
-expected release signer contains the repository, workflow and release tag.
+and Sigstore provenance. Managers from before v0.6.21 require asset URLs and a
+signing identity under the old repository name. A GitHub redirect cannot satisfy
+those checks. The original v0.6.21 rollout assumed those managers had already
+been upgraded; v0.6.23 provides a path for installations that missed that step.
 
-The compatibility updater recognizes only the explicit official repository
-transition. It validates the destination and continues to verify the exact
-release workflow, source repository and tag. Historical releases keep their
-original signing identity. Custom repositories remain independently configured;
-they are not redirected to MACT by this migration.
+The v0.6.23 bridge uses `arizzi74/Codex-Telegram-Gateway` as a minimal
+compatibility repository. Its release contains the same binaries, archives,
+installer asset and byte-for-byte `SHA256SUMS` as the canonical MACT release.
+Only `SHA256SUMS.sigstore.json` differs: the compatibility repository's own
+`.github/workflows/release.yml` signs the unchanged manifest at
+`refs/tags/v0.6.23`. The canonical release retains its MACT attestation. This
+lets old managers verify the exact legacy repository, workflow and tag without
+weakening verification or rebuilding the binaries.
 
-Successful updates save the resolved repository in the installation's update
-settings. Failed installation or verification must not change the repository
-selection. Release versions continue increasing, and historical releases are
-not rebuilt or replaced.
+The v0.6.23 manager translates the exact saved repository name
+`arizzi74/Codex-Telegram-Gateway` to `arizzi74/MACT` before requesting release
+metadata. It does not depend on the old repository redirect or the compatibility
+repository's identity. Before translating the name, it checks that the canonical
+GitHub repository has the expected full name and immutable repository ID. Asset
+URLs, the release tag and the exact provenance identity remain verified.
+Historical releases retain their original signing identity. Custom repository
+selections keep their own policy and are not translated by this bridge.
 
-Installation from the official repository requires v0.6.21 or
-later. Earlier release archives remain available and their original provenance
-can still be verified, but their bundled updaters do not support the renamed
-repository. Both the current bootstrap and native installer reject those
-pre-migration versions after the move rather than installing an updater that
-cannot receive future releases. Existing installations can upgrade directly to
-the compatibility release; downgrades remain unsupported.
+An old manager can install the mirrored v0.6.23 through its existing update
+schedule. That installs the current manager and preserves the existing gateway
+or worker identity; no enrollment is required. On the next successful normal
+scheduled update, the current manager resolves MACT and saves the canonical
+repository, including when the service is already at v0.6.23. `--check` verifies
+the available release without saving that change. Failed verification or an
+update still awaiting successful readiness must not commit the repository
+change. Normal worker updates continue to wait for idle.
 
-Check that every enabled installation has a v0.6.21 or newer manager. A worker
-can keep serving its existing runtime while a verified manager
-is installed through the supported `adopt worker` path. Normal worker binary
-updates still wait for idle. Do not restart an active worker solely to change
-the product name.
+The compatibility repository freezes at the v0.6.23 bridge. Its release must
+remain available for installations that return later, but subsequent releases
+need only be published to MACT: current managers follow the canonical repository.
+There is no continuing release mirror or source fork at the old name.
+
+Recreating the old repository replaces GitHub's repository-rename redirects.
+The compatibility README directs source, issues and history to MACT. Its
+`main/scripts/install.sh` forwards to the canonical installer, and a separate
+Pages deployment forwards the old
+`https://arizzi74.github.io/Codex-Telegram-Gateway/` site to `/MACT/`, preserving
+the path, query and fragment. Older historical release URLs at the old name are
+not guaranteed to be mirrored; use their canonical MACT URLs. The installer and
+Pages paths have separate deployment and verification from release assets.
+
+Fresh official installations still require v0.6.21 or later. The current
+bootstrap and native installer reject earlier versions because their bundled
+updaters cannot independently follow the repository transition. This does not
+prevent an existing older installation from receiving the v0.6.23 bridge through
+the compatibility release. Historical releases are not rebuilt or replaced, and
+downgrades remain unsupported.
 
 ## Operator verification
 
@@ -93,26 +114,44 @@ sudo mact update gateway --check
 mact update worker --check
 ```
 
-To validate the completed transition, verify a fresh installation, an upgrade
-through the old saved repository name, the v0.6.21 release with its historical signer, a
-rejected pre-migration installation, and a rejected release with the wrong
-signer. Also verify gateway readiness, worker
-reconnection, passkey sign-in, installed mobile web apps and archived sessions.
-Use isolated fixtures for mutating session and authentication tests.
+These read-only checks do not install the bridge or persist the canonical
+repository. The existing normal update schedule performs those steps. An
+already-current installation also saves the canonical repository on a successful
+normal update run without a service version change.
 
-GitHub Pages uses the new `/MACT/` project URL and a separate website deployment
-from gateway and worker releases. Site links, metadata and installation examples
-use the new URL. Do not recreate a repository at the old name: it would replace
-GitHub's repository redirects. See
-[GitHub's repository rename documentation](https://docs.github.com/en/repositories/creating-and-managing-repositories/renaming-a-repository).
+### Release validation
 
-## Recovery for an installation that missed the compatibility release
+Validate the final signed bridge with the actual v0.6.19 verifier and package
+loader, retaining its embedded trust root. Check that both releases have
+identical checksum manifests and assets apart from their provenance bundles,
+and that each bundle verifies under its exact repository, workflow and tag.
+Use disposable installation layouts for package extraction and manager checks.
 
-Download `scripts/install.sh` from the new repository and run it with an explicit
-`--repo arizzi74/MACT`. The bootstrap supplies a manager from v0.6.21 or later;
-it rejects earlier versions. Run gateway commands with sudo and worker commands
-as the worker's existing account. Preserve the existing configuration and
-enrollment.
+State tests must cover the next v0.6.23 update saving MACT without a service
+version change, read-only `--check`, pending readiness, busy workers and failure
+preserving the saved repository and credentials. Reject an altered asset,
+incorrect canonical repository identity or invalid provenance, and preserve
+independent custom repository selections and historical signing identities.
+
+A public `--check` with the old manager verifies release discovery and
+provenance. Package loading and state transitions require the isolated checks
+above; do not use live installations for mutating acceptance tests. Verify the
+old installer and Pages paths separately.
+
+The canonical release process requires stable version tags, the complete native
+build matrix and CI checks, and exact repository/workflow/tag provenance. It
+refuses to replace an existing release and verifies all 29 uploaded draft assets
+before publication. The compatibility release verifies the canonical manifest
+and assets, signs that unchanged manifest under the legacy identity, and checks
+its uploaded draft before publication.
+
+## Recovery when an update cannot run
+
+Download `scripts/install.sh` from the canonical repository and run it with an
+explicit `--repo arizzi74/MACT`. The bootstrap supplies a manager from v0.6.21
+or later; it rejects earlier versions. Run gateway commands with sudo and worker
+commands as the worker's existing account. Preserve the existing configuration
+and enrollment.
 
 For a worker, install the verified manager without restarting its runtime:
 
