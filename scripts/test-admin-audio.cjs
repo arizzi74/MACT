@@ -150,7 +150,7 @@ async function fixture(browser, width, value = snapshot()) {
       assert.match(await page.locator('#audio-engine-wrap').innerText(), /78 s total for 20\.3 s.*5 GiB.*1\.38 GiB/s);
       assert.match(await page.locator('#audio-engine-wrap').innerText(), /6 GiB of available RAM.*8 GiB or larger host/);
       assert.match(await page.locator('#audio-engine-measurements').innerText(), /individual measurements, not averages.*3 threads.*4-core ARM/s);
-      assert.match(await page.locator('#audio-engine-wrap').innerText(), /noncommercial license/);
+      assert.match(await page.locator('#audio-engine-wrap').innerText(), /Miro and Ryan have noncommercial model terms/);
       await page.locator('#audio-voice').selectOption('italian');
       await refresh();
       assert.equal(await page.locator('#audio-model-small').isChecked(), true);
