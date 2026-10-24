@@ -36,6 +36,11 @@ func TestSpeechChild(t *testing.T) {
 		_ = writeJSON(os.Stdout, response{Type: "ready", Protocol: 99, SampleRate: SampleRate})
 		os.Exit(0)
 	}
+	if mode == "language-ready" {
+		_ = writeJSON(os.Stdout, response{Type: "ready", Protocol: protocol, SampleRate: SampleRate, Language: os.Getenv("TELEGRAMGW_SPEECH_TEST_LANGUAGE")})
+		_, _ = io.Copy(io.Discard, os.Stdin)
+		os.Exit(0)
+	}
 	if mode == "oversize" || mode == "nan" || mode == "wrongid" {
 		_ = writeJSON(os.Stdout, response{Type: "ready", Protocol: protocol, SampleRate: SampleRate})
 		var req request

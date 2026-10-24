@@ -51,7 +51,8 @@ type Service struct {
 	nativeActive  *Service
 	nativePending *Service
 	pendingEngine string
-	beforeStart   func(context.Context) error
+	beforeStart   func(context.Context, string) error
+	checkLanguage bool
 	nativeInstall func(context.Context, string, string, func(audio.Operation)) error
 	nativeFactory func(string) *Service
 }
@@ -288,12 +289,9 @@ func (s *Service) Synthesize(ctx context.Context, text, language string, threads
 	}
 	defer s.release()
 	s.mu.Lock()
-	native, engine := s.nativeActive, s.nativeEngine
+	native := s.nativeActive
 	s.mu.Unlock()
 	if native != nil {
-		if engine == "piper" {
-			language = "italian"
-		}
 		return native.Synthesize(ctx, normalizeSpeechText(text, language), language, threads)
 	}
 	return s.synthesize(ctx, text, language, threads)
@@ -370,7 +368,7 @@ func (s *Service) start(ctx context.Context, language string, threads int) (*hel
 		s.discard(p)
 	}
 	if s.beforeStart != nil {
-		if err := s.beforeStart(ctx); err != nil {
+		if err := s.beforeStart(ctx, language); err != nil {
 			return nil, err
 		}
 	}
@@ -412,6 +410,12 @@ func (s *Service) start(ctx context.Context, language string, threads int) (*hel
 		}
 		if ready.Type != "ready" || ready.Protocol != protocol || ready.SampleRate != SampleRate || ready.Error != "" {
 			return errors.New("speech: incompatible helper")
+		}
+		// Older Piper helpers accepted English but always loaded Italian Miro.
+		// Keep them usable for Italian; English needs an explicit confirmation
+		// from the bilingual helper before any reply text is sent to it.
+		if s.checkLanguage && ((language == "english" && ready.Language != language) || (ready.Language != "" && ready.Language != language)) {
+			return errors.New("speech: incompatible helper language")
 		}
 		return nil
 	})

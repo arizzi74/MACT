@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -266,7 +267,7 @@ func TestSpeechInventoryDetectsTamperingAndUnsafeFiles(t *testing.T) {
 }
 
 func TestNativeSpeechModelPinsAndInstalledRuntimeSelection(t *testing.T) {
-	for engine, want := range map[string]int{"piper": 1, "qwen3": 2} {
+	for engine, want := range map[string]int{"piper": 2, "qwen3": 2} {
 		models := nativeModels(engine)
 		if nativeProgram(engine) == "" || len(models) != want {
 			t.Fatalf("invalid %s native inventory", engine)
@@ -317,6 +318,138 @@ func TestNativeSpeechModelPinsAndInstalledRuntimeSelection(t *testing.T) {
 	selected, err = installedSpeechRuntime(t.Context(), dir, "piper")
 	if err != nil || filepath.Base(selected) != "v1.0.0" {
 		t.Fatalf("nonexecutable runtime was selected: %q, %v", selected, err)
+	}
+}
+
+func piperTestInventory(t *testing.T, dir string) os.FileInfo {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	filename := filepath.Join(dir, "model.onnx")
+	if err := os.WriteFile(filename, []byte("public installed model fixture"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := speechInventory(t.Context(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SHA256SUMS"), manifest, 0600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return info
+}
+
+func TestPiperPreparationPreservesInstalledItalianWhenEnglishIsMissing(t *testing.T) {
+	for _, installedEnglish := range []bool{false, true} {
+		t.Run(fmt.Sprintf("English installed=%t", installedEnglish), func(t *testing.T) {
+			s := nativeTestService(t)
+			dir := privateTestDir(t)
+			italian := filepath.Join(dir, piperModelDir)
+			original := piperTestInventory(t, italian)
+			if installedEnglish {
+				piperTestInventory(t, filepath.Join(dir, piperEnglishModelDir))
+			}
+			var requests []string
+			s.http = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				requests = append(requests, request.URL.String())
+				return nil, errors.New("injected English download failure")
+			})}
+			err := s.prepareNativeModels(t.Context(), dir, "piper", nil)
+			if installedEnglish {
+				if err != nil || len(requests) != 0 {
+					t.Fatalf("verified models were downloaded again: requests=%v err=%v", requests, err)
+				}
+			} else if err == nil || len(requests) != 1 || requests[0] != nativeModels("piper")[1].url() {
+				t.Fatalf("missing English did not request only Ryan: requests=%v err=%v", requests, err)
+			}
+			current, err := os.Stat(filepath.Join(italian, "model.onnx"))
+			if err != nil || !os.SameFile(original, current) {
+				t.Fatal("English preparation replaced the installed Italian model")
+			}
+			if err := verifySpeechInventory(t.Context(), italian); err != nil {
+				t.Fatalf("English preparation changed Italian files: %v", err)
+			}
+		})
+	}
+}
+
+func TestPiperModelInstallationStagesEachLanguageIndependently(t *testing.T) {
+	// A public one-file English tar fixture compressed with bzip2. The fixture
+	// exercises the production bounded extractor without a network or model files.
+	const fixture = "425a6839314159265359a59e051b00008f5f80cb804003ef2002000a00ffe7df6008082000741a534f547a693d4cd26d11e49a0d1a67a283250d0000000000fbc782c4102e6082088b846823ad2880421444bb4cdbdb9b55bcae835d00845443b5307a9c718ac33be6e396e9b6e32eaffc3d25bce303a24b4e4124e6b7692d3a3ae08fae6c634f1e34e0a4c55c273b0e1911101fc5dc914e142429678146c0"
+	archive, err := hex.DecodeString(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, broken := range []bool{false, true} {
+		t.Run(fmt.Sprintf("damaged English archive=%t", broken), func(t *testing.T) {
+			s := nativeTestService(t)
+			dir := privateTestDir(t)
+			italian := filepath.Join(dir, piperModelDir)
+			originalItalian := piperTestInventory(t, italian)
+			english := filepath.Join(dir, piperEnglishModelDir)
+			if err := os.Mkdir(english, 0700); err != nil {
+				t.Fatal(err)
+			}
+			previous := filepath.Join(english, "previous-model")
+			if err := os.WriteFile(previous, []byte("previous incomplete English fixture"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			originalEnglish, err := os.Stat(previous)
+			if err != nil {
+				t.Fatal(err)
+			}
+			data := archive
+			if broken {
+				data = []byte("not a bzip2 archive")
+			}
+			digest := sha256.Sum256(data)
+			spec := asset{"english", "ryan.tar.bz2", nativeModels("piper")[1].url(), int64(len(data)), hex.EncodeToString(digest[:])}
+			s.http = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader(data)), ContentLength: int64(len(data))}, nil
+			})}
+			err = s.prepareNativeModel(t.Context(), dir, "piper", spec, nil)
+			if broken {
+				if err == nil {
+					t.Fatal("damaged English archive was installed")
+				}
+				current, statErr := os.Stat(previous)
+				if statErr != nil || !os.SameFile(originalEnglish, current) {
+					t.Fatal("failed staged extraction changed the previous English directory")
+				}
+			} else {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := verifySpeechInventory(t.Context(), english); err != nil {
+					t.Fatalf("installed English model lacks a valid inventory: %v", err)
+				}
+				if _, err := os.Stat(previous); !errors.Is(err, os.ErrNotExist) {
+					t.Fatal("successful install retained incomplete English files")
+				}
+				if _, err := os.Stat(filepath.Join(dir, spec.name)); !errors.Is(err, os.ErrNotExist) {
+					t.Fatal("installed model archive was not removed")
+				}
+			}
+			current, err := os.Stat(filepath.Join(italian, "model.onnx"))
+			if err != nil || !os.SameFile(originalItalian, current) || verifySpeechInventory(t.Context(), italian) != nil {
+				t.Fatal("English staged installation altered the Italian model")
+			}
+			entries, err := os.ReadDir(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, entry := range entries {
+				if strings.HasPrefix(entry.Name(), ".model-") {
+					t.Fatal("model staging directory was retained")
+				}
+			}
+		})
 	}
 }
 

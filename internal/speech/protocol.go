@@ -29,6 +29,7 @@ type response struct {
 	ID          string `json:"id,omitempty"`
 	SampleCount int    `json:"sample_count,omitempty"`
 	SampleRate  int    `json:"sample_rate,omitempty"`
+	Language    string `json:"language,omitempty"`
 	Error       string `json:"error,omitempty"`
 }
 

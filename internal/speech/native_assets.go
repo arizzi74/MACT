@@ -24,7 +24,20 @@ import (
 	"github.com/iaia/telegramgw/internal/releasemanager"
 )
 
-const piperModelDir = "vits-piper-it_IT-miro-high"
+const (
+	piperModelDir        = "vits-piper-it_IT-miro-high"
+	piperEnglishModelDir = "vits-piper-en_US-ryan-medium"
+)
+
+func piperModelDirectory(language string) string {
+	switch language {
+	case "it", "italian":
+		return piperModelDir
+	case "en", "english":
+		return piperEnglishModelDir
+	}
+	return ""
+}
 
 func nativeProgram(engine string) string {
 	switch engine {
@@ -38,7 +51,10 @@ func nativeProgram(engine string) string {
 
 func nativeModels(engine string) []asset {
 	if engine == "piper" {
-		return []asset{{"piper", "miro.tar.bz2", "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-it_IT-miro-high.tar.bz2", 67162890, "4612a986f49680b571b8fe0b03f0b292b34c843178fd6e07826bf52de10157c4"}}
+		return []asset{
+			{"italian", "miro.tar.bz2", "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-it_IT-miro-high.tar.bz2", 67162890, "4612a986f49680b571b8fe0b03f0b292b34c843178fd6e07826bf52de10157c4"},
+			{"english", "ryan.tar.bz2", "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-en_US-ryan-medium.tar.bz2", 67213100, "c546af78b6395b4e7c4ce1ed899438b64426a362f5d4ec5fecd090ded9ad7505"},
+		}
 	}
 	if engine != "qwen3" {
 		return nil
@@ -293,69 +309,85 @@ func (s *Service) prepareRuntime(ctx context.Context, dir, engine string, progre
 }
 
 func (s *Service) prepareNativeModels(ctx context.Context, dir, engine string, progress func(audio.Operation)) error {
-	if engine == "piper" && verifySpeechInventory(ctx, filepath.Join(dir, piperModelDir)) == nil {
+	for _, spec := range nativeModels(engine) {
+		if err := s.prepareNativeModel(ctx, dir, engine, spec, progress); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Service) prepareNativeModel(ctx context.Context, dir, engine string, spec asset, progress func(audio.Operation)) error {
+	modelDir := ""
+	if engine == "piper" {
+		modelDir = piperModelDirectory(spec.language)
+		if modelDir == "" {
+			return errors.New("speech: unsupported Piper model language")
+		}
+		// Each voice has its own verified inventory. Adding English must not
+		// download, extract, or replace an already valid Italian model.
+		if verifySpeechInventory(ctx, filepath.Join(dir, modelDir)) == nil {
+			return nil
+		}
+	}
+	target := filepath.Join(dir, spec.name)
+	if verifyAsset(ctx, target, spec) != nil {
+		op := audio.Operation{State: "downloading", Model: engine, TotalBytes: spec.size, Message: "Downloading and verifying the selected speech model."}
+		if progress != nil {
+			progress(op)
+		}
+		lastReport := time.Now()
+		if err := downloadAsset(ctx, s.http, target, spec, func(n int64) {
+			op.DownloadedBytes += n
+			if progress != nil && time.Since(lastReport) >= 200*time.Millisecond {
+				progress(op)
+				lastReport = time.Now()
+			}
+		}); err != nil {
+			return err
+		}
+		if progress != nil {
+			progress(op)
+		}
+	}
+	if engine != "piper" {
 		return nil
 	}
-	for _, spec := range nativeModels(engine) {
-		target := filepath.Join(dir, spec.name)
-		if verifyAsset(ctx, target, spec) != nil {
-			op := audio.Operation{State: "downloading", Model: engine, TotalBytes: spec.size, Message: "Downloading and verifying the selected speech model."}
-			if progress != nil {
-				progress(op)
-			}
-			lastReport := time.Now()
-			if err := downloadAsset(ctx, s.http, target, spec, func(n int64) {
-				op.DownloadedBytes += n
-				if progress != nil && time.Since(lastReport) >= 200*time.Millisecond {
-					progress(op)
-					lastReport = time.Now()
-				}
-			}); err != nil {
-				return err
-			}
-			if progress != nil {
-				progress(op)
-			}
-		}
-		if engine != "piper" {
-			continue
-		}
-		stage, err := os.MkdirTemp(dir, ".model-")
+	stage, err := os.MkdirTemp(dir, ".model-")
+	if err != nil {
+		return err
+	}
+	err = func() error {
+		defer os.RemoveAll(stage)
+		file, err := os.Open(target)
 		if err != nil {
 			return err
 		}
-		err = func() error {
-			defer os.RemoveAll(stage)
-			file, err := os.Open(target)
-			if err != nil {
-				return err
-			}
-			defer file.Close()
-			if err := unpackSpeech(ctx, bzip2.NewReader(file), stage, "", piperModelDir, 90<<20); err != nil {
-				return err
-			}
-			model := filepath.Join(stage, piperModelDir)
-			manifest, err := speechInventory(ctx, model)
-			if err != nil {
-				return err
-			}
-			if err := os.WriteFile(filepath.Join(model, "SHA256SUMS"), manifest, 0600); err != nil {
-				return err
-			}
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			if err := os.RemoveAll(filepath.Join(dir, piperModelDir)); err != nil {
-				return err
-			}
-			return os.Rename(model, filepath.Join(dir, piperModelDir))
-		}()
+		defer file.Close()
+		if err := unpackSpeech(ctx, bzip2.NewReader(file), stage, "", modelDir, 90<<20); err != nil {
+			return err
+		}
+		model := filepath.Join(stage, modelDir)
+		manifest, err := speechInventory(ctx, model)
 		if err != nil {
 			return err
 		}
-		if err := os.Remove(target); err != nil {
+		if err := os.WriteFile(filepath.Join(model, "SHA256SUMS"), manifest, 0600); err != nil {
 			return err
 		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := os.RemoveAll(filepath.Join(dir, modelDir)); err != nil {
+			return err
+		}
+		return os.Rename(model, filepath.Join(dir, modelDir))
+	}()
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(target); err != nil {
+		return err
 	}
 	return nil
 }

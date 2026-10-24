@@ -74,35 +74,41 @@ jobs:
             test "$actual" = "$digest"
           }
           fetch_model "$PIPER_MODEL_URL" "$model_dir/miro.tar.bz2" "$PIPER_MODEL_BYTES" "$PIPER_MODEL_SHA256"
-          python3 - "$model_dir/miro.tar.bz2" "$model_dir/piper" <<'PY'
+          fetch_model "$PIPER_ENGLISH_MODEL_URL" "$model_dir/ryan.tar.bz2" "$PIPER_ENGLISH_MODEL_BYTES" "$PIPER_ENGLISH_MODEL_SHA256"
+          python3 - "$model_dir" "$PIPER_MODEL_ROOT" "$PIPER_MODEL_FILES" "$PIPER_MODEL_UNCOMPRESSED_BYTES" "$PIPER_MODEL_ONNX_BYTES" "$PIPER_ENGLISH_MODEL_ROOT" "$PIPER_ENGLISH_MODEL_FILES" "$PIPER_ENGLISH_MODEL_UNCOMPRESSED_BYTES" "$PIPER_ENGLISH_MODEL_ONNX_BYTES" <<'PY'
           import os, pathlib, shutil, sys, tarfile
-          archive, destination = sys.argv[1:]
-          root = pathlib.Path(destination)
-          count = files = total = 0
-          with tarfile.open(archive, "r:bz2") as source:
-              for entry in source:
-                  count += 1
-                  name = entry.name.rstrip("/")
-                  path = pathlib.PurePosixPath(name)
-                  if (count > 397 or not name or "\\" in name or path.is_absolute()
-                          or any(part in ("", ".", "..") for part in name.split("/"))
-                          or path.parts[0] != "vits-piper-it_IT-miro-high"
-                          or not (entry.isdir() or entry.isfile())):
-                      raise SystemExit("Invalid pinned Miro archive structure")
-                  target = root.joinpath(*path.parts)
-                  if entry.isdir():
-                      target.mkdir(parents=True, exist_ok=True, mode=0o700)
-                      continue
-                  files += 1
-                  total += entry.size
-                  if entry.size < 0 or entry.size > 63153775 or total > 81154408:
-                      raise SystemExit("Miro extraction exceeds pinned bounds")
-                  target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-                  with source.extractfile(entry) as src, target.open("xb") as dst:
-                      shutil.copyfileobj(src, dst)
-                  os.chmod(target, 0o600)
-          if (count, files, total) != (397, 359, 81154408):
-              raise SystemExit("Incomplete pinned Miro archive")
+          model_dir = pathlib.Path(sys.argv[1])
+          root = model_dir / "piper"
+          for voice_name, offset in (("miro", 2), ("ryan", 6)):
+              prefix, expected_files, expected_bytes, largest_file = sys.argv[offset:offset + 4]
+              expected_files, expected_bytes, largest_file = map(int, (expected_files, expected_bytes, largest_file))
+              count = files = total = 0
+              seen = set()
+              with tarfile.open(model_dir / (voice_name + ".tar.bz2"), "r:bz2") as source:
+                  for entry in source:
+                      count += 1
+                      name = entry.name.rstrip("/")
+                      path = pathlib.PurePosixPath(name)
+                      if (count > expected_files + 64 or not name or name in seen or "\\" in name or path.is_absolute()
+                              or any(part in ("", ".", "..") for part in name.split("/"))
+                              or path.parts[0] != prefix or entry.mode & 0o7000
+                              or not (entry.isdir() or entry.isfile())):
+                          raise SystemExit("Invalid pinned Piper archive structure")
+                      seen.add(name)
+                      target = root.joinpath(*path.parts)
+                      if entry.isdir():
+                          target.mkdir(parents=True, exist_ok=True, mode=0o700)
+                          continue
+                      files += 1
+                      total += entry.size
+                      if entry.size < 0 or entry.size > largest_file or total > expected_bytes:
+                          raise SystemExit("Piper extraction exceeds pinned bounds")
+                      target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                      with source.extractfile(entry) as src, target.open("xb") as dst:
+                          shutil.copyfileobj(src, dst)
+                      os.chmod(target, 0o600)
+              if (files, total) != (expected_files, expected_bytes):
+                  raise SystemExit("Incomplete pinned Piper archive")
           PY
           qwen_url="https://huggingface.co/ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF/resolve/$QWEN_TTS_MODEL_REVISION"
           fetch_model "$qwen_url/$QWEN_TTS_MODEL_NAME?download=true" "$model_dir/qwen-tts/$QWEN_TTS_MODEL_NAME" "$QWEN_TTS_MODEL_SIZE" "$QWEN_TTS_MODEL_SHA256"

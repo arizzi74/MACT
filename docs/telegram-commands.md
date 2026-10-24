@@ -327,13 +327,24 @@ then sends the final text followed by its voice notes. Long answers can produce
 several voice notes; all are prepared before the text is released. If speech
 generation ultimately fails, the text is sent on its own.
 
-Choose **Piper / Miro** or **Qwen3-TTS 1.7B quantized** in the Audio panel.
-Piper uses a fast Italian voice, including an Italian accent for English words;
-Qwen supports Italian and English with the same downloaded model pair. Choose
-a language or match the voice note automatically. The panel explains model
-storage, measured memory, speed and quality tradeoffs. These measurements vary
-by hardware and reply content. Miro has noncommercial model terms; its license
-and attribution are preserved with the download.
+Choose **Piper (Miro / Ryan)** or **Qwen3-TTS 1.7B quantized** in the Audio panel.
+Piper uses Miro for Italian and Ryan for English. Both voice models are prepared
+when settings are applied: about 155 MiB of model files in total, with about
+128 MiB of compressed model downloads plus the helper. Only one language model
+stays resident at a time. Qwen supports Italian and English with the same
+downloaded model pair. Choose a language or match the incoming voice note's
+detected language automatically; the generated reply text is not used for
+language detection. The panel explains model storage, measured memory, speed
+and quality tradeoffs. The Piper performance sample measures Italian Miro only;
+English Ryan performance has not been measured here. Measurements vary by
+hardware and reply content. Miro and Ryan have noncommercial model terms; their
+licenses and attribution are preserved with the download.
+
+Existing Piper installations need the updated helper and Ryan model for English.
+Use **Check voice files** in the Audio panel with saved Piper audio replies
+enabled to download the required files and verify both voices before activation.
+This preserves the selected engine and language; failed preparation keeps the
+previous working setup active.
 
 The selected native helper and models download when settings are applied. A
 successful switch removes the unused managed speech engine and models. Helpers

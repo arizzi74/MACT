@@ -1,4 +1,5 @@
 #include "protocol.h"
+#include "models.h"
 #include "sherpa-onnx/c-api/c-api.h"
 #include <algorithm>
 #include <chrono>
@@ -65,21 +66,20 @@ int main(int argc, char **argv) {
             } else throw std::runtime_error("usage: codex-piper --dir ENGINE_DIR --language italian|english --threads N");
         }
         if (flags != 7 || dir.empty() || dir[0] != '/' || (language != "italian" && language != "english")) throw std::runtime_error("invalid helper arguments");
-        // Miro is an Italian voice. English mode permits English technical text
-        // through that same voice; it does not switch to an English model.
-        const auto base = dir + "/vits-piper-it_IT-miro-high/";
-        const auto model = base + "it_IT-miro-high.onnx", tokens = base + "tokens.txt", data = base + "espeak-ng-data";
+        const auto selected = piper::model_for(language);
+        const auto base = dir + "/" + selected.directory + "/";
+        const auto model = base + selected.filename, tokens = base + "tokens.txt", data = base + "espeak-ng-data";
         SherpaOnnxOfflineTtsConfig config{};
         config.model.vits.model = model.c_str(); config.model.vits.tokens = tokens.c_str(); config.model.vits.data_dir = data.c_str();
         config.model.vits.noise_scale = 0.667f; config.model.vits.noise_scale_w = 0.8f; config.model.vits.length_scale = 1.0f;
         config.model.num_threads = threads; config.model.provider = "cpu"; config.max_num_sentences = 1; config.silence_scale = 0.2f;
         std::unique_ptr<const SherpaOnnxOfflineTts, decltype(&SherpaOnnxDestroyOfflineTts)> tts(SherpaOnnxCreateOfflineTts(&config), SherpaOnnxDestroyOfflineTts);
-        if (!tts || SherpaOnnxOfflineTtsSampleRate(tts.get()) != 22050) throw std::runtime_error("could not load Miro 22050 Hz model");
+        if (!tts || SherpaOnnxOfflineTtsSampleRate(tts.get()) != 22050) throw std::runtime_error("could not load selected 22050 Hz model");
         // Kaldi's windowed-sinc resampler includes anti-imaging filtering.
         // Flush and reset between requests; no waveform state crosses replies.
         std::unique_ptr<const SherpaOnnxLinearResampler, decltype(&SherpaOnnxDestroyLinearResampler)> resampler(SherpaOnnxCreateLinearResampler(22050, protocol::sample_rate, 0, 0), SherpaOnnxDestroyLinearResampler);
         if (!resampler) throw std::runtime_error("could not create sample rate converter");
-        std::cout << "{\"type\":\"ready\",\"protocol\":1,\"sample_rate\":24000}\n" << std::flush;
+        std::cout << "{\"type\":\"ready\",\"protocol\":1,\"sample_rate\":24000,\"language\":" << protocol::quote(language) << "}\n" << std::flush;
         if (!std::cout) throw std::runtime_error("output pipe failed");
         std::string line;
         while (protocol::header(std::cin, line)) {

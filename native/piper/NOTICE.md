@@ -1,4 +1,4 @@
-# Local Piper Miro speech synthesis
+# Local Piper Miro and Ryan speech synthesis
 
 `codex-piper` keeps one Sherpa-ONNX **v1.13.8** CPU engine and one resampler
 resident and accepts sequential requests over stdin/stdout. It performs native
@@ -7,13 +7,16 @@ Runtime. The release includes `libsherpa-onnx-c-api` and `libonnxruntime`; Linux
 uses glibc and the normal C++ runtime, and macOS uses Apple system libraries.
 The Linux helper is built on Ubuntu 22.04; macOS targets macOS 13 or later.
 
-The model directory is `ENGINE_DIR/vits-piper-it_IT-miro-high/`, containing
-`it_IT-miro-high.onnx`, `tokens.txt`, and `espeak-ng-data/`. This is the Italian
-male **Miro** voice. Both language modes use that same voice: English technical
-text is spoken with an Italian accent. It is not a stock English voice.
-The 22050 Hz model waveform is converted to 24000 Hz with Sherpa/Kaldi's
+Italian selects the male **Miro** voice in
+`ENGINE_DIR/vits-piper-it_IT-miro-high/`, containing `it_IT-miro-high.onnx`.
+English selects the U.S. English **Ryan** voice in
+`ENGINE_DIR/vits-piper-en_US-ryan-medium/`, containing `en_US-ryan-medium.onnx`.
+Each directory also contains its own `tokens.txt` and `espeak-ng-data/`.
+Both model waveforms are 22050 Hz and are converted to 24000 Hz with Sherpa/Kaldi's
 windowed-sinc low-pass resampler; each request resets and flushes the resampler.
-Protocol 1 announces `{"type":"ready","protocol":1,"sample_rate":24000}`,
+Protocol 1 announces
+`{"type":"ready","protocol":1,"sample_rate":24000,"language":"english"}`
+(or `"italian"` for Miro),
 reads a bounded JSON line containing `id` and `text`, then returns a JSON header
 and mono float32 little-endian PCM. Text is limited to 32 KiB, JSON headers to
 64 KiB, output to 600 seconds, and CPU threads to 1–32. Invalid framing closes
@@ -60,8 +63,25 @@ The pinned Sherpa model archive contains an older README declaring
 preserved in `licenses/`, with both Creative Commons license texts. This
 discrepancy is recorded explicitly; no general commercial permission is
 asserted. For commercial use, derivative models, or licensing the Miro voice
-identity, contact TigreGotico Lda. Model weights are downloaded separately and
-are not bundled in the helper release archives.
+identity, contact TigreGotico Lda.
+
+## Ryan attribution and restrictions
+
+The pinned Ryan medium model archive comes from the official Sherpa-ONNX
+`tts-models` release:
+https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-en_US-ryan-medium.tar.bz2.
+Its `MODEL_CARD` describes a single-speaker U.S. English model fine-tuned from
+the U.S. English Lessac medium voice. The card identifies the **RyanSpeech**
+dataset at https://www.kaggle.com/datasets/roholazandie/ryanspeech and lists
+**Creative Commons Attribution-NonCommercial-ShareAlike 4.0 (CC BY-NC-SA 4.0)**.
+The exact archived card is preserved as `licenses/Ryan-archive-MODEL_CARD.md`;
+its SHA256, the archive SHA256, and the ONNX SHA256 are pinned in `source.env`.
+The CC BY-NC-SA license text is included in `licenses/`. No general commercial
+permission for this voice is asserted.
+
+Both voices' model weights are downloaded separately and are not bundled in
+the helper release archives. Each extracted model has a separate verified
+inventory; installing Ryan leaves a valid Miro installation in place.
 
 Build with `scripts/build-piper-linux.sh amd64|arm64` on Linux (Docker), or
 `scripts/build-piper.sh` on a matching Mac. `PIPER_OUTPUT_DIR` defaults to

@@ -340,7 +340,7 @@ it shows two engine choices:
 
 | Engine | Quality and languages | One measured sample | Model files |
 | --- | --- | --- | --- |
-| **Piper / Miro** — recommended for this CPU | Fast, clear Italian; English has an Italian accent. The Miro voice has a noncommercial license; check its terms before use. | 3.8 seconds total for 25.2 seconds of audio; 298 MiB peak RAM. | About 77 MiB. |
+| **Piper (Miro / Ryan)** — recommended for this CPU | Miro for Italian; Ryan for English. Miro and Ryan have noncommercial model terms; check their terms before use. | Italian Miro only: 3.8 seconds total for 25.2 seconds of audio; 298 MiB peak RAM. English Ryan performance has not been measured here. | About 155 MiB total for both voice models; about 128 MiB of compressed model downloads, plus the helper. |
 | **Qwen3-TTS 1.7B quantized** | Potential for expressive multilingual speech, but slower and needs much more RAM. Technical terms and numbers can still be misread. | About 78 seconds total for 20.3 seconds of audio; 5 GiB peak RAM. | 1.38 GiB: Q4_K_M 1.7B model and Q8 decoder. |
 
 Both measurements used CPU inference with three threads on the four-core ARM
@@ -355,12 +355,18 @@ For Qwen3-TTS, an 8 GiB host with roughly 6 GiB of RAM currently available is a
 practical starting budget so the operating system, gateway, and Whisper retain
 headroom beyond the observed 5 GiB speech peak. This is a recommendation,
 not a fixed requirement: concurrent workloads and the text can change the
-memory needed. Piper / Miro leaves much more room on smaller CPU hosts.
+memory needed. The measured Italian Miro sample leaves much more room on smaller
+CPU hosts. The English model is similar in size, but its inference speed and peak
+memory have not been measured here.
 
 Choose **Italian**, **English**, or **Match the voice note (Italian or English)**.
-Qwen3-TTS uses the same model download for both languages. Piper / Miro always
-uses its Italian voice; the language preference is preserved for an engine
-switch. Transcription can be enabled independently of audio replies.
+Automatic matching follows the detected language of the incoming voice note;
+it does not detect the language of the generated reply text. An explicit language
+choice overrides matching. Piper uses Miro for Italian and Ryan for English.
+Both voice models are downloaded and checked when settings are applied; only
+one language model stays resident at a time. Qwen3-TTS uses the same model
+download for both languages. Transcription can be enabled independently of audio
+replies.
 
 The selected engine downloads and passes a local check before settings are
 saved. Download, validation, and warmup progress appears in the panel. A failed
@@ -372,8 +378,14 @@ reported as a warning after the selected engine has been activated.
 
 Existing saved settings without an engine selection keep Pocket TTS active,
 including after a restart. The panel shows a pending engine selection and
-recommends Piper / Miro; select an engine and apply settings to switch explicitly.
+recommends Piper (Miro / Ryan); select an engine and apply settings to switch explicitly.
 Loading the panel does not download, delete, or migrate anything.
+
+Existing Piper installations need the updated helper and English Ryan model to
+use the English voice. With saved Piper audio replies enabled, choose **Check
+voice files** to download any missing helper/model updates and verify both
+voices before activation. This action preserves the engine and language choices;
+the previous working setup remains active if preparation fails.
 
 The typing indicator remains active while all reply audio is prepared. Once
 ready, the bot sends the complete final text first, then the audio. Long audio

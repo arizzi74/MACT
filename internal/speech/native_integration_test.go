@@ -1,6 +1,7 @@
 package speech
 
 import (
+	"bytes"
 	"compress/bzip2"
 	"compress/gzip"
 	"context"
@@ -13,18 +14,24 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/iaia/telegramgw/internal/audio"
 	"github.com/iaia/telegramgw/internal/buildinfo"
+	"github.com/iaia/telegramgw/internal/voice"
 )
 
 // These opt-in tests use only explicitly supplied local public model/helper
 // artifacts. They never download anything or use a deployed gateway state.
 // Piper: TELEGRAMGW_PIPER_ARCHIVE and TELEGRAMGW_PIPER_MODEL_ARCHIVE.
+// Optional English Piper: TELEGRAMGW_PIPER_ENGLISH_MODEL_ARCHIVE.
+// Optional Opus/Whisper checks: TELEGRAMGW_SPEECH_NATIVE_WHISPER and
+// TELEGRAMGW_SPEECH_NATIVE_WHISPER_MODEL.
 // Optional Qwen switch: TELEGRAMGW_QWEN_ARCHIVE and TELEGRAMGW_QWEN_MODEL_DIR.
-// Archives are normal build-piper/build-qwen-tts output tar.gz bundles.
+// Runtime archives are normal build-piper/build-qwen-tts output tar.gz bundles;
+// Piper model archives are the pinned upstream tar.bz2 downloads.
 type nativeIntegrationFixture struct {
 	runtime, models string
 }
@@ -51,30 +58,36 @@ func nativeIntegrationRuntime(t *testing.T, archive, program string) string {
 	return dir
 }
 
-func nativeIntegrationPiper(t *testing.T, archive, modelArchive string) nativeIntegrationFixture {
+func nativeIntegrationPiper(t *testing.T, archive, modelArchive, englishModelArchive string) nativeIntegrationFixture {
 	t.Helper()
 	fixture := nativeIntegrationFixture{runtime: nativeIntegrationRuntime(t, archive, "codex-piper"), models: t.TempDir()}
-	if err := verifyAsset(t.Context(), modelArchive, nativeModels("piper")[0]); err != nil {
-		t.Fatalf("verify pinned Miro archive: %v", err)
-	}
-	file, err := os.Open(modelArchive)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer file.Close()
-	if err := unpackSpeech(t.Context(), bzip2.NewReader(file), fixture.models, "", piperModelDir, 90<<20); err != nil {
-		t.Fatalf("extract real Miro model through production parser: %v", err)
-	}
-	model := filepath.Join(fixture.models, piperModelDir)
-	manifest, err := speechInventory(t.Context(), model)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(model, "SHA256SUMS"), manifest, 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := verifySpeechInventory(t.Context(), model); err != nil {
-		t.Fatal(err)
+	for index, model := range []struct{ archive, language string }{{modelArchive, "italian"}, {englishModelArchive, "english"}} {
+		if model.archive == "" {
+			continue
+		}
+		if err := verifyAsset(t.Context(), model.archive, nativeModels("piper")[index]); err != nil {
+			t.Fatalf("verify pinned %s Piper archive: %v", model.language, err)
+		}
+		file, err := os.Open(model.archive)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = unpackSpeech(t.Context(), bzip2.NewReader(file), fixture.models, "", piperModelDirectory(model.language), 90<<20)
+		file.Close()
+		if err != nil {
+			t.Fatalf("extract real %s Piper model through production parser: %v", model.language, err)
+		}
+		dir := filepath.Join(fixture.models, piperModelDirectory(model.language))
+		manifest, err := speechInventory(t.Context(), dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "SHA256SUMS"), manifest, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := verifySpeechInventory(t.Context(), dir); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return fixture
 }
@@ -143,9 +156,55 @@ func nativeIntegrationPCM(t *testing.T, s *Service, text, language string, threa
 	t.Logf("%s: %d samples, %.3fs audio, %s generation", language, len(pcm), float64(len(pcm))/SampleRate, time.Since(started).Round(time.Millisecond))
 }
 
+func nativeIntegrationWhisper(t *testing.T, s *Service, language string, threads int) {
+	t.Helper()
+	helper, model := os.Getenv("TELEGRAMGW_SPEECH_NATIVE_WHISPER"), os.Getenv("TELEGRAMGW_SPEECH_NATIVE_WHISPER_MODEL")
+	if helper == "" && model == "" {
+		t.Skip("set local Whisper helper and model paths for the real Piper Opus/Whisper round trip")
+	}
+	if helper == "" || model == "" {
+		t.Fatal("both TELEGRAMGW_SPEECH_NATIVE_WHISPER and TELEGRAMGW_SPEECH_NATIVE_WHISPER_MODEL are required")
+	}
+	transcriber, err := voice.New(voice.Config{BinaryPath: helper, ModelPath: model, Threads: threads})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer transcriber.Close()
+	phrase := "The audio settings are ready. You can send a voice message and receive the answer as audio."
+	expectedLanguage := "en"
+	if language == "italian" {
+		phrase = "Le impostazioni audio sono pronte. Puoi inviare un messaggio vocale e ricevere la risposta audio."
+		expectedLanguage = "it"
+	}
+	pcm, err := s.Synthesize(t.Context(), phrase, language, threads)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clear(pcm)
+	encoded, err := voice.EncodeOggOpus(t.Context(), pcm, SampleRate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clear(encoded)
+	decoded, err := voice.DecodeOggOpus(t.Context(), bytes.NewReader(encoded))
+	if err != nil {
+		t.Fatalf("Piper Opus round trip: %v", err)
+	}
+	defer clear(decoded)
+	result, err := transcriber.Transcribe(t.Context(), decoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Language != expectedLanguage || !strings.Contains(strings.ToLower(result.Text), "audio") {
+		t.Fatalf("%s Piper speech was not recognized: %#v", language, result)
+	}
+	t.Logf("%s Piper Opus → Whisper: %s", language, result.Text)
+}
+
 func TestNativeSpeechLifecycleIntegration(t *testing.T) {
 	piperArchive, piperModel := os.Getenv("TELEGRAMGW_PIPER_ARCHIVE"), os.Getenv("TELEGRAMGW_PIPER_MODEL_ARCHIVE")
-	if piperArchive == "" && piperModel == "" {
+	piperEnglishModel := os.Getenv("TELEGRAMGW_PIPER_ENGLISH_MODEL_ARCHIVE")
+	if piperArchive == "" && piperModel == "" && piperEnglishModel == "" {
 		t.Skip("set TELEGRAMGW_PIPER_ARCHIVE and TELEGRAMGW_PIPER_MODEL_ARCHIVE for real native lifecycle checks")
 	}
 	if piperArchive == "" || piperModel == "" {
@@ -158,7 +217,7 @@ func TestNativeSpeechLifecycleIntegration(t *testing.T) {
 	previousVersion := buildinfo.Version
 	buildinfo.Version = "v0.0.0"
 	t.Cleanup(func() { buildinfo.Version = previousVersion })
-	fixtures := map[string]nativeIntegrationFixture{"piper": nativeIntegrationPiper(t, piperArchive, piperModel)}
+	fixtures := map[string]nativeIntegrationFixture{"piper": nativeIntegrationPiper(t, piperArchive, piperModel, piperEnglishModel)}
 	if qwenArchive != "" {
 		fixtures["qwen3"] = nativeIntegrationQwen(t, qwenArchive, qwenModels)
 	}
@@ -210,12 +269,45 @@ func TestNativeSpeechLifecycleIntegration(t *testing.T) {
 	if s.nativeActive != prepared || speechProcess(prepared) != piper || s.nativePending != nil {
 		t.Fatal("activation did not reuse the already warmed resident helper")
 	}
-	for _, request := range []struct{ text, language string }{{"Prima risposta. Il servizio è pronto.", "italian"}, {"Second reply. Check the gateway status.", "english"}} {
-		nativeIntegrationPCM(t, s, request.text, request.language, settings.Threads)
+	for _, text := range []string{"Prima risposta. Il servizio è pronto.", "Seconda risposta. Controlla lo stato del gateway."} {
+		nativeIntegrationPCM(t, s, text, "italian", settings.Threads)
 		if speechProcess(prepared) != piper || piper.cmd.ProcessState != nil || piper.language != "italian" {
-			t.Fatal("Piper failed to reuse the same Italian voice PID for both request languages")
+			t.Fatal("Piper failed to reuse the same Italian voice PID for repeated requests")
 		}
 	}
+	t.Run("Italian Opus to Whisper", func(t *testing.T) {
+		nativeIntegrationWhisper(t, s, "italian", settings.Threads)
+	})
+	t.Run("switch real Piper languages", func(t *testing.T) {
+		if piperEnglishModel == "" {
+			t.Skip("set TELEGRAMGW_PIPER_ENGLISH_MODEL_ARCHIVE for real English synthesis and language switching")
+		}
+		for _, request := range []struct{ text, language string }{
+			{"The first English reply is ready. Check the gateway status.", "english"},
+			{"The second English reply reuses the resident voice.", "english"},
+			{"La voce italiana è di nuovo pronta.", "italian"},
+			{"La seconda risposta riutilizza la voce italiana.", "italian"},
+		} {
+			previous := piper
+			nativeIntegrationPCM(t, s, request.text, request.language, settings.Threads)
+			piper = speechProcess(prepared)
+			if piper == nil || piper.cmd.ProcessState != nil || piper.language != request.language {
+				t.Fatalf("Piper did not retain the requested %s voice", request.language)
+			}
+			if request.language == previous.language {
+				if piper != previous {
+					t.Fatal("repeated same-language request replaced the resident Piper helper")
+				}
+			} else if piper == previous || previous.cmd.ProcessState == nil {
+				t.Fatal("Piper language change did not replace and reap the previous resident helper")
+			}
+			if request.language == "english" && previous.language != "english" {
+				t.Run("English Opus to Whisper", func(t *testing.T) {
+					nativeIntegrationWhisper(t, s, "english", settings.Threads)
+				})
+			}
+		}
+	})
 	failedEngine = "qwen3"
 	qwenSettings := settings
 	qwenSettings.TTSEngine = "qwen3"
@@ -300,8 +392,13 @@ func TestNativeSpeechLifecycleIntegration(t *testing.T) {
 			t.Fatalf("source %s runtime changed after fixture cleanup: %v", engine, err)
 		}
 		if engine == "piper" {
-			if err := verifySpeechInventory(t.Context(), filepath.Join(fixture.models, piperModelDir)); err != nil {
-				t.Fatal(err)
+			for _, language := range []string{"italian", "english"} {
+				if language == "english" && piperEnglishModel == "" {
+					continue
+				}
+				if err := verifySpeechInventory(t.Context(), filepath.Join(fixture.models, piperModelDirectory(language))); err != nil {
+					t.Fatal(err)
+				}
 			}
 		} else {
 			for _, spec := range nativeModels(engine) {

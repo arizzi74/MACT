@@ -1145,6 +1145,7 @@ function renderAudio() {
   const busy = audioSaving || !!audioSnapshot?.busy;
   const dirty = audioDirty();
   const enabled = ready && audioDraft.enabled;
+  const checkVoiceFiles = ready && !dirty && enabled && audioDraft.reply_with_audio && audioDraft.tts_engine === 'piper';
   $('audio-enabled').disabled = !ready || busy;
   $('audio-enabled').checked = !!audioDraft?.enabled;
   $('audio-options').disabled = !enabled || busy;
@@ -1178,8 +1179,8 @@ function renderAudio() {
   const pendingEngine = $('audio-engine-pending');
   pendingEngine.hidden = !replies || !!audioDraft?.tts_engine;
   pendingEngine.textContent = audioSnapshot?.settings.reply_with_audio && !audioSnapshot.settings.tts_engine
-    ? 'The existing Pocket TTS engine remains active. Choose an engine and apply settings to switch. Piper / Miro is recommended for this CPU.'
-    : 'Choose an audio reply engine before applying settings. Piper / Miro is recommended for this CPU.';
+    ? 'The existing Pocket TTS engine remains active. Choose an engine and apply settings to switch. Piper (Miro / Ryan) is recommended for this CPU.'
+    : 'Choose an audio reply engine before applying settings. Piper (Miro / Ryan) is recommended for this CPU.';
   const voice = $('audio-voice');
   const voices = audioSnapshot?.tts?.voices || [];
   voice.replaceChildren();
@@ -1193,9 +1194,9 @@ function renderAudio() {
   voice.disabled = !enabled || busy || !audioSnapshot?.tts?.available || !replies;
   $('audio-voice-wrap').hidden = !replies;
   $('audio-voice-help').textContent = audioDraft?.tts_engine === 'piper'
-    ? 'Piper / Miro uses an Italian voice for every language. The language preference is saved; English is spoken with an Italian accent.'
+    ? 'Piper uses Miro for Italian and Ryan for English. Automatic matching follows the voice note language; it does not detect the reply text language.'
     : audioDraft?.tts_engine === 'qwen3'
-      ? 'Qwen3-TTS supports Italian and English with the same model download. Automatic matching follows the voice note language.'
+      ? 'Qwen3-TTS supports Italian and English with the same model download. Automatic matching follows the voice note language; it does not detect the reply text language.'
       : 'Choose an engine to see its language support. Your language preference is preserved.';
   const resources = $('audio-resources');
   resources.replaceChildren();
@@ -1225,11 +1226,11 @@ function renderAudio() {
   if (ready && audioSnapshot.busy && operation.message && operation.state !== 'failed') $('audio-status').textContent += ' ' + operation.message;
   const effective = audioSnapshot?.settings;
   $('audio-effective').textContent = effective ? 'Current settings: ' + (effective.enabled
-    ? `${effective.model === 'small' ? 'Small' : 'Base'} · ${effective.threads} ${effective.threads === 1 ? 'thread' : 'threads'}${effective.reply_with_audio ? ' · text and audio replies · ' + ({ piper: 'Piper / Miro', qwen3: 'Qwen3-TTS 1.7B quantized' }[effective.tts_engine] || 'existing Pocket TTS (choose an engine to switch)') : ''}`
+    ? `${effective.model === 'small' ? 'Small' : 'Base'} · ${effective.threads} ${effective.threads === 1 ? 'thread' : 'threads'}${effective.reply_with_audio ? ' · text and audio replies · ' + ({ piper: 'Piper (Miro / Ryan)', qwen3: 'Qwen3-TTS 1.7B quantized' }[effective.tts_engine] || 'existing Pocket TTS (choose an engine to switch)') : ''}`
     : 'Voice notes disabled.') : '';
   const selectedModel = audioSnapshot?.models?.find(item => item.name === audioDraft?.model);
-  $('audio-save').textContent = busy ? 'Applying…' : enabled && selectedModel && !selectedModel.installed ? 'Download and apply' : 'Apply audio settings';
-  $('audio-save').disabled = !ready || busy || (!dirty && operation.state !== 'failed');
+  $('audio-save').textContent = busy ? 'Applying…' : checkVoiceFiles ? 'Check voice files' : enabled && selectedModel && !selectedModel.installed ? 'Download and apply' : 'Apply audio settings';
+  $('audio-save').disabled = !ready || busy || (!dirty && !checkVoiceFiles && operation.state !== 'failed');
   $('audio-discard').disabled = !ready || busy || !dirty;
   $('audio-unsaved').hidden = !dirty || busy;
   $('audio-section').setAttribute('aria-busy', String(busy));

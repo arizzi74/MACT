@@ -32,8 +32,9 @@ func (s *Service) newNativeBackend(engine string) *Service {
 	}
 	dir := filepath.Join(s.dir, engine)
 	child := New(dir, s.executable)
+	child.checkLanguage = engine == "piper"
 	var runtimeDir string
-	child.beforeStart = func(ctx context.Context) error {
+	child.beforeStart = func(ctx context.Context, language string) error {
 		if err := privateDirectory(s.dir); err != nil {
 			return err
 		}
@@ -46,7 +47,7 @@ func (s *Service) newNativeBackend(engine string) *Service {
 			return err
 		}
 		if engine == "piper" {
-			return verifySpeechInventory(ctx, filepath.Join(dir, piperModelDir))
+			return verifySpeechInventory(ctx, filepath.Join(dir, piperModelDirectory(language)))
 		}
 		for _, model := range nativeModels(engine) {
 			if err := verifyAsset(ctx, filepath.Join(dir, model.name), model); err != nil {
@@ -156,16 +157,14 @@ func (s *Service) prepareNative(ctx context.Context, settings audio.Settings, pr
 		progress(audio.Operation{State: "warming", Model: settings.TTSEngine, Message: "Testing the selected voice before activation. The current voice remains active."})
 	}
 	languages := []string{"italian"}
-	if settings.TTSEngine == "qwen3" {
-		switch settings.TTSVoice {
-		case "english":
-			languages = []string{"english"}
-		case "italian":
-		case "", "auto":
-			languages = append(languages, "english")
-		default:
-			return errors.New("speech: invalid language")
-		}
+	switch settings.TTSVoice {
+	case "english":
+		languages = []string{"english"}
+	case "italian":
+	case "", "auto":
+		languages = append(languages, "english")
+	default:
+		return errors.New("speech: invalid language")
 	}
 	warm := func() error {
 		for _, language := range languages {
@@ -182,7 +181,7 @@ func (s *Service) prepareNative(ctx context.Context, settings audio.Settings, pr
 	if !sameEngine {
 		return warm()
 	}
-	// An unchanged Qwen selection must not map two full models while checking
+	// An unchanged engine selection must not map two full models while checking
 	// new threads or language settings. Drain inference before the parent gate,
 	// stop only the old child's resident process, and keep its service usable
 	// if saving later fails. Both language checks share this one CPU budget.

@@ -48,7 +48,7 @@ flowchart TB
   browser <-->|"HTTPS / WebSocket"| gateway
   gateway <--> registry
   gateway <-->|"Local PCM pipe; optional voice transcription"| whisper["Resident Whisper helper"]
-  gateway <-->|"Local PCM pipe; optional spoken replies"| speech["Piper / Miro or quantized Qwen3-TTS"]
+  gateway <-->|"Local PCM pipe; optional spoken replies"| speech["Piper (Miro / Ryan) or quantized Qwen3-TTS"]
 
   subgraph machine_a["Worker A · Linux / macOS"]
     direction TB
@@ -306,11 +306,17 @@ the multilingual **base** model and one fewer thread than available cores
 (minimum one), and preserves existing installations' selections. The CLI
 alternative remains `sudo mact setup voice`.
 
-Optional spoken replies offer **Piper / Miro** for fast Italian speech or
+Optional spoken replies offer **Piper (Miro / Ryan)** for Italian and English or
 **Qwen3-TTS 1.7B quantized** for multilingual speech with a larger CPU and RAM
 budget. The admin panel compares measured speed, model size, memory and quality.
 Selecting an engine downloads and checks its signed native helper and pinned
 models; a successful switch removes the unused engine and model files.
+Piper uses Miro for Italian and Ryan for English. Both voice models are prepared
+when you apply settings (about 155 MiB of model files in total); only one language
+model stays in memory at a time. Automatic language matching follows the voice
+note's detected language, without detecting the reply text's language.
+Existing Piper installations can use **Check voice files** in the Audio panel
+to download and verify the updated helper and English voice before activation.
 The bot keeps showing typing while preparing the complete
 audio reply, then sends the final text followed by audio with the same content.
 No paid speech API, Python, FFmpeg, or GPU is needed;

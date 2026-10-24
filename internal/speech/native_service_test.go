@@ -67,8 +67,8 @@ func TestNativeRestoreAndPreparationPreserveActiveEngine(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := speechProcess(old)
-	if p == nil || p.language != "italian" {
-		t.Fatal("Piper did not keep its Italian voice for English text")
+	if p == nil || p.language != "english" {
+		t.Fatal("Piper did not honor the English request")
 	}
 
 	if err := s.Prepare(t.Context(), nativeTestSettings("qwen3"), nil); err != nil {
@@ -274,13 +274,17 @@ func TestNativePendingCancellationAndParentLifecycle(t *testing.T) {
 }
 
 func TestNativeSameEnginePreparationKeepsOnlyOneModelResident(t *testing.T) {
-	for _, commit := range []bool{false, true} {
-		t.Run(map[bool]string{false: "discard after failed save", true: "activate after successful save"}[commit], func(t *testing.T) {
+	for _, tc := range []struct {
+		engine string
+		commit bool
+	}{{"piper", false}, {"piper", true}, {"qwen3", false}, {"qwen3", true}} {
+		engine, commit := tc.engine, tc.commit
+		t.Run(engine+"/"+map[bool]string{false: "discard after failed save", true: "activate after successful save"}[commit], func(t *testing.T) {
 			s := nativeTestService(t)
 			limiter := &testInferenceLimiter{budget: make(chan struct{}, 1), requested: make(chan struct{}, 8)}
 			limiter.budget <- struct{}{}
 			s.SetInferenceLimiter(limiter)
-			s.SetActive(nativeTestSettings("qwen3"))
+			s.SetActive(nativeTestSettings(engine))
 			old := s.nativeActive
 			if _, err := s.Synthesize(t.Context(), "An existing public voice.", "english", 3); err != nil {
 				t.Fatal(err)
@@ -302,7 +306,7 @@ func TestNativeSameEnginePreparationKeepsOnlyOneModelResident(t *testing.T) {
 			}
 			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 			defer cancel()
-			requested := nativeTestSettings("qwen3")
+			requested := nativeTestSettings(engine)
 			requested.Threads = 2
 			if err := s.Prepare(ctx, requested, nil); err != nil {
 				t.Fatal(err)
