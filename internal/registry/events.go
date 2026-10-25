@@ -141,6 +141,9 @@ func (s *Store) IngestEvent(ctx context.Context, workerID, connectionID uuid.UUI
 			return err
 		}
 	}
+	if err := repositionCompletedTelegramControlProgress(ctx, tx, workerID, event, target, commandID); err != nil {
+		return err
+	}
 	pushQueued, err := enqueueWebPushDeliveries(ctx, tx, event, target)
 	if err != nil {
 		return err

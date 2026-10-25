@@ -42,6 +42,11 @@ type Event struct {
 	RequestID string
 	Unknown   bool
 	Err       error
+	// PublicErrorMessage is the same user-visible message displayed by the
+	// native UI. Adapter/transport errors and provider diagnostics stay in Err
+	// or the local raw payload and must never supply this projection.
+	PublicErrorMessage string
+	WillRetry          bool
 }
 
 // Request is a server-initiated JSON-RPC request, normally an approval or user
@@ -167,6 +172,7 @@ func newEvent(method string, params json.RawMessage) Event {
 			event.RequestID = stableRequestID(value.RequestID)
 		}
 	}
+	event.PublicErrorMessage, event.WillRetry = publicTurnError(method, params)
 	return event
 }
 
@@ -276,6 +282,8 @@ func eventKind(method string) string {
 		return "turn_started"
 	case "turn/completed":
 		return "turn_completed"
+	case "error":
+		return "turn_error"
 	case "item/started":
 		return "item_started"
 	case "item/completed":
@@ -399,7 +407,7 @@ func knownNotification(method string) bool {
 		return true
 	}
 	switch method {
-	case "serverRequest/resolved":
+	case "serverRequest/resolved", "error":
 		return true
 	default:
 		return false

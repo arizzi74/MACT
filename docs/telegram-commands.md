@@ -624,6 +624,13 @@ latest tool call. Both messages continue to be updated after a gateway restart.
 Long progress text is shortened to fit one message; final responses retain their
 full text across as many messages as necessary.
 
+After a queued steer has been processed by the worker, the gateway removes the
+old hourglass and tool messages and reposts the latest cards at the bottom,
+after the queue acknowledgement. The hourglass appears before the tool card;
+later progress updates edit these new messages in place. Receiving the message
+in the queue alone does not move the cards. Failed or unknown steer results do
+not trigger a move, and delayed results cannot restore a completed turn.
+
 After you answer a Codex question, the gateway removes the temporary commentary
 and tool messages from above the question and reposts the latest progress at the
 bottom of the chat, after any next question or answer acknowledgement. Questions
@@ -631,6 +638,10 @@ and your answers stay in the chat. This applies to the selected session, or each
 visible session in multisession mode; answering a different session's question
 does not change your selection. Only progress from still-active turns is restored.
 Later updates replace the newly posted messages, with tool calls still in monospace.
+When the worker confirms that a complete answer was processed, visible progress
+is refreshed again at the bottom. Partial answers keep their immediate refresh
+while the remaining questions are collected. These refreshes survive gateway
+restarts and duplicate worker results without creating extra cards.
 If Telegram repeatedly refuses deletion, fresh progress can continue while the
 gateway keeps retrying cleanup of the old copies.
 
@@ -638,6 +649,10 @@ After all chunks of the final response have been delivered, the gateway removes
 the temporary messages for that turn. The final answer remains in the chat.
 Interrupted or failed turns leave their terminal notice and remove their
 progress messages. Progress received after a turn has ended is skipped.
+When a turn fails, Telegram includes the public error explanation supplied by
+the coding agent, including recovery instructions and links. A generic failure
+is used only when no public reason is available. Secret redaction also applies
+to these explanations; temporary retry notices are not reported as turn failures.
 
 Message IDs and deletion retries are stored in SQLite, so gateway restarts
 and temporary Telegram errors do not lose cleanup work or resend the final

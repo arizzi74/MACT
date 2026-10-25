@@ -34,8 +34,8 @@ const pendingProgressRepositionSQL = `(EXISTS (
       AND inflight.next_attempt_at>` + sqliteNow + `
 ))`
 
-// AcceptTelegram invokes this only for an accepted question answer, after
-// queueing its UI response and before committing the same deduplicated update.
+// Accepted question answers and successfully processed Telegram controls use
+// this after queueing or fencing their UI response, in the same transaction.
 // No session selection, conversation messages, or Codex events are changed.
 func repositionTelegramProgress(ctx context.Context, tx *dbTx, in IncomingUpdate) error {
 	if _, err := tx.Exec(ctx, `UPDATE telegram_progress_messages SET retire_requested=1,

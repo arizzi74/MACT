@@ -636,6 +636,7 @@ type sessionActor struct {
 	finalText                       string
 	legacyFinalText                 string
 	hasFinalAnswer                  bool
+	turnErrorMessage                string
 	toolItems                       map[string]struct{}
 	userItems                       map[string]struct{}
 	userPrompts                     []codexadapter.UserPrompt
@@ -1114,6 +1115,7 @@ func (s *sessionActor) resetMessages() {
 	s.finalText = ""
 	s.legacyFinalText = ""
 	s.hasFinalAnswer = false
+	s.turnErrorMessage = ""
 	s.toolItems = nil
 	s.userItems = nil
 	s.userPrompts = nil
@@ -1209,6 +1211,7 @@ func (s *sessionActor) event(event codexadapter.Event) {
 		if strings.TrimSpace(text) == "" {
 			return
 		}
+		s.turnErrorMessage = ""
 		if s.toolItems == nil {
 			s.toolItems = make(map[string]struct{})
 		}
@@ -1240,11 +1243,23 @@ func (s *sessionActor) event(event codexadapter.Event) {
 			s.legacyFinalText = text
 		}
 		if strings.TrimSpace(text) != "" {
+			s.turnErrorMessage = ""
 			result := protocol.Result{TurnID: event.TurnID, Text: text}
 			if s.activeCommand != nil {
 				result.CommandID = s.activeCommand.ID
 			}
 			s.agent.report(s.agent.emit(s.runtime, s.session.ID, "agent_progress_message", result))
+		}
+	case "turn_error":
+		if event.TurnID == "" || event.TurnID != s.session.ActiveTurnID {
+			return
+		}
+		if event.WillRetry {
+			s.turnErrorMessage = ""
+			return
+		}
+		if message := publicTurnErrorMessage(s.agent.redactor, event.PublicErrorMessage); message != "" {
+			s.turnErrorMessage = message
 		}
 	case "turn_completed", "turn_failed", "turn_interrupted":
 		if event.TurnID == "" || event.TurnID != s.session.ActiveTurnID {
@@ -1260,6 +1275,15 @@ func (s *sessionActor) event(event codexadapter.Event) {
 			kind = "turn_interrupted"
 		}
 		result := protocol.Result{TurnID: event.TurnID, State: state}
+		if kind == "turn_failed" {
+			message := publicTurnErrorMessage(s.agent.redactor, event.PublicErrorMessage)
+			if message == "" {
+				message = s.turnErrorMessage
+			}
+			if message != "" {
+				result.Error = &protocol.Error{Message: message}
+			}
+		}
 		if kind == "turn_completed" {
 			result.Text = s.legacyFinalText
 			if s.hasFinalAnswer {

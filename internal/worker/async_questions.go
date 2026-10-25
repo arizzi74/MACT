@@ -235,7 +235,7 @@ func (s *sessionActor) answerAsyncQuestion(command protocol.Command, client *cod
 		return
 	}
 	delete(s.asyncQuestions, approval.RequestID)
-	result := &protocol.Result{CommandID: command.ID, State: "completed"}
+	result := &protocol.Result{CommandID: command.ID, TurnID: s.session.ActiveTurnID, State: "completed"}
 	kind := "command_completed"
 	if started {
 		s.session.ActiveTurnID, s.session.State, s.session.Loaded = turn.ID, "running", true

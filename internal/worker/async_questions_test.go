@@ -98,6 +98,9 @@ func TestAsyncQuestionAnswerSteersActiveTurnAndRejectsReplay(t *testing.T) {
 	if countCall(server.Calls(), "turn/start") != 1 || countCall(server.Calls(), "turn/steer") != 1 || sessionTurn(a.store, session.ID) != turn {
 		t.Fatal("answer did not preserve active turn")
 	}
+	if !hasTurnEventForCommand(a.store, "command_completed", command.ID, turn) {
+		t.Fatal("processed async answer lost its active-turn correlation")
+	}
 	for _, call := range server.Calls() {
 		if call.Method != "turn/steer" {
 			continue
