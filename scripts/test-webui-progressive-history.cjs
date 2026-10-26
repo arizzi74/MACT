@@ -78,6 +78,7 @@ const assets = process.env.WEBUI_ASSETS || path.resolve(__dirname, '../internal/
         else if (frame.method === 'model/list') result = { data: [] };
         else if (frame.method === 'thread/goal/get') result = { goal: null };
         else if (frame.method === 'account/rateLimits/read') result = { rateLimits: null };
+        else if (frame.method === 'turn/steer') { this.heldSteer = { frame, result }; return; }
         setTimeout(() => this.emit({ id: frame.id, result }), 1);
       }
     };
@@ -105,27 +106,47 @@ const assets = process.env.WEBUI_ASSETS || path.resolve(__dirname, '../internal/
       [{ limit: 1, cursor: null, view: 'notLoaded' }, { limit: 20, cursor: '1', view: 'notLoaded' }]);
     await page.locator('#send').click();
     assert.ok(await page.evaluate(() => window.testSent.some(frame => frame.method === 'turn/steer' && frame.params.expectedTurnId === 'turn-23')), 'Active-turn state remains authoritative before optional metadata');
-
-    // Saved timestamp enrichment updates only the header, retaining the live
-    // article, expanded state and the reader's current visual anchor.
-    await page.locator('#transcript').evaluate(scroller => {
-      scroller.scrollTop = Math.floor((scroller.scrollHeight - scroller.clientHeight) / 2);
-      window.keptArticle = document.querySelector('[data-item-id="native-15"]');
-      const anchor = [...document.querySelectorAll('#messages article')].find(article => article.getBoundingClientRect().bottom > scroller.getBoundingClientRect().top);
-      window.keptAnchor = { id: anchor.dataset.itemId, top: anchor.getBoundingClientRect().top };
+    await page.waitForFunction(() => Boolean(window.testSockets.at(-1).heldSteer));
+    assert.equal(await page.locator('#prompt').inputValue(), 'Continue the active turn.', 'The delayed send remains pending until its acknowledgement');
+    await page.evaluate(() => {
+      const socket = window.testSockets.at(-1), held = socket.heldSteer;
+      socket.emit({ id: held.frame.id, result: held.result });
     });
-    await page.waitForTimeout(100);
+    // Accepted sends clear/resize the composer and intentionally jump to the
+    // latest output. Finish that interaction before testing a reader's anchor.
+    await page.waitForFunction(() => document.querySelector('#prompt').value === '' && !document.querySelector('#stop').disabled);
+    await page.evaluate(async () => { await document.fonts.ready; await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); });
+    await page.locator('#transcript').evaluate(scroller => {
+      window.readingScrollEnded = false;
+      scroller.addEventListener('scrollend', () => { window.readingScrollEnded = true; }, { once: true });
+    });
+    await page.locator('#transcript').hover();
+    const readingDistance = await page.locator('#transcript').evaluate(scroller => Math.floor((scroller.scrollHeight - scroller.clientHeight) / 2));
+    await page.mouse.wheel(0, -readingDistance);
+    await page.waitForFunction(() => {
+      const scroller = document.querySelector('#transcript');
+      return window.readingScrollEnded && scroller.scrollTop > 0 && scroller.scrollTop < scroller.scrollHeight - scroller.clientHeight - 100;
+    });
     const saved = 1790965275555;
     await timestamps('thread-native', [{ itemId: 'native-15', turnId: 'wrong-turn', recordedAtMs: saved }, { itemId: 'native-23', turnId: 'turn-23', recordedAtMs: saved }]);
     assert.equal(await time('native-15').count(), 0, 'Timestamp evidence is fenced by item turn identity');
     assert.equal(await time('native-23').getAttribute('data-source'), 'item-started', 'Saved dates cannot replace producer start times');
     await timestamps('thread-other', [{ itemId: 'native-15', turnId: 'turn-15', recordedAtMs: saved }]);
     assert.equal(await time('native-15').count(), 0, 'Timestamp evidence is fenced by selected thread');
-    await timestamps('thread-native', [{ itemId: 'native-15', turnId: 'turn-15', recordedAtMs: saved }]);
+    // Capture and enrich in the same browser task so unrelated pending work
+    // cannot become part of the timestamp update's measured displacement.
+    await page.evaluate(recordedAtMs => {
+      const scroller = document.querySelector('#transcript');
+      window.keptArticle = document.querySelector('[data-item-id="native-15"]');
+      const anchor = [...document.querySelectorAll('#messages article')].find(article => article.getBoundingClientRect().bottom > scroller.getBoundingClientRect().top);
+      window.keptAnchor = { id: anchor.dataset.itemId, top: anchor.getBoundingClientRect().top };
+      window.testSockets.at(-1).emit({ method: 'gateway/history/timestamps', params: { threadId: 'thread-native', items: [{ itemId: 'native-15', turnId: 'turn-15', recordedAtMs }] } });
+    }, saved);
     assert.equal(await time('native-15').getAttribute('datetime'), new Date(saved).toISOString());
     assert.equal(await time('native-15').getAttribute('data-source'), 'item-recorded');
     assert.equal(await page.evaluate(() => window.keptArticle === document.querySelector('[data-item-id="native-15"]')), true, 'Enrichment keeps the existing article DOM');
-    assert.ok(Math.abs(await page.evaluate(() => document.querySelector('[data-item-id="' + window.keptAnchor.id + '"]').getBoundingClientRect().top - window.keptAnchor.top)) < 2, 'Enrichment preserves the reading anchor');
+    const anchorDrift = await page.evaluate(() => document.querySelector('[data-item-id="' + window.keptAnchor.id + '"]').getBoundingClientRect().top - window.keptAnchor.top);
+    assert.ok(Math.abs(anchorDrift) < 2, 'Enrichment preserves the reading anchor: ' + anchorDrift + 'px');
     await page.evaluate(() => {
       const socket = window.testSockets.at(-1), held = socket.heldMetadata;
       socket.emit({ id: held.frame.id, result: held.result });
