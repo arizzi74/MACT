@@ -31,11 +31,12 @@ type Options struct {
 }
 
 type DB struct {
-	mu     sync.RWMutex
-	db     *sql.DB
-	path   string
-	lock   *os.File
-	closed bool
+	mu      sync.RWMutex
+	db      *sql.DB
+	readers *sql.DB
+	path    string
+	lock    *os.File
+	closed  bool
 }
 
 // Open acquires an exclusive worker lock before opening or migrating a private
@@ -91,7 +92,39 @@ func Open(path string, mode os.FileMode, options *Options) (_ *DB, err error) {
 	if err != nil {
 		return nil, err
 	}
-	return &DB{db: db, path: path, lock: lock}, nil
+	readers, err := openReadSQL(path)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return &DB{db: db, readers: readers, path: path, lock: lock}, nil
+}
+
+// WAL readers use separate read-only connections so a bounded index update
+// cannot hold up session inventory reads on the writer pool.
+func openReadSQL(path string) (_ *sql.DB, err error) {
+	params := url.Values{}
+	params.Set("mode", "ro")
+	params.Set("_txlock", "deferred")
+	params.Add("_pragma", "busy_timeout(10000)")
+	params.Add("_pragma", "foreign_keys(1)")
+	params.Add("_pragma", "query_only(1)")
+	dsn := (&url.URL{Scheme: "file", Path: path, RawQuery: params.Encode()}).String()
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err != nil {
+			_ = db.Close()
+		}
+	}()
+	db.SetMaxOpenConns(4)
+	db.SetMaxIdleConns(4)
+	if err = db.Ping(); err != nil {
+		return nil, err
+	}
+	return db, nil
 }
 
 func ensurePrivateFile(path string) error {
@@ -252,25 +285,38 @@ func (db *DB) Close() error {
 		return nil
 	}
 	db.closed = true
-	err := db.db.Close()
-	return errors.Join(err, db.lock.Close())
+	return errors.Join(db.readers.Close(), db.db.Close(), db.lock.Close())
 }
 
-func (db *DB) View(fn func(*Tx) error) error   { return db.transaction(false, fn) }
-func (db *DB) Update(fn func(*Tx) error) error { return db.transaction(true, fn) }
+func (db *DB) View(fn func(*Tx) error) error {
+	return db.ViewContext(context.Background(), fn)
+}
+func (db *DB) Update(fn func(*Tx) error) error {
+	return db.UpdateContext(context.Background(), fn)
+}
+func (db *DB) ViewContext(ctx context.Context, fn func(*Tx) error) error {
+	return db.transaction(ctx, false, fn)
+}
+func (db *DB) UpdateContext(ctx context.Context, fn func(*Tx) error) error {
+	return db.transaction(ctx, true, fn)
+}
 
-func (db *DB) transaction(write bool, fn func(*Tx) error) error {
+func (db *DB) transaction(ctx context.Context, write bool, fn func(*Tx) error) error {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 	if db.closed {
 		return errors.New("worker SQLite store: database is closed")
 	}
-	sqlTx, err := db.db.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: !write})
+	pool := db.db
+	if !write {
+		pool = db.readers
+	}
+	sqlTx, err := pool.BeginTx(ctx, &sql.TxOptions{ReadOnly: !write})
 	if err != nil {
 		return err
 	}
 	defer sqlTx.Rollback()
-	tx := &Tx{tx: sqlTx, writable: write}
+	tx := &Tx{tx: sqlTx, ctx: ctx, writable: write}
 	if err := fn(tx); err != nil {
 		return err
 	}
@@ -285,6 +331,7 @@ func (db *DB) transaction(write bool, fn func(*Tx) error) error {
 // commits writes made after a failed read.
 type Tx struct {
 	tx       *sql.Tx
+	ctx      context.Context
 	writable bool
 	err      error
 }
@@ -301,7 +348,7 @@ func (tx *Tx) Bucket(name []byte) *Bucket {
 		return nil
 	}
 	var exists int
-	err := tx.tx.QueryRow("SELECT 1 FROM buckets WHERE name=?", nonnil(name)).Scan(&exists)
+	err := tx.tx.QueryRowContext(tx.ctx, "SELECT 1 FROM buckets WHERE name=?", nonnil(name)).Scan(&exists)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
@@ -322,7 +369,7 @@ func (tx *Tx) CreateBucketIfNotExists(name []byte) (*Bucket, error) {
 	if tx.err != nil {
 		return nil, tx.err
 	}
-	_, err := tx.tx.Exec("INSERT INTO buckets(name) VALUES(?) ON CONFLICT(name) DO NOTHING", name)
+	_, err := tx.tx.ExecContext(tx.ctx, "INSERT INTO buckets(name) VALUES(?) ON CONFLICT(name) DO NOTHING", name)
 	if err != nil {
 		return nil, tx.fail(err)
 	}
@@ -339,7 +386,7 @@ func (b *Bucket) Get(key []byte) []byte {
 		return nil
 	}
 	var value []byte
-	err := b.tx.tx.QueryRow("SELECT value FROM entries WHERE bucket=? AND key=?", b.name, nonnil(key)).Scan(&value)
+	err := b.tx.tx.QueryRowContext(b.tx.ctx, "SELECT value FROM entries WHERE bucket=? AND key=?", b.name, nonnil(key)).Scan(&value)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
@@ -360,7 +407,7 @@ func (b *Bucket) Put(key, value []byte) error {
 	if b.tx.err != nil {
 		return b.tx.err
 	}
-	_, err := b.tx.tx.Exec(`INSERT INTO entries(bucket,key,value) VALUES(?,?,?)
+	_, err := b.tx.tx.ExecContext(b.tx.ctx, `INSERT INTO entries(bucket,key,value) VALUES(?,?,?)
 ON CONFLICT(bucket,key) DO UPDATE SET value=excluded.value WHERE entries.value != excluded.value`, b.name, key, nonnil(value))
 	return b.tx.fail(err)
 }
@@ -375,7 +422,7 @@ func (b *Bucket) Delete(key []byte) error {
 	if b.tx.err != nil {
 		return b.tx.err
 	}
-	_, err := b.tx.tx.Exec("DELETE FROM entries WHERE bucket=? AND key=?", b.name, nonnil(key))
+	_, err := b.tx.tx.ExecContext(b.tx.ctx, "DELETE FROM entries WHERE bucket=? AND key=?", b.name, nonnil(key))
 	return b.tx.fail(err)
 }
 
@@ -390,7 +437,7 @@ func (b *Bucket) ForEach(fn func(key, value []byte) error) error {
 		// Inventory and command-ledger scans can contain thousands of rows.
 		// One ordered SQLite statement streams them without an N+1 query
 		// loop or retaining the complete bucket in Go memory.
-		rows, err := b.tx.tx.Query("SELECT key,value FROM entries WHERE bucket=? ORDER BY key", b.name)
+		rows, err := b.tx.tx.QueryContext(b.tx.ctx, "SELECT key,value FROM entries WHERE bucket=? ORDER BY key", b.name)
 		if err != nil {
 			return b.tx.fail(err)
 		}
@@ -451,7 +498,7 @@ func (c *Cursor) read(condition string, start []byte) ([]byte, []byte) {
 		arguments = append(arguments, start)
 	}
 	var key, value []byte
-	err := c.bucket.tx.tx.QueryRow("SELECT key,value FROM entries WHERE bucket=?"+condition+" ORDER BY key LIMIT 1", arguments...).Scan(&key, &value)
+	err := c.bucket.tx.tx.QueryRowContext(c.bucket.tx.ctx, "SELECT key,value FROM entries WHERE bucket=?"+condition+" ORDER BY key LIMIT 1", arguments...).Scan(&key, &value)
 	if errors.Is(err, sql.ErrNoRows) {
 		c.ended = true
 		return nil, nil

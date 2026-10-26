@@ -299,7 +299,8 @@ itemTimes['timestamp-older-completed'] = { startedAtMs: null, completedAtMs: tim
           result = { goal: window.testGoals[frame.params.threadId] || null };
           if (window.testHoldGoal) { this.heldGoal = { frame, result }; return; }
         } else if (frame.method === 'thread/turns/list') {
-          result = frame.params.itemsView === 'notLoaded' ? { data: (turns[frame.params.threadId] || []).slice(0, frame.params.limit || 1).map(({ items, ...turn }) => ({ ...turn, items: [] })), nextCursor: null }
+          const offset = Number(frame.params.cursor || 0), limit = frame.params.limit || 1, metadata = turns[frame.params.threadId] || [];
+          result = frame.params.itemsView === 'notLoaded' ? { data: metadata.slice(offset, offset + limit).map(({ items, ...turn }) => ({ ...turn, items: [] })), nextCursor: offset + limit < metadata.length ? String(offset + limit) : null }
             : frame.params.cursor ? { data: [{ id: 'earliest', status: 'completed', startedAt: 1600000000, items: [{ id: 'earliest-message', type: 'agentMessage', text: 'The first conversation.' }] }], nextCursor: null } : { data: turns[frame.params.threadId], nextCursor: frame.params.threadId === 'thread-a' ? 'older' : null };
           if (window.testHoldMetadata && frame.params.itemsView === 'notLoaded') { this.heldMetadata = { frame, result }; return; }
         } else if (frame.method === 'thread/items/list') {
@@ -978,7 +979,8 @@ itemTimes['timestamp-older-completed'] = { startedAtMs: null, completedAtMs: tim
     await page.locator('#prompt').fill('');
     await choose('a');
     await page.waitForSelector('[data-item-id="reply-a"]');
-    assert.equal(await page.locator('#messages article').first().getAttribute('data-item-id'), 'old-user', 'History stays chronological');
+    await page.waitForSelector('[data-item-id="earliest-message"]');
+    assert.equal(await page.locator('#messages article').first().getAttribute('data-item-id'), 'earliest-message', 'A partial first page fills the recent viewport in chronological order');
     assert.equal(await page.locator('#messages img').count(), 0, 'Untrusted HTML cannot become a DOM element');
     assert.equal(await page.evaluate(() => window.injected), undefined);
     assert.equal(await page.getByLabel('Dismissed Telegram question?', { exact: true }).count(), 0, 'An empty authoritative question snapshot prevents dismissed historical async questions from resurfacing');
@@ -2575,7 +2577,7 @@ itemTimes['timestamp-older-completed'] = { startedAtMs: null, completedAtMs: tim
     };
     assert.deepEqual(await historyIDs(), Array.from({ length: 20 }, (_, index) => 'history-' + (index + 65)), 'The initial page contains the latest 20 transcript items in chronological order');
     assert.ok(await page.evaluate(() => window.testSent.some(frame => frame.method === 'thread/items/list' && frame.params.threadId === 'thread-c' && frame.params.limit === 20 && frame.params.sortDirection === 'desc')), 'Transcript paging uses the native 20-item history API');
-    assert.ok(await page.evaluate(() => window.testSent.filter(frame => frame.method === 'thread/turns/list' && frame.params.threadId === 'thread-c').every(frame => frame.params.itemsView === 'notLoaded' && frame.params.limit === 20)), 'Initial turn reads fetch bounded metadata only, without reloading historical turn bodies');
+    assert.ok(await page.evaluate(() => window.testSent.filter(frame => frame.method === 'thread/turns/list' && frame.params.threadId === 'thread-c').every(frame => frame.params.itemsView === 'notLoaded' && frame.params.limit === (frame.params.cursor ? 20 : 1))), 'Initial turn reads fetch only the latest state; optional older dates use bounded metadata without turn bodies');
     await page.getByLabel('Pending question outside the latest 20 items?', { exact: true }).waitFor();
     const questionReads = await page.evaluate(() => window.testSent.filter(frame => frame.session === 'c' && frame.method === 'gateway/questions').length);
     await activity(activitySnapshot.map(session => session.session_id === 'c' ? { ...session, pending_questions: 1, pending_revision: 'first-pending-question' } : session));

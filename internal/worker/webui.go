@@ -55,6 +55,10 @@ type webUIRelay struct {
 	historyRequests chan webUIRPC // bounded work for the browser input loop
 	observerReady   bool          // durable observer admitted this resume before its RPC
 	resumed         bool          // actual thread metadata passed workspace checks
+	timestampOnce   sync.Once
+	timestampJobs   chan *webUIHistoryTimestampWork
+	timestampCancel context.CancelFunc
+	timestampGroup  sync.WaitGroup
 }
 
 type webUIRequest struct {
@@ -184,6 +188,13 @@ func (r *webUIRelay) releaseInput(n int) {
 }
 
 func (p *webUIRelays) target(frame protocol.WebUIFrame) (protocol.Runtime, protocol.Session, error) {
+	return p.targetContext(context.Background(), frame)
+}
+
+func (p *webUIRelays) targetContext(ctx context.Context, frame protocol.WebUIFrame) (protocol.Runtime, protocol.Session, error) {
+	if err := ctx.Err(); err != nil {
+		return protocol.Runtime{}, protocol.Session{}, err
+	}
 	var runtime protocol.Runtime
 	for _, candidate := range p.c.snapshot() {
 		if candidate.ID == frame.RuntimeID {
@@ -197,7 +208,7 @@ func (p *webUIRelays) target(frame protocol.WebUIFrame) (protocol.Runtime, proto
 	if runtime.WorkerID != "" && runtime.WorkerID != p.c.cfg.WorkerID {
 		return runtime, protocol.Session{}, errors.New("Runtime belongs to another worker.")
 	}
-	sessions, err := p.c.store.ListSessions(runtime.ID)
+	sessions, err := p.c.store.ListSessionsContext(ctx, runtime.ID)
 	if err != nil {
 		return runtime, protocol.Session{}, errors.New("Session inventory is unavailable.")
 	}
@@ -214,6 +225,7 @@ func (p *webUIRelays) target(frame protocol.WebUIFrame) (protocol.Runtime, proto
 }
 
 func (r *webUIRelay) run() error {
+	defer r.stopHistoryTimestamps()
 	transport := &http.Transport{Proxy: nil, ForceAttemptHTTP2: false, DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "unix", r.runtime.LocalSocket)
 	}}

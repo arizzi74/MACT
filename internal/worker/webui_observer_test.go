@@ -160,6 +160,42 @@ func TestWebUILoadedObserverReusesOnlyAcknowledgedSubscription(t *testing.T) {
 	}
 }
 
+func TestWebUIAcknowledgedObserverStillChecksMaintenanceFences(t *testing.T) {
+	for _, stage := range []string{"update", "archive"} {
+		t.Run(stage, func(t *testing.T) {
+			a, runtime, server, cleanup := testAgent(t)
+			defer cleanup()
+			session := installSession(a, runtime, "fenced-observer", "")
+			server.SetThreads([]map[string]any{{"id": session.ThreadID, "cwd": session.CWD, "status": "idle"}}, []string{session.ThreadID})
+			if err := a.observeWebUISession(t.Context(), runtime, session); err != nil {
+				t.Fatal(err)
+			}
+			before := len(server.Calls())
+			a.updateMu.Lock()
+			if stage == "update" {
+				a.update = &updateState{}
+			} else {
+				a.archiveAdmissions = map[string]*archiveAdmission{"test": {Project: session.CWD}}
+			}
+			a.updateMu.Unlock()
+			err := a.observeWebUISession(t.Context(), runtime, session)
+			if stage == "update" {
+				if !errors.Is(err, ErrUpdatePrepared) {
+					t.Fatalf("acknowledged observer bypassed prepared update: %v", err)
+				}
+			} else {
+				var blocked *protocol.Error
+				if !errors.As(err, &blocked) || blocked.Code != protocol.SessionBusy {
+					t.Fatalf("acknowledged observer bypassed archive admission: %v", err)
+				}
+			}
+			if len(server.Calls()) != before {
+				t.Fatal("maintenance-fenced observer reached Codex")
+			}
+		})
+	}
+}
+
 func TestWebUIObserverWaitDoesNotHoldRelayMutex(t *testing.T) {
 	a, runtime, _, cleanup := testAgent(t)
 	defer cleanup()

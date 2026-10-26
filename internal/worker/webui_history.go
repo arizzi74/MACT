@@ -19,6 +19,8 @@ func (r *webUIRelay) history(rpc webUIRPC) error {
 	if !ok {
 		return errors.New("missing conversation request")
 	}
+	timestamps := make(chan *webUIHistoryTimestampWork, 1)
+	request.timestamps = timestamps
 	raw, err := r.historyResult(rpc.ID, request)
 	if err != nil {
 		return err
@@ -30,7 +32,15 @@ func (r *webUIRelay) history(rpc webUIRPC) error {
 	if len(raw) > webUIHistoryPageBytes {
 		return errors.New("conversation frame exceeds display limit")
 	}
-	return r.pool.send(r.ctx, protocol.WebUIFrame{ID: r.id, Action: "output", Data: raw})
+	if err := r.pool.send(r.ctx, protocol.WebUIFrame{ID: r.id, Action: "output", Data: raw}); err != nil {
+		return err
+	}
+	select {
+	case work := <-timestamps:
+		r.scheduleHistoryTimestamps(work)
+	default:
+	}
+	return nil
 }
 
 func (r *webUIRelay) historyResult(id json.RawMessage, request webUIHistoryRequest) ([]byte, error) {

@@ -22,7 +22,7 @@
   let questionRevision = 0, questionSnapshotSequence = 0;
   let questionRefresh = null;
   let selectedGoal = null, goalRevision = 0, goalSnapshotSequence = 0, goalDialogSessionID = '';
-  let turnTimes = new Map(), turnCursor = null, resumedThread = null;
+  let turnTimes = new Map(), turnCursor = null, turnMetadataWork = null, historyRead = rpc, resumedThread = null;
   const attachmentDrafts = new Map();
   const sessionDeletions = new Map();
   let deleteSessionTarget = null;
@@ -323,13 +323,13 @@
     goalRevision++; goalSnapshotSequence++; selectedGoal = null;
     renderGoal();
   }
-  function refreshGoal() {
+  function refreshGoal(read = rpc) {
     if (!goalContextAvailable()) return;
     const generation = state.generation, threadId = state.selected.codex_thread_id, sessionID = state.selected.session_id;
     const revision = goalRevision, sequence = ++goalSnapshotSequence;
     const current = () => generation === state.generation && threadId === state.selected?.codex_thread_id && sessionID === state.selected?.session_id &&
       goalContextAvailable() && sequence === goalSnapshotSequence && revision === goalRevision;
-    rpc('thread/goal/get', { threadId }).then(result => {
+    read('thread/goal/get', { threadId }).then(result => {
       if (current()) applyGoal(result?.goal, threadId);
     }).catch(() => {
       // This optional native read is unavailable on older runtimes.
@@ -718,6 +718,7 @@
     clearSteerNotice();
     clearGoal();
     loadingOlder = false; suppressHistoryScroll = false;
+    turnMetadataWork = null; historyRead = rpc;
     if (bottomFrame !== null) { cancelAnimationFrame(bottomFrame); bottomFrame = null; }
     gatewayCommandAbort?.abort();
     clearTimeout(state.timer);
@@ -739,6 +740,20 @@
       try { state.socket.send(JSON.stringify({ id, method, params })); }
       catch (error) { clearTimeout(timer); state.pending.delete(id); reject(error); }
     });
+  }
+  function backgroundReader(generation, socket) {
+    let active = 0;
+    const queue = [];
+    const pump = () => {
+      while (active < 3 && queue.length) {
+        const request = queue.shift();
+        if (generation !== state.generation || state.socket !== socket || !state.connected) { request.reject(new Error('Connection closed.')); continue; }
+        active++;
+        rpc(request.method, request.params).then(request.resolve, request.reject).finally(() => { active--; pump(); });
+      }
+    };
+    // Leave room in the worker's bounded input lane for an interactive send.
+    return (method, params = {}) => new Promise((resolve, reject) => { queue.push({ method, params, resolve, reject }); pump(); });
   }
   async function fetchJSON(path, signal = AbortSignal.timeout(15000)) {
     const authGeneration = state.authGeneration;
@@ -1763,6 +1778,7 @@
     state.turn = null;
     turnTimes = new Map(); turnCursor = null;
     state.questionsStatus = 'loading';
+    let initialItems = [];
     const [, metadata] = await Promise.all([
       rpc('thread/items/list', { threadId, limit: 20, sortDirection: 'desc' }).then(page => {
         if (!current()) return;
@@ -1770,6 +1786,7 @@
         const previous = { top: $('transcript').scrollTop, bottom: followLatest };
         const previousItems = state.items; state.items = new Map();
         state.cursor = page.nextCursor || null;
+        initialItems = (page.data || []).filter(entry => entry.item?.id && entry.turnId).map(entry => entry.item.id);
         // The authoritative pending-question response owns restored questions;
         // historical async questions may already have been dismissed.
         for (const entry of [...(page.data || [])].reverse()) {
@@ -1784,7 +1801,7 @@
         else if (!preserve || previous.bottom) { jump(); settleBottom(); }
         else { followLatest = false; $('transcript').scrollTop = previous.top; }
       }),
-      rpc('thread/turns/list', { threadId, limit: 20, sortDirection: 'desc', itemsView: 'notLoaded' }),
+      rpc('thread/turns/list', { threadId, limit: 1, sortDirection: 'desc', itemsView: 'notLoaded' }),
     ]);
     if (!current()) return;
     turnCursor = metadata.nextCursor || null;
@@ -1810,11 +1827,17 @@
     await restoreAuthPosition(generation);
     if (!current()) return;
     settleBottom();
+    const read = backgroundReader(generation, socket);
+    historyRead = read;
+    // A legacy source may yield only a few turns per response. The first
+    // bounded page is usable immediately; fill the remaining viewport later.
+    topUpHistory(generation, initialItems, read).catch(() => { /* Older remains available for a reader-initiated retry. */ });
+    fillTurnMetadata(generation, read).catch(() => { /* Missing historical dates do not disable the conversation. */ });
     // Start this optional worker lookup only after the essential native reads
     // finish: older workers share its input lane with history fallback reads.
     // New live requests received after dispatch take precedence over a snapshot.
     const revision = questionRevision;
-    rpc('gateway/questions', {}).then(snapshot => {
+    read('gateway/questions', {}).then(snapshot => {
       if (!current()) return;
       state.questionsStatus = 'ready';
       if (questionRevision === revision) { applyQuestionSnapshot(snapshot); renderQuestions(); }
@@ -1825,21 +1848,21 @@
       state.questionsStatus = 'error';
       sessionConnectionReady();
     });
-    refreshRateLimits();
-    refreshGoal();
-    rpc('model/list', {}).then(result => {
+    refreshRateLimits(read);
+    refreshGoal(read);
+    read('model/list', {}).then(result => {
       if (!current()) return;
       state.models = result?.data || result?.models || [];
       renderModels(); updateControls();
     }).catch(() => { /* Session defaults remain usable if this runtime has no model listing. */ });
   }
-  function refreshRateLimits() {
+  function refreshRateLimits(read = rpc) {
     // A newer explicit refresh also supersedes an older bootstrap read. Live
     // quota events still take precedence over either in-flight snapshot.
     const generation = state.generation, limitRevision = rateLimitRevision, limitEpoch = ++rateLimitEpoch;
     const current = () => generation === state.generation && state.connected && state.authenticated && limitEpoch === rateLimitEpoch;
     if (!rateLimitSnapshot) $('rate-limits').textContent = 'Loading limits…';
-    rpc('account/rateLimits/read', {}).then(result => {
+    read('account/rateLimits/read', {}).then(result => {
       if (!current()) return;
       const snapshot = result?.rateLimitsByLimitId?.codex || result?.rateLimits;
       updateRateLimits(!snapshot?.limitId || snapshot.limitId === 'codex' ? snapshot : null, limitRevision !== rateLimitRevision);
@@ -1849,6 +1872,62 @@
   }
   function rememberTurns(turns) {
     for (const turn of turns) turnTimes.set(turn.id, { id: turn.id, startedAt: turn.startedAt, status: turn.status });
+  }
+  function updateHistoryTimes(items) {
+    if (!items.length) return;
+    const scroller = $('transcript'), bottom = followLatest, top = scroller.scrollTop;
+    const anchor = [...$('messages').children].find(article => article.getBoundingClientRect().bottom > scroller.getBoundingClientRect().top);
+    const offset = anchor?.getBoundingClientRect().top;
+    const articles = new Map([...$('messages').children].map(article => [article.dataset.itemId, article]));
+    for (const item of items) {
+      const header = articles.get(item.id)?.querySelector('.message-header');
+      if (header) renderItemTime(header, item);
+    }
+    if (bottom) jump();
+    else scroller.scrollTop = anchor && offset !== undefined ? top + anchor.getBoundingClientRect().top - offset : top;
+  }
+  function applyHistoryTimestamps(params) {
+    if (params.threadId !== state.selected?.codex_thread_id || !Array.isArray(params.items)) return;
+    const changed = [];
+    for (const entry of params.items.slice(0, 20)) {
+      const item = state.items.get(entry?.itemId);
+      if (!item || item._turn !== entry.turnId || itemMilliseconds(entry.recordedAtMs) === undefined) continue;
+      const timing = itemTiming(item, turnTimes.get(item._turn), { recordedAtMs: entry.recordedAtMs }, item);
+      if (timing._time === item._time && timing._timeSource === item._timeSource) continue;
+      Object.assign(item, timing); changed.push(item);
+    }
+    updateHistoryTimes(changed);
+  }
+  async function fillTurnMetadata(generation, read = historyRead) {
+    if (generation !== state.generation || !state.connected) return;
+    if (turnMetadataWork?.generation === generation) {
+      await turnMetadataWork.promise;
+      return fillTurnMetadata(generation, read);
+    }
+    const work = { generation }; turnMetadataWork = work;
+    work.promise = (async () => {
+      const needsMetadata = () => [...state.items.values()].some(item => item._turn && item._time === undefined && !turnTimes.has(item._turn));
+      // Item pages from native runtimes need not contain turn dates. Recover
+      // those dates only after readiness and only for the visible transcript.
+      for (let pages = 0; pages < 20 && generation === state.generation && state.connected && turnCursor && needsMetadata(); pages++) {
+        const cursor = turnCursor;
+        const metadata = await read('thread/turns/list', { threadId: state.selected.codex_thread_id, cursor, limit: 20, sortDirection: 'desc', itemsView: 'notLoaded' });
+        if (generation !== state.generation || !state.connected || turnCursor !== cursor) return;
+        rememberTurns(metadata.data || []);
+        turnCursor = metadata.nextCursor && metadata.nextCursor !== cursor ? metadata.nextCursor : null;
+        const changed = [];
+        for (const item of state.items.values()) {
+          const turn = turnTimes.get(item._turn);
+          if (!turn) continue;
+          const timing = itemTiming(item, turn, {}, item);
+          if (timing._time === item._time && timing._timeSource === item._timeSource) continue;
+          Object.assign(item, timing); changed.push(item);
+        }
+        updateHistoryTimes(changed);
+      }
+    })();
+    try { await work.promise; }
+    finally { if (turnMetadataWork === work) turnMetadataWork = null; }
   }
   function ingestHistoryEntry(entry, trackQuestions = true) {
     if (!entry.item || !entry.turnId) return;
@@ -1942,6 +2021,15 @@
     }
     return { label, body };
   }
+  function renderItemTime(header, item) {
+    const date = itemDate(item), label = itemTimeLabel(item);
+    let time = header.querySelector('time');
+    if (!date) { time?.remove(); return; }
+    if (!time) { time = node('time'); header.append(time); }
+    time.textContent = (label ? label + ' · ' : '') + date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    time.dateTime = date.toISOString(); time.dataset.source = item._timeSource;
+    time.title = (label || (item._timeSource === 'item-started' ? 'Item started' : 'Item created')) + ': ' + date.toLocaleString();
+  }
   function renderItem(item) {
     const type = item.type;
     const isUser = type === 'userMessage';
@@ -1955,8 +2043,7 @@
     article.dataset.fileSessionId = state.selected?.session_id || '';
     article.dataset.workerName = state.selected?.worker_name || state.selected?.worker_id || 'Worker';
     const header = node('div', 'message-header'); header.append(node('span', 'role', isUser ? '› You' : isTool ? '• ' + (isReasoning ? reasoningLabel : 'Tool') : '• Codex'));
-    const date = itemDate(item), timeLabel = itemTimeLabel(item);
-    if (date) { const time = node('time', '', (timeLabel ? timeLabel + ' · ' : '') + date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })); time.dateTime = date.toISOString(); time.dataset.source = item._timeSource; time.title = (timeLabel || (item._timeSource === 'item-started' ? 'Item started' : 'Item created')) + ': ' + date.toLocaleString(); header.append(time); }
+    renderItemTime(header, item);
     article.append(header);
     if (isUser) article.append(node('div', 'plain', clean(itemText(item))));
     else if (isAssistant) article.append(rawView ? node('div', 'command-raw', clean(itemText(item))) : markdown(itemText(item)));
@@ -2087,6 +2174,7 @@
     const { method, params: p = {} } = message;
     if (!method) return; // Transport heartbeats must not repaint an idle transcript.
     if (p.threadId && p.threadId !== state.selected?.codex_thread_id) return;
+    if (method === 'gateway/history/timestamps') { applyHistoryTimestamps(p); return; }
     if (handleGoalEvent(message)) return;
     // Workers withhold raw deltas so secrets split across frames cannot leak.
     // Completed public model output is the recovery signal on that transport;
@@ -2391,10 +2479,46 @@
     } catch (error) { if (sameDraft()) notice(error.message + (file?.uploadedPath ? ' The file is already uploaded. Retrying this draft will reuse it.' : '')); }
     finally { if (generation === state.generation && state.socket === socket) { state.submitting = false; updateControls(); } }
   }
+  function prependHistoryPage(result, generation) {
+    const scroller = $('transcript'), bottom = followLatest, top = scroller.scrollTop, previousHeight = scroller.scrollHeight;
+    const anchor = [...$('messages').children].find(item => item.getBoundingClientRect().bottom > scroller.getBoundingClientRect().top);
+    const anchorID = anchor?.dataset.itemId, anchorOffset = anchor?.getBoundingClientRect().top;
+    // Native events received during this request own existing items. A saved
+    // page may add older entries, but cannot replace a newer live item.
+    const previous = state.items; state.items = new Map();
+    for (const entry of [...(result.data || [])].reverse()) if (!previous.has(entry.item?.id)) ingestHistoryEntry(entry, false);
+    for (const [key, item] of previous) state.items.set(key, item);
+    state.cursor = result.nextCursor || null;
+    suppressHistoryScroll = true;
+    renderMessages(false); $('older').hidden = !state.cursor;
+    if (bottom) { jump(); settleBottom(); }
+    else {
+      const restored = [...$('messages').children].find(item => item.dataset.itemId === anchorID);
+      scroller.scrollTop = restored && anchorOffset !== undefined ? top + restored.getBoundingClientRect().top - anchorOffset : top + scroller.scrollHeight - previousHeight;
+    }
+    requestAnimationFrame(() => requestAnimationFrame(() => { if (generation === state.generation) suppressHistoryScroll = false; }));
+  }
+  async function topUpHistory(generation, initialItems, read) {
+    if (loadingOlder || !state.cursor || initialItems.length >= 20 || state.items.size >= 20) return;
+    loadingOlder = true; $('older').disabled = true;
+    const seen = new Set(initialItems);
+    try {
+      for (let pages = 0; pages < 20 && generation === state.generation && state.connected && state.cursor && seen.size < 20 && state.items.size < 20; pages++) {
+        const cursor = state.cursor;
+        const result = await read('thread/items/list', { threadId: state.selected.codex_thread_id, cursor, limit: Math.min(20 - seen.size, 20 - state.items.size), sortDirection: 'desc' });
+        if (generation !== state.generation || !state.connected) return;
+        for (const entry of result.data || []) if (entry.item?.id && entry.turnId) seen.add(entry.item.id);
+        prependHistoryPage(result, generation);
+        if (state.cursor === cursor) state.cursor = null;
+        fillTurnMetadata(generation, read).catch(() => { /* Dates can be recovered on a later history read. */ });
+      }
+    } finally {
+      if (generation === state.generation) { loadingOlder = false; $('older').hidden = !state.cursor; $('older').disabled = false; }
+    }
+  }
   async function loadOlder() {
     if (!state.cursor || !state.connected || state.loading || loadingOlder) return;
     const generation = state.generation;
-    const scroller = $('transcript');
     followLatest = false;
     loadingOlder = true;
     $('older').disabled = true;
@@ -2402,27 +2526,12 @@
       const threadId = state.selected.codex_thread_id;
       const result = await rpc('thread/items/list', { threadId, cursor: state.cursor, limit: 20, sortDirection: 'desc' });
       if (generation !== state.generation) return;
-      if (turnCursor && (result.data || []).some(entry => entry.turnStartedAt === undefined && !turnTimes.has(entry.turnId))) {
-        const metadata = await rpc('thread/turns/list', { threadId, cursor: turnCursor, limit: 20, sortDirection: 'desc', itemsView: 'notLoaded' });
-        if (generation !== state.generation) return;
-        rememberTurns(metadata.data || []); turnCursor = metadata.nextCursor || null;
-      }
       // The user can keep reading while the page is in flight. Anchor at the
       // current position, not where the request originally started.
-      const previousHeight = scroller.scrollHeight, top = scroller.scrollTop;
-      const anchor = [...$('messages').children].find(item => item.getBoundingClientRect().bottom > scroller.getBoundingClientRect().top);
-      const anchorID = anchor?.dataset.itemId, anchorOffset = anchor?.getBoundingClientRect().top;
-      const previous = state.items; state.items = new Map();
-      for (const entry of [...(result.data || [])].reverse()) ingestHistoryEntry(entry, false);
-      for (const [key, item] of previous) state.items.set(key, item);
-      state.cursor = result.nextCursor || null;
-      suppressHistoryScroll = true;
-      renderMessages(false); $('older').hidden = !state.cursor;
+      prependHistoryPage(result, generation);
+      fillTurnMetadata(generation).catch(() => { /* Historical dates do not gate reading the page. */ });
       recoverNotice('history');
       if ($('reconnect').textContent === 'Reload recent messages') $('reconnect').hidden = true;
-      const restored = [...$('messages').children].find(item => item.dataset.itemId === anchorID);
-      scroller.scrollTop = restored && anchorOffset !== undefined ? top + restored.getBoundingClientRect().top - anchorOffset : top + scroller.scrollHeight - previousHeight;
-      requestAnimationFrame(() => requestAnimationFrame(() => { suppressHistoryScroll = false; }));
     } catch (error) {
       if (generation === state.generation) {
         notice(error.message, 'history');

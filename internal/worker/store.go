@@ -2,6 +2,7 @@
 package worker
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -585,8 +586,12 @@ func (s *Store) changeDiscoveredSessionVisibility(runtime protocol.Runtime, expe
 
 // ListSessions returns every session, optionally limited to a runtime ID.
 func (s *Store) ListSessions(runtimeID string) ([]protocol.Session, error) {
+	return s.ListSessionsContext(context.Background(), runtimeID)
+}
+
+func (s *Store) ListSessionsContext(ctx context.Context, runtimeID string) ([]protocol.Session, error) {
 	var sessions []protocol.Session
-	err := s.db.View(func(tx *workerdb.Tx) error {
+	err := s.db.ViewContext(ctx, func(tx *workerdb.Tx) error {
 		return tx.Bucket(bucketSessions).ForEach(func(_, value []byte) error {
 			var session protocol.Session
 			if err := json.Unmarshal(value, &session); err != nil {

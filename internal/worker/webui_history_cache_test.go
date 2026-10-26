@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -19,10 +20,104 @@ func (s webUIFixtureHistorySource) ReadPage(ctx context.Context, thread, cursor,
 	return s.client.ReadTranscriptTurnPage(ctx, thread, cursor, direction, true)
 }
 func (s webUIFixtureHistorySource) Close() error { return nil }
+
+type webUIBlockingHistorySource struct {
+	webUIFixtureHistorySource
+	thread  string
+	entered chan<- struct{}
+	release <-chan struct{}
+}
+
+func (s webUIBlockingHistorySource) ReadPage(ctx context.Context, thread, cursor, direction string) (codexadapter.TranscriptTurnPage, error) {
+	if thread == s.thread {
+		close(s.entered)
+		select {
+		case <-s.release:
+		case <-ctx.Done():
+			return codexadapter.TranscriptTurnPage{}, ctx.Err()
+		}
+	}
+	return s.webUIFixtureHistorySource.ReadPage(ctx, thread, cursor, direction)
+}
+
 func useWebUIHistoryFixture(a *Agent, client *codexadapter.Client) {
 	a.historySource = func(context.Context, string) (webUIHistorySource, error) {
 		return webUIFixtureHistorySource{client}, nil
 	}
+}
+
+func TestWebUISessionSwitchDoesNotWaitForOtherSessionHistory(t *testing.T) {
+	a, runtime, server, cleanup := testAgent(t)
+	defer cleanup()
+	client := mustClient(t, a, runtime)
+	busy := installSession(a, runtime, "slow-active-history", "active-turn")
+	other := installSession(a, runtime, "switch-active-history", "other-turn")
+	server.SetThreads([]map[string]any{
+		{"id": busy.ThreadID, "cwd": busy.CWD, "status": "active", "turns": []map[string]any{webUITestTurn("active-turn", "inProgress", 1)}},
+		{"id": other.ThreadID, "cwd": other.CWD, "status": "active", "turns": []map[string]any{webUITestTurn("other-turn", "inProgress", 1)}},
+	}, []string{busy.ThreadID, other.ThreadID})
+	if err := a.observeWebUISession(t.Context(), runtime, other); err != nil {
+		t.Fatal(err)
+	}
+	resumes := countCall(server.Calls(), "thread/resume")
+	entered, release := make(chan struct{}), make(chan struct{})
+	a.historySource = func(context.Context, string) (webUIHistorySource, error) {
+		return webUIBlockingHistorySource{webUIFixtureHistorySource{client}, busy.ThreadID, entered, release}, nil
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan error, 1)
+	request := webUIHistoryRequest{Limit: 1, Direction: "desc"}
+	go func() {
+		_, err := a.webUIHistory(ctx, runtime, busy, request)
+		done <- err
+	}()
+	select {
+	case <-entered:
+	case err := <-done:
+		t.Fatalf("active history failed before blocking: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("active history did not reach its source")
+	}
+	// A slow transcript still fences exclusive maintenance while independent
+	// sessions can reattach and read their own bounded transcript.
+	if _, err := a.prepareUpdate(t.Context(), time.Minute); err == nil || !strings.Contains(err.Error(), "command admission is busy") {
+		t.Fatalf("update crossed active browser admission: %v", err)
+	}
+	switchCtx, stop := context.WithTimeout(t.Context(), time.Second)
+	defer stop()
+	if err := a.observeWebUISession(switchCtx, runtime, other); err != nil {
+		t.Fatalf("acknowledged observer waited for another session's history: %v", err)
+	}
+	if countCall(server.Calls(), "thread/resume") != resumes {
+		t.Fatal("switch repeated an acknowledged observer subscription")
+	}
+	raw, err := a.webUIHistory(switchCtx, runtime, other, request)
+	if err != nil {
+		t.Fatalf("selected session history waited for another session: %v", err)
+	}
+	page := webUITestPage(t, raw)
+	if len(page.Data) != 1 || page.Data[0].TurnID != "other-turn" || webUIItemID(page.Data[0].Item) != "other-turn-000" {
+		t.Fatalf("switch returned another session's history: %s", raw)
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("slow transcript ended before cancellation: %v", err)
+	default:
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("history cancellation = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled transcript retained browser admission")
+	}
+	if !a.updateMu.TryLock() {
+		t.Fatal("canceled transcript retained the maintenance fence")
+	}
+	a.updateMu.Unlock()
 }
 
 func webUITestTurn(id, status string, count int) map[string]any {
@@ -204,6 +299,62 @@ func TestWebUIHistoryActiveRefreshKeepsOldCursorSnapshot(t *testing.T) {
 	}
 }
 
+func TestWebUIHistorySparseTurnsReturnPartialPagesWithoutSkippingItems(t *testing.T) {
+	a, runtime, server, cleanup := testAgent(t)
+	defer cleanup()
+	useWebUIHistoryFixture(a, mustClient(t, a, runtime))
+	session := installSession(a, runtime, "sparse-history", "")
+	var turns []map[string]any
+	var want []string
+	for i := 0; i < 11; i++ {
+		count := 2
+		if i%3 == 1 {
+			count = 0
+		}
+		turn := fmt.Sprintf("turn-%02d", i)
+		turns = append(turns, webUITestTurn(turn, "completed", count))
+		for j := 0; j < count; j++ {
+			want = append(want, fmt.Sprintf("%s-%03d", turn, j))
+		}
+	}
+	for i, j := 0, len(want)-1; i < j; i, j = i+1, j-1 {
+		want[i], want[j] = want[j], want[i]
+	}
+	server.SetThreads([]map[string]any{{"id": session.ThreadID, "cwd": session.CWD, "source": "cli", "turns": turns}}, nil)
+	request := webUIHistoryRequest{Limit: 20, Direction: "desc"}
+	var got []string
+	seen := map[string]bool{}
+	for pageNumber := 0; ; pageNumber++ {
+		before := fullWebUIHistoryReads(server)
+		beforeCalls := countCall(server.Calls(), "thread/turns/list")
+		raw, err := a.webUIHistory(t.Context(), runtime, session, request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		page := webUITestPage(t, raw)
+		if fullWebUIHistoryReads(server)-before > webUIHistoryPageTurns || countCall(server.Calls(), "thread/turns/list")-beforeCalls > 2*webUIHistoryPageTurns {
+			t.Fatal("a sparse page exceeded three native source pairs")
+		}
+		if pageNumber == 0 && (len(page.Data) == 0 || len(page.Data) >= request.Limit || page.NextCursor == "" || fullWebUIHistoryReads(server) != webUIHistoryPageTurns) {
+			t.Fatalf("cold sparse page did not return a bounded partial result: %s", raw)
+		}
+		for _, entry := range page.Data {
+			got = append(got, webUIItemID(entry.Item))
+		}
+		if page.NextCursor == "" {
+			break
+		}
+		if seen[page.NextCursor] {
+			t.Fatal("sparse history repeated its continuation")
+		}
+		seen[page.NextCursor] = true
+		request.Cursor = page.NextCursor
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") || fullWebUIHistoryReads(server) != len(turns) {
+		t.Fatalf("sparse continuations skipped or duplicated entries: got %v, want %v, source reads %d", got, want, fullWebUIHistoryReads(server))
+	}
+}
+
 func TestWebUIHistoryEmptyTraversalAndDisplayAreBounded(t *testing.T) {
 	a, runtime, server, cleanup := testAgent(t, `private-secret`)
 	defer cleanup()
@@ -220,16 +371,28 @@ func TestWebUIHistoryEmptyTraversalAndDisplayAreBounded(t *testing.T) {
 		t.Fatal(err)
 	}
 	page := webUITestPage(t, raw)
-	if len(page.Data) != 0 || page.NextCursor == "" || fullWebUIHistoryReads(server) != webUIHistoryTraversal {
+	if len(page.Data) != 0 || page.NextCursor == "" || fullWebUIHistoryReads(server) != webUIHistoryPageTurns {
 		t.Fatalf("unbounded empty traversal: %s, reads=%d", raw, fullWebUIHistoryReads(server))
 	}
-	request.Cursor = page.NextCursor
-	raw, err = a.webUIHistory(t.Context(), runtime, session, request)
-	if err != nil {
-		t.Fatal(err)
+	seen := map[string]bool{}
+	for page.NextCursor != "" {
+		if seen[page.NextCursor] {
+			t.Fatal("empty history repeated a continuation")
+		}
+		seen[page.NextCursor] = true
+		request.Cursor = page.NextCursor
+		before := fullWebUIHistoryReads(server)
+		raw, err = a.webUIHistory(t.Context(), runtime, session, request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fullWebUIHistoryReads(server)-before > webUIHistoryPageTurns {
+			t.Fatal("continuation exceeded the source-turn budget")
+		}
+		page = webUITestPage(t, raw)
 	}
-	if len(webUITestPage(t, raw).Data) != 1 {
-		t.Fatal("empty continuation lost old message")
+	if len(page.Data) != 1 || webUIItemID(page.Data[0].Item) != "old-000" || fullWebUIHistoryReads(server) != len(turns) {
+		t.Fatal("empty continuations skipped or duplicated the old message")
 	}
 	big, _ := json.Marshal(map[string]any{"id": "big", "type": "commandExecution", "aggregatedOutput": strings.Repeat("private-secret ", 30000)})
 	reasoning := json.RawMessage(`{"id":"reason","type":"reasoning","summary":["public private-secret"],"content":["RAW_REASONING"]}`)

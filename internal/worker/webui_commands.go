@@ -138,12 +138,13 @@ func (a *Agent) executeWebUICommand(ctx context.Context, runtime protocol.Runtim
 
 func (a *Agent) dispatchWebUIActor(request webUIActorCommand) (webUICommandReply, error) {
 	ctx, runtime, session := request.ctx, request.runtime, request.session
-	// Hold update admission through actor execution. An update cannot reserve
-	// the runtime between validation and a command that starts work.
+	// Hold shared admission through actor execution. Independent browser
+	// sessions may proceed together, while updates and archive admission cannot
+	// reserve the runtime between validation and a command that starts work.
 	if err := a.lockWebUIAdmission(ctx); err != nil {
 		return webUICommandReply{}, err
 	}
-	defer a.updateMu.Unlock()
+	defer a.updateMu.RUnlock()
 	if err := ctx.Err(); err != nil {
 		return webUICommandReply{}, err
 	}
@@ -177,8 +178,9 @@ func (a *Agent) dispatchWebUIActor(request webUIActorCommand) (webUICommandReply
 	}
 }
 
-// Telegram admission can hold this mutex while awaiting an actor. Browser
-// work shares the update fence but must honor both caller and worker shutdown.
+// Browser work shares the update/archive fence without serializing independent
+// sessions. Exclusive admission can still wait for an actor, so acquiring the
+// shared lock must honor both caller and worker shutdown.
 func (a *Agent) lockWebUIAdmission(ctx context.Context) error {
 	tick := time.NewTicker(10 * time.Millisecond)
 	defer tick.Stop()
@@ -189,7 +191,7 @@ func (a *Agent) lockWebUIAdmission(ctx context.Context) error {
 		if err := a.ctx.Err(); err != nil {
 			return err
 		}
-		if a.updateMu.TryLock() {
+		if a.updateMu.TryRLock() {
 			return nil
 		}
 		select {

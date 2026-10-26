@@ -21,7 +21,7 @@ const (
 	webUIHistoryCursors   = 512
 	webUIHistoryItemBytes = 128 << 10
 	webUIHistoryPageBytes = 3 << 20
-	webUIHistoryTraversal = 32
+	webUIHistoryPageTurns = 3
 )
 
 // The interface makes the source lifetime explicit. Production attaches a
@@ -34,6 +34,7 @@ type webUIHistorySource interface {
 type webUIHistoryRequest struct {
 	Cursor, Direction string
 	Limit             int
+	timestamps        chan<- *webUIHistoryTimestampWork
 }
 type webUIHistoryEntry struct {
 	TurnID          string          `json:"turnId"`
@@ -298,7 +299,7 @@ func (s *sessionActor) webUIHistory(request webUIActorCommand) (json.RawMessage,
 				return nil, err
 			}
 		} else {
-			if traversed >= webUIHistoryTraversal {
+			if traversed >= webUIHistoryPageTurns {
 				break
 			}
 			traversed++
@@ -372,7 +373,16 @@ func (s *sessionActor) webUIHistory(request webUIActorCommand) (json.RawMessage,
 	if !position.done {
 		page.NextCursor = s.agent.webHistory.continuation(position)
 	}
-	s.enrichWebUIHistoryTimestamps(client, thread, page.Data, queries)
+	if history.timestamps != nil {
+		if work := s.deferredWebUIHistoryTimestamps(client, thread, page.Data, queries, timestampTargets); work != nil {
+			select {
+			case history.timestamps <- work:
+			default: // Optional timing work must never hold up the transcript.
+			}
+		}
+	} else {
+		s.enrichWebUIHistoryTimestamps(client, thread, page.Data, queries)
+	}
 	s.agent.webHistory.rememberRecorded(timestampTargets, page.Data)
 	raw, err := json.Marshal(page)
 	if err != nil {

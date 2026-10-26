@@ -24,7 +24,8 @@ import (
 type Agent struct {
 	historySource     func(context.Context, string) (webUIHistorySource, error)
 	webHistory        webUIHistoryCache
-	updateMu          sync.Mutex
+	webHistoryTiming  chan struct{}
+	updateMu          sync.RWMutex
 	update            *updateState
 	archiveAdmissions map[string]*archiveAdmission
 	archiveOperations *sessionArchiveOperations
@@ -53,7 +54,7 @@ func NewAgent(cfg config.WorkerConfig, store *Store, logger *slog.Logger) (*Agen
 	if err != nil {
 		return nil, err
 	}
-	a := &Agent{cfg: cfg, store: store, log: logger, sessions: map[string]*sessionActor{}, creates: map[string]chan protocol.Command{}, fatal: make(chan error, 1), redactor: redactor, newConnection: NewConnection}
+	a := &Agent{cfg: cfg, store: store, log: logger, sessions: map[string]*sessionActor{}, creates: map[string]chan protocol.Command{}, fatal: make(chan error, 1), redactor: redactor, newConnection: NewConnection, webHistoryTiming: make(chan struct{}, 1)}
 	a.manager, err = NewRuntimeManager(cfg, store, logger, RuntimeHooks{OnSession: a.onSession, OnEvent: a.onEvent, OnRequest: a.onRequest, OnError: a.report})
 	if err != nil {
 		return nil, err

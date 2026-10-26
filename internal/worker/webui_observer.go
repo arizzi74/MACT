@@ -16,7 +16,7 @@ func (a *Agent) observeWebUISession(ctx context.Context, runtime protocol.Runtim
 	if err := a.lockWebUIAdmission(ctx); err != nil {
 		return err
 	}
-	defer a.updateMu.Unlock()
+	defer a.updateMu.RUnlock()
 	if err := ctx.Err(); err != nil {
 		return err
 	}

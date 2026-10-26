@@ -3,6 +3,7 @@ package worker
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -191,11 +192,15 @@ func rolloutTimestampPathKey(namespace, home, thread string) []byte {
 }
 
 func (s *Store) loadRolloutTimestampPath(namespace, home, thread string) string {
+	return s.loadRolloutTimestampPathContext(context.Background(), namespace, home, thread)
+}
+
+func (s *Store) loadRolloutTimestampPathContext(ctx context.Context, namespace, home, thread string) string {
 	if s == nil {
 		return ""
 	}
 	var rel string
-	if s.db.View(func(tx *bolt.Tx) error {
+	if s.db.ViewContext(ctx, func(tx *bolt.Tx) error {
 		rel = string(tx.Bucket(bucketMeta).Get(rolloutTimestampPathKey(namespace, home, thread)))
 		return nil
 	}) != nil {
@@ -301,14 +306,20 @@ func (c *rolloutStatsCache) discoverRolloutTimestampPass(home string, files []ro
 }
 
 func (c *rolloutStatsCache) rolloutTimestampCandidates(home, path, thread string, queries []rolloutTimestampQuery) []rolloutTimestampResult {
+	return c.rolloutTimestampCandidatesContext(context.Background(), home, path, thread, queries)
+}
+
+func (c *rolloutStatsCache) rolloutTimestampCandidatesContext(ctx context.Context, home, path, thread string, queries []rolloutTimestampQuery) []rolloutTimestampResult {
 	results := make([]rolloutTimestampResult, len(queries))
 	if len(queries) == 0 {
 		return results
 	}
 	idx := &c.timestamps
-	idx.mu.Lock()
+	if !lockHistoryTimestampMutex(ctx, &idx.mu) {
+		return results
+	}
 	defer idx.mu.Unlock()
-	cp, prefix := idx.update(c.store, c.namespace, home, path, thread, true)
+	cp, prefix := idx.updateContext(ctx, c.store, c.namespace, home, path, thread, true)
 	if cp == nil {
 		return results
 	}
@@ -365,7 +376,7 @@ func (c *rolloutStatsCache) rolloutTimestampCandidates(home, path, thread string
 		}
 	}
 	if c.store != nil {
-		if c.store.db.View(func(tx *bolt.Tx) error {
+		if c.store.db.ViewContext(ctx, func(tx *bolt.Tx) error {
 			bucket := tx.Bucket(bucketMeta)
 			read(func(key string) []byte { return bucket.Get([]byte(key)) }, func(key string, limit int, through int64) []time.Time {
 				var result []time.Time
@@ -401,6 +412,13 @@ func (c *rolloutStatsCache) rolloutTimestampCandidates(home, path, thread string
 }
 
 func (idx *rolloutTimestampIndex) update(store *Store, namespace, home, path, thread string, tail bool) (*rolloutTimestampCheckpoint, string) {
+	return idx.updateContext(context.Background(), store, namespace, home, path, thread, tail)
+}
+
+func (idx *rolloutTimestampIndex) updateContext(ctx context.Context, store *Store, namespace, home, path, thread string, tail bool) (*rolloutTimestampCheckpoint, string) {
+	if ctx.Err() != nil {
+		return nil, ""
+	}
 	rel, ok := rolloutTimestampRelativePath(home, path)
 	if !ok || thread == "" {
 		return nil, ""
@@ -424,7 +442,7 @@ func (idx *rolloutTimestampIndex) update(store *Store, namespace, home, path, th
 	}
 	cp := idx.entries[scope]
 	if cp == nil && store != nil {
-		_ = store.db.View(func(tx *bolt.Tx) error {
+		_ = store.db.ViewContext(ctx, func(tx *bolt.Tx) error {
 			var saved rolloutTimestampCheckpoint
 			if json.Unmarshal(tx.Bucket(bucketMeta).Get([]byte(scope+"/checkpoint")), &saved) == nil && validRolloutTimestampCheckpoint(saved) {
 				cp = &saved
@@ -439,7 +457,7 @@ func (idx *rolloutTimestampIndex) update(store *Store, namespace, home, path, th
 			copy := *cp
 			copy.StaleGenerations = append([]string(nil), cp.StaleGenerations...)
 			cp = &copy
-			if idx.commit(store, scope, scope+"/"+cp.Generation, cp, rolloutTimestampBatch{}) != nil {
+			if idx.commitContext(ctx, store, scope, scope+"/"+cp.Generation, cp, rolloutTimestampBatch{}) != nil {
 				return nil, ""
 			}
 		}
@@ -494,7 +512,7 @@ func (idx *rolloutTimestampIndex) update(store *Store, namespace, home, path, th
 		if _, err = file.Seek(cp.Offset, io.SeekStart); err != nil {
 			return nil, ""
 		}
-		_, next, waiting, readErr := cp.Scan.read(rolloutTimestampCountingReader{io.LimitReader(file, min(int64(rolloutTimestampScanBytes), info.Size()-cp.Offset)), &idx.bytesRead}, cp.Offset, info.Size(), prefix, &batch)
+		_, next, waiting, readErr := cp.Scan.read(historyTimestampContextReader{ctx, rolloutTimestampCountingReader{io.LimitReader(file, min(int64(rolloutTimestampScanBytes), info.Size()-cp.Offset)), &idx.bytesRead}}, cp.Offset, info.Size(), prefix, &batch)
 		if readErr != nil {
 			return nil, ""
 		}
@@ -514,7 +532,7 @@ func (idx *rolloutTimestampIndex) update(store *Store, namespace, home, path, th
 		if _, err = file.Seek(cp.TailOffset, io.SeekStart); err != nil {
 			return nil, ""
 		}
-		_, next, waiting, readErr := cp.TailScan.read(rolloutTimestampCountingReader{io.LimitReader(file, info.Size()-cp.TailOffset), &idx.bytesRead}, cp.TailOffset, info.Size(), prefix, &batch)
+		_, next, waiting, readErr := cp.TailScan.read(historyTimestampContextReader{ctx, rolloutTimestampCountingReader{io.LimitReader(file, info.Size()-cp.TailOffset), &idx.bytesRead}}, cp.TailOffset, info.Size(), prefix, &batch)
 		if readErr != nil {
 			return nil, ""
 		}
@@ -538,12 +556,15 @@ func (idx *rolloutTimestampIndex) update(store *Store, namespace, home, path, th
 	}
 	cp.Size, cp.Modified = info.Size(), info.ModTime()
 	cp.RollbackBefore = max(cp.RollbackBefore, batch.rollbackBefore)
-	if err := idx.commit(store, scope, prefix, cp, batch); err != nil {
+	if ctx.Err() != nil {
+		return nil, ""
+	}
+	if err := idx.commitContext(ctx, store, scope, prefix, cp, batch); err != nil {
 		return nil, ""
 	}
 	idx.remember(scope, cp)
 	if store != nil {
-		_ = store.db.Update(func(tx *bolt.Tx) error {
+		_ = store.db.UpdateContext(ctx, func(tx *bolt.Tx) error {
 			bucket := tx.Bucket(bucketMeta)
 			key := rolloutTimestampPathKey(namespace, home, thread)
 			if string(bucket.Get(key)) == rel {
@@ -570,6 +591,10 @@ func (idx *rolloutTimestampIndex) remember(scope string, cp *rolloutTimestampChe
 }
 
 func (idx *rolloutTimestampIndex) commit(store *Store, scope, prefix string, cp *rolloutTimestampCheckpoint, batch rolloutTimestampBatch) error {
+	return idx.commitContext(context.Background(), store, scope, prefix, cp, batch)
+}
+
+func (idx *rolloutTimestampIndex) commitContext(ctx context.Context, store *Store, scope, prefix string, cp *rolloutTimestampCheckpoint, batch rolloutTimestampBatch) error {
 	apply := func(get func(string) []byte, put func(string, []byte) error) error {
 		for key, coverage := range batch.coverage {
 			var previous rolloutTimestampCoverage
@@ -601,7 +626,7 @@ func (idx *rolloutTimestampIndex) commit(store *Store, scope, prefix string, cp 
 		return put(scope+"/checkpoint", value)
 	}
 	if store != nil {
-		return store.db.Update(func(tx *bolt.Tx) error {
+		return store.db.UpdateContext(ctx, func(tx *bolt.Tx) error {
 			b := tx.Bucket(bucketMeta)
 			// Remove invalid generations in small indexed batches, including on
 			// unchanged-file lookups. A rewrite never triggers a history-sized
