@@ -37,6 +37,10 @@ jobs:
         env:
           VERSION: ${{ inputs.version }}
         run: VERSION="${VERSION#v}" ./scripts/release.sh
+      - name: Verify packaged native runtime versions
+        env:
+          EXPECTED_VERSION: ${{ inputs.version }}
+        run: bash scripts/verify-release-runtime-versions.sh "$EXPECTED_VERSION"
       - name: Audit complete release payload
         run: ./scripts/verify-release.sh
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

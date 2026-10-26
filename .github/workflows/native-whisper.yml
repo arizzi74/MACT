@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Gateway release version (native helpers use source versions)
+        description: Gateway and Whisper release version
         default: dev
         required: true
 
@@ -38,19 +38,36 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      # Helpers identify their native sources, allowing reuse across gateway tags.
+      # Preserve source/toolchain auditing; Whisper must also match the release
+      # version expected by already-installed native update managers.
       - name: Identify native sources and resolved toolchains
         id: native-identity
         env:
           TARGET_OS: ${{ matrix.os }}
           TARGET_ARCH: ${{ matrix.arch }}
         run: python3 scripts/native-build-cache.py identity whisper --os "$TARGET_OS" --arch "$TARGET_ARCH"
+      - name: Include the Whisper release version in the compiled cache identity
+        id: release-identity
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          NATIVE_SOURCE_KEY: ${{ steps.native-identity.outputs.key }}
+        run: |
+          python3 - <<'PY'
+          import hashlib, os, re
+          version = os.environ['RELEASE_VERSION'].removeprefix('v')
+          if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._+-]*', version):
+              raise SystemExit('Expected a nonempty release version or CI revision')
+          version_digest = hashlib.sha256(version.encode()).hexdigest()
+          key = os.environ['NATIVE_SOURCE_KEY'] + '-version-' + version_digest
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'key={key}\nversion={version}\n')
+          PY
       - name: Restore compiled helper by exact identity
         id: native-cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: dist/whisper
-          key: ${{ steps.native-identity.outputs.key }}
+          key: ${{ steps.release-identity.outputs.key }}
       - name: Clear incomplete or non-exact cached outputs
         if: steps.native-cache.outputs.cache-hit != 'true'
         env:
@@ -60,13 +77,13 @@ jobs:
       - name: Build static musl Linux helper
         if: steps.native-cache.outputs.cache-hit != 'true' && matrix.os == 'linux'
         env:
-          VERSION: ${{ steps.native-identity.outputs.version }}
+          VERSION: ${{ steps.release-identity.outputs.version }}
           TARGET_ARCH: ${{ matrix.arch }}
         run: bash scripts/build-whisper-linux.sh "$TARGET_ARCH"
       - name: Build macOS helper using system libraries
         if: steps.native-cache.outputs.cache-hit != 'true' && matrix.os == 'darwin'
         env:
-          VERSION: ${{ steps.native-identity.outputs.version }}
+          VERSION: ${{ steps.release-identity.outputs.version }}
           WHISPER_TARGET_ARCH: ${{ matrix.arch }}
           WHISPER_TARGET_OS: darwin
         run: bash scripts/build-whisper.sh
@@ -75,15 +92,15 @@ jobs:
         env:
           TARGET_OS: ${{ matrix.os }}
           TARGET_ARCH: ${{ matrix.arch }}
-          CACHE_KEY: ${{ steps.native-identity.outputs.key }}
-          NATIVE_VERSION: ${{ steps.native-identity.outputs.version }}
+          CACHE_KEY: ${{ steps.release-identity.outputs.key }}
+          NATIVE_VERSION: ${{ steps.release-identity.outputs.version }}
         run: python3 scripts/native-build-cache.py record whisper --os "$TARGET_OS" --arch "$TARGET_ARCH" --key "$CACHE_KEY" --version "$NATIVE_VERSION"
-      - name: Audit helper inventory and embedded source version
+      - name: Audit helper inventory and exact expected release version
         env:
           TARGET_OS: ${{ matrix.os }}
           TARGET_ARCH: ${{ matrix.arch }}
-          CACHE_KEY: ${{ steps.native-identity.outputs.key }}
-          NATIVE_VERSION: ${{ steps.native-identity.outputs.version }}
+          CACHE_KEY: ${{ steps.release-identity.outputs.key }}
+          NATIVE_VERSION: ${{ steps.release-identity.outputs.version }}
         run: python3 scripts/native-build-cache.py verify whisper --os "$TARGET_OS" --arch "$TARGET_ARCH" --key "$CACHE_KEY" --version "$NATIVE_VERSION"
       - name: Verify real speech, warm model, protocol framing and EOF
         env:
@@ -99,7 +116,7 @@ jobs:
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: dist/whisper
-          key: ${{ steps.native-identity.outputs.key }}
+          key: ${{ steps.release-identity.outputs.key }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: whisper-${{ matrix.os }}-${{ matrix.arch }}

@@ -281,3 +281,117 @@ func TestPackageVerifiesChecksumBeforeExecuting(t *testing.T) {
 		t.Fatal("did not verify both program versions")
 	}
 }
+
+func TestGatewayPackageRequiresBundledWhisperReleaseVersion(t *testing.T) {
+	for _, test := range []struct {
+		name, whisperVersion string
+		valid                bool
+	}{
+		{name: "matching release", whisperVersion: "1.2.3", valid: true},
+		{name: "native source identity", whisperVersion: "native-95746b28cb7752922528c112"},
+		{name: "older release", whisperVersion: "1.2.2"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			probes := filepath.Join(root, "version-probes")
+			t.Setenv("MACT_PACKAGE_VERSION_PROBES", probes)
+			programs := []string{"codex-gateway", "codex-telegramgw", "codex-whisper"}
+			files := make(map[string][]byte)
+			var manifest strings.Builder
+			for _, name := range programs {
+				version := "1.2.3"
+				if name == "codex-whisper" {
+					version = test.whisperVersion
+				}
+				files[name] = []byte("#!/bin/sh\n[ \"$#\" -eq 1 ] && [ \"$1\" = version ] || exit 2\nprintf '%s\\n' '" + name + "' >> \"$MACT_PACKAGE_VERSION_PROBES\"\nprintf '%s\\n' '" + version + "'\n")
+				manifest.WriteString(coreHash(files[name]) + "  " + name + "\n")
+			}
+			files["SHA256SUMS"] = []byte(manifest.String())
+			var archive bytes.Buffer
+			gz := gzip.NewWriter(&archive)
+			tarball := tar.NewWriter(gz)
+			for _, name := range append(programs, "SHA256SUMS") {
+				data := files[name]
+				if err := tarball.WriteHeader(&tar.Header{Name: name, Mode: 0755, Size: int64(len(data)), Typeflag: tar.TypeReg}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := tarball.Write(data); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := tarball.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if err := gz.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			const asset = "codex-gateway-linux-amd64.tar.gz"
+			base := "https://github.com/" + DefaultRepo + "/releases/download/v1.2.3/"
+			outerManifest := []byte(coreHash(archive.Bytes()) + "  " + asset + "\n")
+			bundle := repositoryBundle(t, DefaultRepo, "v1.2.3")
+			metadata := map[string]any{"tag_name": "v1.2.3", "draft": false, "prerelease": false}
+			assets := make([]map[string]string, 0, 3)
+			for _, name := range []string{asset, "SHA256SUMS", "SHA256SUMS.sigstore.json"} {
+				assets = append(assets, map[string]string{"name": name, "browser_download_url": base + name})
+			}
+			metadata["assets"] = assets
+			encoded, err := json.Marshal(metadata)
+			if err != nil {
+				t.Fatal(err)
+			}
+			m := New(nil)
+			verified := false
+			// Signature policy is covered separately; retain its verification seam
+			// here while executing the actual hash-verified package programs.
+			m.verifyManifest = func(repo, tag string, manifest, attestation []byte) error {
+				if repo != DefaultRepo || tag != "v1.2.3" || !bytes.Equal(manifest, outerManifest) || !bytes.Equal(attestation, bundle) {
+					t.Fatal("incorrect signed manifest verifier inputs")
+				}
+				verified = true
+				return nil
+			}
+			m.HTTP.Transport = coreRoundTripper(func(request *http.Request) (*http.Response, error) {
+				data := encoded
+				switch filepath.Base(request.URL.Path) {
+				case "SHA256SUMS":
+					data = outerManifest
+				case "SHA256SUMS.sigstore.json":
+					data = bundle
+				case asset:
+					if !verified {
+						t.Fatal("downloaded package before verifying signed manifest")
+					}
+					data = archive.Bytes()
+				}
+				return coreResponse(request, data), nil
+			})
+			release, err := m.FetchRelease(t.Context(), DefaultRepo, "v1.2.3")
+			if err != nil || !verified {
+				t.Fatalf("release verification: verified=%v error=%v", verified, err)
+			}
+			installed := filepath.Join(root, "installed-gateway")
+			const original = "running gateway must remain unchanged"
+			if err := os.WriteFile(installed, []byte(original), 0700); err != nil {
+				t.Fatal(err)
+			}
+			layout := &Layout{System: "linux", Architecture: "amd64", Binary: installed}
+			destination, err := m.Package(t.Context(), release, layout, "codex-gateway", root)
+			if test.valid {
+				if err != nil || destination != filepath.Join(root, "codex-gateway") {
+					t.Fatalf("matching gateway package: destination=%q error=%v", destination, err)
+				}
+			} else if destination != "" || err == nil || !strings.Contains(err.Error(), "binary version does not match its release tag") {
+				t.Fatalf("accepted mismatched Whisper: destination=%q error=%v", destination, err)
+			}
+			calls, err := os.ReadFile(probes)
+			if err != nil || string(calls) != strings.Join(programs, "\n")+"\n" {
+				t.Fatalf("did not execute all three staged version probes: %q, %v", calls, err)
+			}
+			live, err := os.ReadFile(installed)
+			if err != nil || string(live) != original {
+				t.Fatalf("package validation changed installed gateway: %q, %v", live, err)
+			}
+		})
+	}
+}

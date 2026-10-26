@@ -63,12 +63,15 @@ compiler, CMake, Xcode, SDK, and linker versions. A change to an input selects a
 new cache entry. A cache miss, eviction, or unavailable cache causes the normal
 native build to run; non-exact restores are cleared before building.
 
-Actions gives the native helpers the version `native-<24 hex digits>`, derived
-from their source digest, so an unchanged helper can be reused in later project
-releases. The gateway, worker, local CLI, and update manager keep the project
-release version. Helper versions are diagnostic identities; release installation
-still selects the project release and verifies the assets covered by that
-release's signed checksum manifest.
+Piper and Qwen use the version `native-<24 hex digits>`, derived from their
+source digest, so unchanged speech helpers can be reused in later project
+releases. Whisper keeps the project release version because already-installed
+native update managers require its version to match the selected release.
+Its compiled cache key includes that normalized version as well as the native
+source and toolchain identity. CI revision strings remain valid versions for
+branch and pull-request builds. The gateway, worker, local CLI, and update
+manager also keep the project release version. Release installation verifies
+the assets covered by the selected release's signed checksum manifest.
 
 Every native matrix job runs its real model smoke tests on the current runner,
 including after a cache hit. Whisper still verifies warm inference, framing,
@@ -76,8 +79,9 @@ and EOF. Speech still verifies Italian and English Piper and Qwen replies,
 resident models, float32 PCM, EOF, and the optimized Qwen production CPU
 selector. Restoring compiled outputs does not bypass these checks. Model files
 are downloaded and verified on every run. Each native job also audits the output
-inventory, archived checksums, and embedded source version; a mismatch fails the
-job.
+inventory, archived checksums, and expected embedded version; a mismatch fails
+the job. Whisper's audit requires the exact workflow input with one leading
+`v` removed, including after a cache hit.
 
 Compiled caches contain `dist/whisper`, or `dist/piper` and `dist/qwen-tts`, with
 an inventory manifest. They are saved only after successful validation on a
@@ -97,8 +101,14 @@ boundaries and cache eviction behavior are defined by the official
 
 The reusable `package.yml` workflow downloads all four platforms' native audio
 artifacts, cross-builds the Go executables, produces the full release asset set,
-and runs the release verifier. Its artifacts belong to the current workflow
-run. Packaging does not publish a release.
+and runs the release verifier. Before that archive audit or artifact upload,
+`scripts/verify-release-runtime-versions.sh EXPECTED_VERSION [DIST_DIRECTORY]`
+extracts the native Linux host's gateway package into a private temporary
+directory and executes `version` for the gateway, canonical manager, migration
+manager alias, and bundled Whisper. Each must match the exact normalized input;
+a cached helper carrying a source-only version fails this gate. Unsupported
+hosts fail explicitly. Its artifacts belong to the current workflow run.
+Packaging does not publish a release.
 
 On a release tag, `test-and-build` waits for packaging, the complete Go and
 browser checks, and native archive acceptance. It downloads the packaged files
