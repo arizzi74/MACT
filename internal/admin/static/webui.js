@@ -559,6 +559,28 @@
     return { 'turn-started': 'Turn started', 'item-recorded': 'Recorded', 'item-completed': 'Completed', 'observed-started': 'Observed start', 'observed-completed': 'Observed completion' }[item._timeSource] || '';
   }
   function isRunning(value) { return ['inProgress', 'in_progress', 'running', 'active'].includes(typeof value === 'object' ? value?.type : value); }
+  function nativeStatus(value) { return String(typeof value === 'object' ? value?.type || '' : value || '').replace(/[_\s-]/g, '').toLowerCase(); }
+  function terminalStatus(value) { return ['completed', 'done', 'succeeded', 'success', 'failed', 'error', 'errored', 'cancelled', 'canceled', 'interrupted', 'aborted', 'declined', 'denied'].includes(nativeStatus(value)); }
+  function toolStatus(item) {
+    const status = nativeStatus(item.status), result = item.result;
+    const resultStatus = nativeStatus(result?.status);
+    const exit = typeof item.exitCode === 'number' && Number.isFinite(item.exitCode) ? item.exitCode : null;
+    let outcome;
+    if (['cancelled', 'canceled', 'declined', 'denied'].includes(status)) outcome = 'cancelled';
+    else if (['interrupted', 'aborted'].includes(status)) outcome = 'interrupted';
+    else if (['failed', 'error', 'errored'].includes(status) || ['failed', 'error', 'errored'].includes(resultStatus) || exit !== null && exit !== 0 || item.isError === true || result?.isError === true || item.success === false || result?.success === false || item.error || result?.error) outcome = 'failed';
+    else if (exit === 0 || ['success', 'succeeded'].includes(status) || ['success', 'succeeded'].includes(resultStatus) || item.success === true || result?.success === true || result?.isError === false || status === 'completed' && ['mcpToolCall', 'fileChange', 'webSearch'].includes(item.type)) outcome = 'succeeded';
+    // Ending a turn settles unfinished tools, but does not prove that they
+    // succeeded. Preserve an interruption only when the item has no outcome.
+    if (!outcome && !terminalStatus(item.status)) {
+      const turnStatus = nativeStatus(item._terminalTurnStatus);
+      if (['cancelled', 'canceled'].includes(turnStatus)) outcome = 'cancelled';
+      else if (['interrupted', 'aborted'].includes(turnStatus)) outcome = 'interrupted';
+    }
+    const complete = !!outcome || terminalStatus(item.status) || item._complete === true;
+    const state = outcome || (complete ? 'completed' : 'running');
+    return { complete, state, label: { succeeded: 'Succeeded', failed: 'Failed', cancelled: 'Cancelled', interrupted: 'Interrupted', completed: 'Completed', running: 'Running' }[state] };
+  }
   function atBottom() { const scroller = $('transcript'); return scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 100; }
   function jump() {
     followLatest = true;
@@ -1808,7 +1830,10 @@
     rememberTurns(metadata.data || []);
     for (const item of state.items.values()) {
       const turn = turnTimes.get(item._turn);
-      if (turn) { Object.assign(item, itemTiming(item, turn, {}, item)); item._complete = !isRunning(turn.status); }
+      if (turn) {
+        Object.assign(item, itemTiming(item, turn, {}, item));
+        if (terminalStatus(turn.status)) { item._complete = true; item._terminalTurnStatus = turn.status; }
+      }
     }
     for (const turn of metadata.data || []) if (isRunning(turn.status)) state.turn = turn.id;
     // Resume can know a new turn before the lightweight state page catches up.
@@ -1871,7 +1896,10 @@
     });
   }
   function rememberTurns(turns) {
-    for (const turn of turns) turnTimes.set(turn.id, { id: turn.id, startedAt: turn.startedAt, status: turn.status });
+    for (const turn of turns) {
+      const previous = turnTimes.get(turn.id);
+      turnTimes.set(turn.id, { id: turn.id, startedAt: turn.startedAt ?? previous?.startedAt, status: turn.status ?? previous?.status });
+    }
   }
   function updateHistoryTimes(items) {
     if (!items.length) return;
@@ -1916,14 +1944,18 @@
         rememberTurns(metadata.data || []);
         turnCursor = metadata.nextCursor && metadata.nextCursor !== cursor ? metadata.nextCursor : null;
         const changed = [];
+        let completed = false;
         for (const item of state.items.values()) {
           const turn = turnTimes.get(item._turn);
           if (!turn) continue;
+          if (!item._liveObserved && terminalStatus(turn.status) && !item._complete) {
+            item._complete = true; item._terminalTurnStatus = turn.status; completed = true;
+          }
           const timing = itemTiming(item, turn, {}, item);
           if (timing._time === item._time && timing._timeSource === item._timeSource) continue;
           Object.assign(item, timing); changed.push(item);
         }
-        updateHistoryTimes(changed);
+        if (completed) renderMessages(false); else updateHistoryTimes(changed);
       }
     })();
     try { await work.promise; }
@@ -1934,16 +1966,30 @@
     const turn = { ...turnTimes.get(entry.turnId), id: entry.turnId };
     if (entry.turnStartedAt !== undefined) turn.startedAt = entry.turnStartedAt;
     if (entry.turnStatus) turn.status = entry.turnStatus;
-    ingestItem(entry.item, turn, false, trackQuestions, entry);
+    ingestItem(entry.item, turn, false, trackQuestions, entry, 'history');
   }
   function ingestTurn(turn, prepend = false) {
     if (isRunning(turn.status)) state.turn = turn.id;
-    for (const item of turn.items || []) ingestItem(item, turn, prepend);
+    for (const item of turn.items || []) ingestItem(item, turn, prepend, true, {}, 'live');
   }
-  function ingestItem(item, turn = {}, prepend = false, trackQuestions = true, timing = {}) {
+  function ingestItem(item, turn = {}, prepend = false, trackQuestions = true, timing = {}, source = 'live') {
     const key = item.id || 'item-' + (++state.sequence);
     const previous = state.items.get(key);
-    const value = { ...previous, ...item, _turn: turn.id || previous?._turn, ...itemTiming(item, turn, timing, turn.id && previous?._turn === turn.id ? previous : undefined), _complete: previous?._complete || !isRunning(turn.status) };
+    // History pages can finish after a newer live event. A delayed snapshot or
+    // repeated start must not replace that command, output, or final outcome.
+    const stale = previous && (previous._liveObserved && source === 'history' || toolStatus(previous).complete && item._liveStarted === true);
+    const incoming = stale ? {} : item;
+    const turnComplete = !stale && terminalStatus(turn.status);
+    const value = {
+      ...previous, ...incoming, _turn: turn.id || previous?._turn,
+      ...itemTiming(item, turn, timing, turn.id && previous?._turn === turn.id ? previous : undefined),
+      _complete: previous?._complete === true || incoming._complete === true || terminalStatus(incoming.status) || turnComplete,
+      _liveObserved: previous?._liveObserved === true || source === 'live',
+      _terminalTurnStatus: turnComplete ? turn.status : previous?._terminalTurnStatus,
+    };
+    // A complete native output replaces the bounded stream preview. Keep a
+    // truncation notice only when the newly supplied output is itself partial.
+    if (!stale && value._complete && ['aggregatedOutput', 'output'].some(field => typeof incoming[field] === 'string')) value._truncated = incoming._truncated === true;
     if (prepend && !previous) state.items = new Map([[key, value], ...state.items]); else state.items.set(key, value);
     if (trackQuestions) trackAsyncQuestions(value);
   }
@@ -1995,8 +2041,8 @@
   function appendToolOutput(parent, output, truncated = false) {
     const text = clean(typeof output === 'string' ? output : JSON.stringify(output, null, 2));
     if (!text.trim()) return;
-    if (text.length > 64000 || truncated) parent.append(node('p', 'muted small', 'Showing the last 64,000 characters of tool output.'));
-    parent.append(code(text.slice(-64000)));
+    if (truncated) parent.append(node('p', 'muted small', 'Tool output was truncated by the runtime or live preview.'));
+    parent.append((window.CodexFormat.toolCode || code)(text, typeof output === 'string' ? 'output' : 'json'));
   }
   function webSearchPresentation(item) {
     const text = value => typeof value === 'string' ? clean(value).trim() : '';
@@ -2005,21 +2051,52 @@
     if (!queries.length && text(action.query || item.query)) queries.push(text(action.query || item.query));
     const url = text(action.url), pattern = text(action.pattern);
     let label = 'Search · ' + (text(item.query) || queries[0] || 'Web');
-    const body = document.createDocumentFragment();
-    const field = (name, value) => { if (value) body.append(node('p', 'muted small', name), code(value)); };
+    const fields = [];
+    const field = (name, value) => { if (value) fields.push([name, value]); };
     if (action.type === 'openPage' || action.type === 'findInPage') {
       label = action.type === 'openPage' ? 'Open page · ' + (url || text(item.query) || 'Web') : 'Find in page · ' + (pattern || text(item.query) || url || 'Web');
       field('URL', url);
       if (action.type === 'findInPage') field('Find', pattern);
-      if (!body.childNodes.length) field('Query', queries.join('\n'));
+      if (!fields.length) field('Query', queries.join('\n'));
     } else field(queries.length > 1 ? 'Queries' : 'Query', queries.join('\n'));
     // Native search results are opaque JSON. Keep their public contents intact
-    // as bounded text rather than assuming a result schema or inserting HTML.
-    if (Array.isArray(item.results) && item.results.length) {
-      body.append(node('p', 'muted small', 'Results'));
-      appendToolOutput(body, item.results);
+    // as literal text rather than assuming a result schema or inserting HTML.
+    const hasResults = Array.isArray(item.results) && item.results.length > 0;
+    return { label, hasBody: fields.length > 0 || hasResults, body: () => {
+      const body = document.createDocumentFragment();
+      for (const [name, value] of fields) body.append(node('p', 'muted small', name), code(value));
+      if (hasResults) { body.append(node('p', 'muted small', 'Results')); appendToolOutput(body, item.results); }
+      return body;
+    } };
+  }
+  function toolBody(item, search) {
+    const body = document.createDocumentFragment(), type = item.type;
+    const field = (name, value, language = '') => {
+      if (value === undefined || value === null) return;
+      const text = clean(typeof value === 'string' ? value : JSON.stringify(value, null, 2));
+      if (!text.trim()) return;
+      body.append(node('p', 'muted small tool-field-label', name), (window.CodexFormat.toolCode || code)(text, language || (typeof value === 'string' ? '' : 'json')));
+    };
+    if (type === 'commandExecution') field('Command', item.command || 'command', 'shell');
+    else if (type === 'mcpToolCall' || type === 'dynamicToolCall') field('Tool', [item.server || item.namespace, item.tool || item.toolName || item.name].filter(Boolean).join(' / ') || type);
+    if (item.arguments !== undefined) field('Arguments', item.arguments);
+    else if (item.input !== undefined) field('Input', item.input);
+    else if (item.params !== undefined) field('Input', item.params);
+    if (item.displayNotice) body.append(node('p', 'muted small', clean(item.displayNotice)));
+    if (search) body.append(search.body());
+    else if (type === 'fileChange') {
+      for (const change of item.changes || []) { body.append(node('p', '', clean(change.path || '')), code(change.diff || '', 'diff')); }
+    } else if (type === 'plan') body.append(markdown(itemText(item)));
+    else {
+      const output = item.aggregatedOutput ?? item.output ?? item.result ?? item.contentItems ?? itemText(item);
+      if (output !== undefined && output !== null && (typeof output !== 'string' || clean(output).trim())) {
+        body.append(node('p', 'muted small tool-field-label', 'Result'));
+        appendToolOutput(body, output, item._truncated);
+      } else body.append(node('p', 'muted small', toolStatus(item).complete ? 'No result was reported.' : 'Waiting for result…'));
+      if (item.error) field('Error', item.error);
+      if (item.exitCode !== undefined && item.exitCode !== null) body.append(node('p', 'muted small', 'Exit code: ' + item.exitCode));
     }
-    return { label, body };
+    return body;
   }
   function renderItemTime(header, item) {
     const date = itemDate(item), label = itemTimeLabel(item);
@@ -2076,44 +2153,66 @@
       if (item.displayNotice) article.append(node('p', 'muted small', clean(item.displayNotice)));
     }
     else {
-      const body = document.createDocumentFragment();
       const search = type === 'webSearch' ? webSearchPresentation(item) : null;
+      const status = toolStatus(item);
       let label = type || 'Activity';
-      if (type === 'commandExecution') label = (item.status === 'completed' ? 'Ran ' : 'Running ') + (item.command || 'command');
+      if (type === 'commandExecution') label = (status.complete ? '' : 'Running ') + (item.command || 'command');
       else if (type === 'fileChange') label = 'File changes · ' + ((item.changes || []).map(change => change.path).join(', ') || item.status || 'pending');
-      else if (type === 'mcpToolCall') label = [item.server, item.tool].filter(Boolean).join(' / ');
+      else if (type === 'mcpToolCall' || type === 'dynamicToolCall') label = [item.server || item.namespace, item.tool || item.toolName || item.name].filter(Boolean).join(' / ') || type;
       else if (search) label = search.label;
       else if (type === 'plan') label = 'Plan';
-      if (item.displayNotice) {
-        body.append(node('p', 'muted small', clean(item.displayNotice)));
-      } else if (search) {
-        body.append(search.body);
-      } else if (type === 'fileChange') {
-        for (const change of item.changes || []) { body.append(node('p', '', change.path || ''), code(change.diff || '', 'diff')); }
-      } else if (type === 'plan') body.append(markdown(itemText(item)));
+      article.dataset.failed = String(status.state === 'failed');
+      article.dataset.toolState = status.state;
+      article.dataset.toolComplete = String(status.complete);
+      if (search && !status.complete && !search.hasBody && !item.displayNotice) article.append(node('p', 'tool-title', clean(label)));
       else {
-        const output = item.aggregatedOutput || item.output || item.result?.content?.map?.(part => part.text || '').join('\n') || itemText(item);
-        if (output) appendToolOutput(body, output, item._truncated);
-        if (item.exitCode !== undefined && item.exitCode !== null) body.append(node('p', 'muted small', 'Exit code: ' + item.exitCode));
+        const details = node('details', 'tool-details'), summary = node('summary', 'tool-summary');
+        const preview = clean(label).slice(0, 600);
+        const previewTitle = node('span', 'tool-title');
+        if (!status.complete && type === 'commandExecution' && window.CodexFormat.toolCode) {
+          // Reuse shell and heredoc tokens inline, keeping the running
+          // preview's existing text limit, spacing, and wrapping.
+          const highlighted = window.CodexFormat.toolCode(preview, 'shell').querySelector('code');
+          previewTitle.append(...highlighted.childNodes);
+        } else previewTitle.textContent = preview;
+        summary.append(previewTitle);
+        if (status.complete) summary.append(document.createTextNode(' '), node('span', 'tool-outcome', status.label));
+        summary.title = clean(label);
+        details.append(summary);
+        // Most completed tools remain collapsed. Build their full command and
+        // result only when opened, so large native outputs do not slow history.
+        let rendered = false;
+        details._renderToolBody = () => {
+          if (rendered) return;
+          rendered = true; details.append(toolBody(item, search));
+        };
+        summary.addEventListener('click', () => { if (!details.open) details._renderToolBody(); });
+        details.addEventListener('toggle', () => { if (details.open) details._renderToolBody(); });
+        article.append(details);
       }
-      article.dataset.failed = String(item.status === 'failed' || (typeof item.exitCode === 'number' && item.exitCode !== 0));
-      if (clean(body.textContent).trim()) {
-        const details = node('details'), summary = node('summary');
-        summary.append(node('span', 'tool-title', clean(label).slice(0, 600)));
-        details.append(summary, body); article.append(details);
-      } else article.append(node('p', 'tool-title', clean(label)));
     }
     return article;
   }
   function renderMessages(follow = true) {
     const bottom = followLatest;
-    const top = $('transcript').scrollTop;
-    const expanded = new Set([...$('messages').querySelectorAll('article:has(details[open]:not(.mermaid-source))')].map(item => item.dataset.itemId));
-    const diagrams = new Map([...$('messages').children].map(article => [article.dataset.itemId, [...article.querySelectorAll('figure.mermaid-diagram')]]));
+    const scroller = $('transcript'), top = scroller.scrollTop, viewportTop = scroller.getBoundingClientRect().top;
+    const articles = [...$('messages').children];
+    const expanded = new Map(articles.map(article => [article.dataset.itemId, { open: !!article.querySelector('details[open]:not(.mermaid-source)'), complete: article.dataset.toolComplete }]));
+    // A tool finishing above the viewport can remove many lines. Anchor the
+    // reader to the next stable message instead of keeping a numeric scrollTop.
+    // History prepending restores its own anchor after this render; applying
+    // both corrections would move the reader by the inserted height twice.
+    const anchor = bottom || suppressHistoryScroll ? null : articles.find(article => article.getBoundingClientRect().bottom > viewportTop && !(article.dataset.toolComplete === 'false' && toolStatus(state.items.get(article.dataset.itemId) || {}).complete));
+    const anchorTop = anchor?.getBoundingClientRect().top;
+    const diagrams = new Map(articles.map(article => [article.dataset.itemId, [...article.querySelectorAll('figure.mermaid-diagram')]]));
     const fragment = document.createDocumentFragment();
     for (const item of state.items.values()) {
       const article = renderItem(item);
-      if (expanded.has(article.dataset.itemId)) article.querySelector('details:not(.mermaid-source)')?.setAttribute('open', '');
+      const previousDetails = expanded.get(article.dataset.itemId);
+      if (previousDetails?.open && !(previousDetails.complete === 'false' && article.dataset.toolComplete === 'true')) {
+        const details = article.querySelector('details:not(.mermaid-source)');
+        if (details) { details.open = true; details._renderToolBody?.(); }
+      }
       // Reuse diagrams within the same message so live activity doesn't reset
       // their zoom/source controls or replace a decoded image with a spinner.
       const previous = diagrams.get(article.dataset.itemId) || [];
@@ -2125,7 +2224,11 @@
     }
     $('messages').replaceChildren(fragment);
     if (follow && bottom) jump();
-    else { $('transcript').scrollTop = top; if (follow) $('jump-latest').hidden = false; }
+    else {
+      const restoredAnchor = anchor && [...$('messages').children].find(article => article.dataset.itemId === anchor.dataset.itemId);
+      scroller.scrollTop = restoredAnchor && anchorTop !== undefined ? top + restoredAnchor.getBoundingClientRect().top - anchorTop : top;
+      if (follow) $('jump-latest').hidden = false;
+    }
   }
   function scheduleRender() {
     if (state.renderTimer) return;
@@ -2201,7 +2304,10 @@
     if (method === 'turn/started') { state.turn = p.turn?.id || p.turnId; ingestTurn(p.turn || {}); }
     else if (method === 'turn/completed') {
       questionRevision++;
-      if (!state.turn || state.turn === (p.turn?.id || p.turnId)) state.turn = null;
+      const turn = { ...p.turn, id: p.turn?.id || p.turnId, status: p.turn?.status || 'completed' };
+      if (!state.turn || state.turn === turn.id) state.turn = null;
+      ingestTurn(turn); rememberTurns([turn]);
+      for (const item of state.items.values()) if (item._turn === turn.id) { item._complete = true; item._terminalTurnStatus = turn.status; }
 
       if (p.turn?.error) notice(p.turn.error.message || 'The turn failed.');
       else if (['completed', 'interrupted'].includes(p.turn?.status)) recoverNotice('retry:' + (p.turn?.id || p.turnId));
@@ -2213,7 +2319,9 @@
       if (p.item) {
         const started = method === 'item/started';
         const observed = itemMilliseconds(message._observedAtMs) ?? Date.now();
-        ingestItem({ ...p.item, _liveStarted: started, _complete: !started }, { id: p.turnId, status: started ? 'inProgress' : 'completed' }, false, true, { startedAtMs: p.startedAtMs, completedAtMs: p.completedAtMs, ...(started ? { observedStartedAtMs: observed } : { observedCompletedAtMs: observed }) });
+        // Item completion does not complete its parent turn. In particular, a
+        // late sparse item must retain the turn's real interrupted state.
+        ingestItem({ ...p.item, _liveStarted: started, _complete: !started }, { id: p.turnId }, false, true, { startedAtMs: p.startedAtMs, completedAtMs: p.completedAtMs, ...(started ? { observedStartedAtMs: observed } : { observedCompletedAtMs: observed }) });
         renderQuestions();
       }
     } else if (method === 'item/agentMessage/delta') {
@@ -2221,18 +2329,20 @@
       item.text = (item.text || '') + (p.delta || ''); state.items.set(p.itemId, item);
     } else if (method === 'item/commandExecution/outputDelta') {
       const item = state.items.get(p.itemId) || { id: p.itemId, type: 'commandExecution', _turn: p.turnId };
-      const output = (item.aggregatedOutput || '') + (p.delta || '');
-      item._truncated = item._truncated || output.length > 64000;
-      item.aggregatedOutput = output.slice(-64000); state.items.set(p.itemId, item);
+      if (!toolStatus(item).complete) {
+        const output = (item.aggregatedOutput || '') + (p.delta || '');
+        item._truncated = item._truncated || output.length > 64000;
+        item.aggregatedOutput = output.slice(-64000); item._liveObserved = true; state.items.set(p.itemId, item);
+      }
     } else if (method === 'item/reasoning/summaryTextDelta') {
       const item = state.items.get(p.itemId) || { id: p.itemId, type: 'reasoning', summary: [], _turn: p.turnId };
       const index = Number.isInteger(p.summaryIndex) && p.summaryIndex >= 0 && p.summaryIndex < 100 ? p.summaryIndex : 0;
       const summary = [...(item.summary || [])]; summary[index] = (summary[index] || '') + (p.delta || '');
       item.summary = summary; state.items.set(p.itemId, item);
     } else if (method === 'turn/diff/updated') {
-      state.items.set('diff-' + p.turnId, { id: 'diff-' + p.turnId, type: 'fileChange', changes: [{ path: 'Turn diff', diff: p.diff || '' }] });
+      ingestItem({ id: 'diff-' + p.turnId, type: 'fileChange', changes: [{ path: 'Turn diff', diff: p.diff || '' }] }, { ...turnTimes.get(p.turnId), id: p.turnId });
     } else if (method === 'turn/plan/updated') {
-      state.items.set('plan-' + p.turnId, { id: 'plan-' + p.turnId, type: 'plan', text: [p.explanation, ...(p.plan || []).map(step => (step.status === 'completed' ? '✓ ' : step.status === 'inProgress' ? '› ' : '○ ') + step.step)].filter(Boolean).join('\n') });
+      ingestItem({ id: 'plan-' + p.turnId, type: 'plan', text: [p.explanation, ...(p.plan || []).map(step => (step.status === 'completed' ? '✓ ' : step.status === 'inProgress' ? '› ' : '○ ') + step.step)].filter(Boolean).join('\n') }, { ...turnTimes.get(p.turnId), id: p.turnId });
     } else if (method === 'thread/tokenUsage/updated') { updateUsage(p.tokenUsage || p); return; }
     else if (method === 'serverRequest/resolved') { questionRevision++; state.questions.delete(String(p.requestId)); renderQuestions(); refreshQuestions(); return; }
     else if (method === 'error') {

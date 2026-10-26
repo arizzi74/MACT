@@ -435,6 +435,10 @@ itemTimes['timestamp-older-completed'] = { startedAtMs: null, completedAtMs: tim
     assert.ok(geometry.last <= geometry.composer + 1, context + ': the latest message remains above the composer');
   };
   const assertToolColors = async context => {
+    const details = page.locator('[data-item-id="tool-a"] details');
+    const expanded = await details.evaluate(element => element.open);
+    if (!expanded) await details.locator('summary').click();
+    await details.locator('pre').first().waitFor({ state: 'visible' });
     for (const selector of ['.role', 'pre']) {
       const rgb = await page.evaluate(selector => getComputedStyle(document.querySelector('[data-item-id="tool-a"] ' + selector)).color.match(/\d+/g).map(Number), selector);
       assert.ok(rgb[2] > rgb[0], 'Tool ' + selector + ' uses blue text in ' + context);
@@ -443,6 +447,7 @@ itemTimes['timestamp-older-completed'] = { startedAtMs: null, completedAtMs: tim
       const colors = await page.evaluate(selector => ({ command: getComputedStyle(document.querySelector('[data-item-id="tool-a"] ' + selector)).color, muted: getComputedStyle(document.querySelector('#session-location')).color }), selector);
       assert.equal(colors.command, colors.muted, 'Tool command ' + selector + ' uses muted gray text in ' + context);
     }
+    if (!expanded) await details.locator('summary').click();
   };
   const choose = async id => {
     if (await page.locator('#show-sessions').isVisible() && await page.locator('#show-sessions').getAttribute('aria-expanded') !== 'true') await page.locator('#show-sessions').click();
@@ -1057,8 +1062,12 @@ itemTimes['timestamp-older-completed'] = { startedAtMs: null, completedAtMs: tim
     assert.equal(await page.locator('[data-item-id="live-compaction-a"] details').count(), 0, 'Completed compaction stays nonexpandable');
     await liveTool('item/started', { id: 'live-silent-tool-a', type: 'commandExecution', command: 'quiet-check', status: 'inProgress', aggregatedOutput: ' \n\u001b[31m\u001b[0m\t' });
     await page.waitForSelector('[data-item-id="live-silent-tool-a"]');
-    assert.equal(await page.locator('[data-item-id="live-silent-tool-a"] details').count(), 0, 'Whitespace and ANSI-only tool output do not create an empty expander');
+    assert.equal(await page.locator('[data-item-id="live-silent-tool-a"] details').count(), 1, 'A command without output can expand its full invocation');
+    await page.locator('[data-item-id="live-silent-tool-a"] summary').click();
+    await page.locator('[data-item-id="live-silent-tool-a"] pre').first().waitFor({ state: 'visible' });
+    assert.equal(await page.locator('[data-item-id="live-silent-tool-a"] pre code').first().textContent(), 'quiet-check', 'A silent tool still has a meaningful command body');
     await liveTool('item/completed', { id: 'live-silent-tool-a', type: 'commandExecution', command: 'quiet-check', status: 'completed', aggregatedOutput: 'Tool output became available.', exitCode: 0 });
+    await page.waitForFunction(() => document.querySelector('[data-item-id="live-silent-tool-a"]')?.dataset.toolState === 'succeeded');
     await page.locator('[data-item-id="live-silent-tool-a"] summary').click();
     assert.equal(await page.locator('[data-item-id="live-silent-tool-a"]').getByText('Tool output became available.', { exact: true }).isVisible(), true, 'A bodyless tool becomes expandable when actual output arrives');
     await current({ method: 'turn/completed', params: { threadId: 'thread-a', turn: { id: 'format-live-a', status: 'completed' } } });
