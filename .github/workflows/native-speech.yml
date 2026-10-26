@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Helper release version
+        description: Gateway release version (native helpers use source versions)
         default: dev
         required: true
 
@@ -42,21 +42,57 @@ jobs:
         with:
           go-version: '1.26.x'
           check-latest: true
-      - name: Build Linux helpers with portable compiler baselines
-        if: matrix.os == 'linux'
+      # Cache compilation only. Real inference checks below run on every restore.
+      - name: Identify native sources and resolved toolchains
+        id: native-identity
         env:
-          VERSION: ${{ inputs.version }}
+          TARGET_OS: ${{ matrix.os }}
+          TARGET_ARCH: ${{ matrix.arch }}
+        run: python3 scripts/native-build-cache.py identity speech --os "$TARGET_OS" --arch "$TARGET_ARCH"
+      - name: Restore compiled helpers by exact identity
+        id: native-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            dist/piper
+            dist/qwen-tts
+          key: ${{ steps.native-identity.outputs.key }}
+      - name: Clear incomplete or non-exact cached outputs
+        if: steps.native-cache.outputs.cache-hit != 'true'
+        env:
+          TARGET_OS: ${{ matrix.os }}
+          TARGET_ARCH: ${{ matrix.arch }}
+        run: python3 scripts/native-build-cache.py clean speech --os "$TARGET_OS" --arch "$TARGET_ARCH"
+      - name: Build Linux helpers with portable compiler baselines
+        if: steps.native-cache.outputs.cache-hit != 'true' && matrix.os == 'linux'
+        env:
+          VERSION: ${{ steps.native-identity.outputs.version }}
           TARGET_ARCH: ${{ matrix.arch }}
         run: |
           bash scripts/build-piper-linux.sh "$TARGET_ARCH"
           bash scripts/build-qwen-tts-linux.sh "$TARGET_ARCH"
       - name: Build macOS helpers
-        if: matrix.os == 'darwin'
+        if: steps.native-cache.outputs.cache-hit != 'true' && matrix.os == 'darwin'
         env:
-          VERSION: ${{ inputs.version }}
+          VERSION: ${{ steps.native-identity.outputs.version }}
         run: |
           bash scripts/build-piper.sh
           bash scripts/build-qwen-tts.sh
+      - name: Record compiled helper inventory
+        if: steps.native-cache.outputs.cache-hit != 'true'
+        env:
+          TARGET_OS: ${{ matrix.os }}
+          TARGET_ARCH: ${{ matrix.arch }}
+          CACHE_KEY: ${{ steps.native-identity.outputs.key }}
+          NATIVE_VERSION: ${{ steps.native-identity.outputs.version }}
+        run: python3 scripts/native-build-cache.py record speech --os "$TARGET_OS" --arch "$TARGET_ARCH" --key "$CACHE_KEY" --version "$NATIVE_VERSION"
+      - name: Audit helper archives, inventories and embedded source versions
+        env:
+          TARGET_OS: ${{ matrix.os }}
+          TARGET_ARCH: ${{ matrix.arch }}
+          CACHE_KEY: ${{ steps.native-identity.outputs.key }}
+          NATIVE_VERSION: ${{ steps.native-identity.outputs.version }}
+        run: python3 scripts/native-build-cache.py verify speech --os "$TARGET_OS" --arch "$TARGET_ARCH" --key "$CACHE_KEY" --version "$NATIVE_VERSION"
       - name: Download and verify pinned smoke models
         shell: bash
         run: |
@@ -134,6 +170,18 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/speech-artifacts"
           cp dist/piper/codex-piper-*.tar.gz dist/qwen-tts/codex-qwen-tts-*.tar.gz "$RUNNER_TEMP/speech-artifacts/"
+      # Never save PR outputs. Main seeds caches visible to other branches/tags.
+      - name: Cache successfully validated compiled helpers
+        if: >-
+          steps.native-cache.outputs.cache-hit != 'true' &&
+          (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+          github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            dist/piper
+            dist/qwen-tts
+          key: ${{ steps.native-identity.outputs.key }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: speech-${{ matrix.os }}-${{ matrix.arch }}

@@ -1,7 +1,7 @@
 name: CI
 
 on:
-  # Release tags receive the same checks in release.yml.
+  # Release tags receive independent checks in release.yml.
   push:
     branches:
       - '**'
@@ -13,9 +13,19 @@ on:
 permissions:
   contents: read
 
+# Superseded branch/PR checks do not compete with the latest change. Releases
+# have their own non-cancelling group and remain independent.
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   native-session-archive:
     uses: ./.github/workflows/native-session-archive.yml
+
+  go-checks:
+    if: github.event_name != 'schedule'
+    uses: ./.github/workflows/go-checks.yml
 
   native-whisper:
     if: github.event_name != 'schedule'
@@ -32,6 +42,7 @@ jobs:
   browser:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -42,10 +53,37 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - run: npm run test:browser
 
-  test:
+  package:
     needs: [native-whisper, native-speech]
-    if: always() && ((needs.native-whisper.result == 'success' && needs.native-speech.result == 'success') || github.event_name == 'schedule')
+    uses: ./.github/workflows/package.yml
+    with:
+      version: ${{ github.sha }}
+      artifact-name: release-artifacts
+
+  # Keep one final gate. No required job can fail or be skipped unnoticed.
+  test:
+    if: always() && github.event_name != 'schedule'
+    needs: [go-checks, browser, native-session-archive, package]
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every validation and packaging job
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          results = json.loads(os.environ['RESULTS'])
+          failed = {name: result['result'] for name, result in results.items() if result['result'] != 'success'}
+          if failed:
+              raise SystemExit(f'CI gates did not succeed: {failed}')
+          print('All CI gates passed.')
+          PY
+
+  vulnerabilities:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
@@ -53,24 +91,4 @@ jobs:
           go-version: '1.26.x'
           check-latest: true
       - name: Check new vulnerability advisories
-        if: github.event_name == 'schedule'
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        if: github.event_name != 'schedule'
-        with:
-          pattern: whisper-*
-          merge-multiple: true
-          path: .native-dist
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        if: github.event_name != 'schedule'
-        with:
-          pattern: speech-*
-          merge-multiple: true
-          path: .speech-dist
-      - run: VERSION=${{ github.sha }} ./scripts/ci.sh
-        if: github.event_name != 'schedule'
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: github.event_name != 'schedule'
-        with:
-          name: release-artifacts
-          path: dist/

@@ -459,10 +459,13 @@ executables, release archives, and SHA-256 checksums for Linux amd64/arm64
 and release manager). Linux executables have no dynamic-loader or shared-library
 dependency. The four standalone managers support installation without Python;
 packaging and archive verification are also implemented in Go.
-The CI workflow runs the SQLite integration and race tests, checks formatting/vet,
-and builds and verifies the release archives. A hosted CI run requires a remote repository.
-Only the source-only historical PostgreSQL migration/deployment tests require
-Python on the build host; target machines do not need it.
+The CI workflow runs checks and native builds in parallel, splits the complete
+SQLite registry race suite across four jobs, and caches unchanged native audio
+builds while rerunning their real smoke tests. Release archives still require
+all checks and integrity verification. See [CI and release gates](docs/continuous-integration.md)
+for cache identities, test coverage, local commands, and publication checks.
+CI tooling, native smoke tests, and historical PostgreSQL migration/deployment
+tests use Python on the build host; target installations do not need it.
 
 Existing PostgreSQL installations must use the verified [migration procedure](docs/operations.md#switching-from-postgresql)
 before starting this version. Changing the configuration alone does not transfer data.
@@ -472,6 +475,7 @@ before starting this version. Changing the configuration alone does not transfer
 - [Specification](CODEX_TELEGRAM_CONTROL_PLANE_SPEC.md)
 - [Acceptance evidence](docs/acceptance.md)
 - [Implementation tracker](docs/implementation.md)
+- [CI and release gates](docs/continuous-integration.md)
 - [Operations and recovery](docs/operations.md)
 - [Passkey administration](docs/admin.md)
 - [Codex compatibility and local transport](docs/codex-compatibility.md)

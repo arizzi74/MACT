@@ -1,0 +1,98 @@
+name: Go checks
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: ${{ matrix.check }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        check: [format, vet, vulnerabilities, python]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Select the non-race compilation cache
+        run: printf 'nonrace\n' > .go-cache-mode
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.26.x'
+          check-latest: true
+          cache: ${{ matrix.check == 'vet' || matrix.check == 'vulnerabilities' }}
+          # Go validates source digests inside its build cache. Keep dependency
+          # compilation warm across source changes, separately from race builds.
+          cache-dependency-path: |
+            go.sum
+            .go-cache-mode
+      - name: Run the independent check
+        run: ./scripts/check.sh "${{ matrix.check }}"
+      - name: Validate workflow graphs and action inputs
+        if: matrix.check == 'format'
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color
+
+  registry:
+    name: Registry race ${{ strategy.job-index }} of ${{ strategy.job-total }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Select the race compilation cache
+        run: printf 'race\n' > .go-cache-mode
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.26.x'
+          check-latest: true
+          cache-dependency-path: |
+            go.sum
+            .go-cache-mode
+      - name: Discover and race test the complete shard
+        env:
+          CI_LOG_DIR: ${{ runner.temp }}/go-checks
+        # Derive the exhaustive 0..N-1 partition from Actions itself so changing
+        # the matrix size cannot silently omit a shard or use a stale count.
+        run: ./scripts/test-go.sh registry "${{ strategy.job-index }}" "${{ strategy.job-total }}"
+      - name: Preserve the discovered plan and per-test timings
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: go-tests-registry-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/go-checks/
+          if-no-files-found: error
+          retention-days: 7
+
+  packages:
+    name: Other packages race
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Select the race compilation cache
+        run: printf 'race\n' > .go-cache-mode
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.26.x'
+          check-latest: true
+          cache-dependency-path: |
+            go.sum
+            .go-cache-mode
+      - name: Discover and race test every remaining package
+        env:
+          CI_LOG_DIR: ${{ runner.temp }}/go-checks
+        run: ./scripts/test-go.sh packages
+      - name: Preserve package coverage and per-test timings
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: go-tests-packages
+          path: ${{ runner.temp }}/go-checks/
+          if-no-files-found: error
+          retention-days: 7

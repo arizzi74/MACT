@@ -42,8 +42,11 @@ identities.
 The private shared transport and terminal helper were exercised with the
 installed Codex version. No model turns were submitted by live smoke tests.
 
-The GitHub Actions workflow runs the same local CI job on pushes and pull requests. Darwin executables were cross-built with
-CGO disabled; the LaunchAgent was not run on a Darwin host.
+GitHub Actions runs the complete checks and packaging in parallel on pushes and
+pull requests; [the CI and release gates](continuous-integration.md) describe the
+race-test partition and native build caches. `scripts/ci.sh` remains the complete
+local entrypoint. Darwin executables were cross-built with CGO disabled; the
+LaunchAgent was not run on a Darwin host.
 
 The session archive release gate additionally downloads the supported official
 Codex 0.163.0 binary with a pinned SHA-256. Isolated legacy and paginated/forked

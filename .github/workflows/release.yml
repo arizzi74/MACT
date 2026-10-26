@@ -14,6 +14,9 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  go-checks:
+    uses: ./.github/workflows/go-checks.yml
+
   native-session-archive:
     uses: ./.github/workflows/native-session-archive.yml
 
@@ -29,6 +32,7 @@ jobs:
 
   browser:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -39,9 +43,16 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - run: npm run test:browser
 
+  package:
+    needs: [native-whisper, native-speech]
+    uses: ./.github/workflows/package.yml
+    with:
+      version: ${{ github.ref_name }}
+
   test-and-build:
-    needs: [browser, native-whisper, native-speech, native-session-archive]
+    needs: [go-checks, browser, package, native-session-archive]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
       id-token: write
@@ -54,15 +65,9 @@ jobs:
           check-latest: true
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          pattern: whisper-*
-          merge-multiple: true
-          path: .native-dist
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          pattern: speech-*
-          merge-multiple: true
-          path: .speech-dist
-      - name: Validate tag and run all checks
+          name: release-files
+          path: dist
+      - name: Validate tag and audited packages after all checks
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
@@ -70,7 +75,7 @@ jobs:
             echo 'Only stable vMAJOR.MINOR.PATCH tags can be released.' >&2
             exit 1
           }
-          VERSION="${RELEASE_TAG#v}" ./scripts/ci.sh
+          ./scripts/verify-release.sh
       - name: Attest the release checksum manifest
         id: provenance
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
@@ -86,7 +91,7 @@ jobs:
           go run ./cmd/release-tool verify-provenance --repo "$RELEASE_REPO" --tag "$RELEASE_TAG"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: release-files
+          name: signed-release-files
           if-no-files-found: error
           path: |
             dist/*.tar.gz
@@ -99,6 +104,7 @@ jobs:
   publish:
     needs: test-and-build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write
     env:
@@ -113,7 +119,7 @@ jobs:
           check-latest: true
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: release-files
+          name: signed-release-files
           path: dist
       - name: Verify release files and tag
         run: |
