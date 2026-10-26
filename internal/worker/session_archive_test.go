@@ -452,28 +452,54 @@ func TestArchiveCleanupResumesTombstoneAndRefusesReplacement(t *testing.T) {
 	if err := os.Mkdir(project, 0700); err != nil {
 		t.Fatal(err)
 	}
-	info, _ := os.Lstat(project)
+	info, err := os.Lstat(project)
+	if err != nil {
+		t.Fatal(err)
+	}
 	stat := info.Sys().(*syscall.Stat_t)
 	job := sessionArchiveJob{ProjectPath: project, RemovalPath: filepath.Join(filepath.Dir(project), ".codex-archived-job"), ProjectDevice: uint64(stat.Dev), ProjectInode: uint64(stat.Ino)}
-	parentInfo, _ := os.Stat(filepath.Dir(project))
+	parentInfo, err := os.Stat(filepath.Dir(project))
+	if err != nil {
+		t.Fatal(err)
+	}
 	parentStat := parentInfo.Sys().(*syscall.Stat_t)
 	job.ParentDevice, job.ParentInode = uint64(parentStat.Dev), uint64(parentStat.Ino)
 	if err := os.Rename(project, job.RemovalPath); err != nil {
 		t.Fatal(err)
 	}
+	// Allocate the replacement while the original inode is still live. Its
+	// actual identity must differ without assuming how the filesystem assigns
+	// or reuses inode numbers after the tombstone is removed.
+	replacement := filepath.Join(filepath.Dir(project), "replacement")
+	if err := os.Mkdir(replacement, 0700); err != nil {
+		t.Fatal(err)
+	}
+	replacementInfo, err := os.Lstat(replacement)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.SameFile(info, replacementInfo) {
+		t.Fatal("replacement fixture shares the live original's identity")
+	}
+	replacementStat := replacementInfo.Sys().(*syscall.Stat_t)
+	t.Logf("original device/inode %d/%d; replacement device/inode %d/%d", stat.Dev, stat.Ino, replacementStat.Dev, replacementStat.Ino)
 	if err := removeArchivedProject(context.Background(), job, sessionarchive.Manifest{Files: []sessionarchive.Entry{{Path: "project", Kind: "directory", Mode: 0700}}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(job.RemovalPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("cleanup staging retained: %v", err)
 	}
-	if err := os.Mkdir(project, 0700); err != nil {
+	if err := os.Rename(replacement, project); err != nil {
 		t.Fatal(err)
 	}
-	// Inode reuse is possible, so explicitly change the expected identity.
-	job.ProjectInode++
-	if err := removeArchivedProject(context.Background(), job, sessionarchive.Manifest{Files: []sessionarchive.Entry{{Path: "project", Kind: "directory", Mode: 0700}}}); err == nil {
-		t.Fatal("replacement project removed")
+	err = removeArchivedProject(context.Background(), job, sessionarchive.Manifest{Files: []sessionarchive.Entry{{Path: "project", Kind: "directory", Mode: 0700}}})
+	var rejected *protocol.Error
+	if !errors.As(err, &rejected) || rejected.Code != protocol.InvalidWorkspace || rejected.Message != "The project path changed before cleanup; its files were kept." {
+		t.Fatalf("replacement identity was not rejected: %v", err)
+	}
+	retained, err := os.Lstat(project)
+	if err != nil || !os.SameFile(replacementInfo, retained) {
+		t.Fatalf("replacement project was removed or changed: %v", err)
 	}
 }
 
