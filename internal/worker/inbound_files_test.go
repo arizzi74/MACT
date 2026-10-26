@@ -466,8 +466,15 @@ func TestAgentFilesRejectChangedFrozenTargetsBeforeSaving(t *testing.T) {
 			if record.State != CommandFailed || record.Result == nil || record.Result.Error == nil || record.InboundFile != nil {
 				t.Fatalf("changed target saved file: %#v", record)
 			}
-			if _, err := os.Lstat(filepath.Join(session.CWD, "inbound")); !os.IsNotExist(err) || len(server.Calls()) != calls {
-				t.Fatalf("rejected command touched disk or Codex: %v", err)
+			if _, err := os.Lstat(filepath.Join(session.CWD, "inbound")); !os.IsNotExist(err) {
+				t.Fatalf("rejected command touched disk: %v", err)
+			}
+			if after := server.Calls(); len(after) != calls {
+				var methods []string
+				for _, call := range after {
+					methods = append(methods, call.Method)
+				}
+				t.Fatalf("rejected command sent Codex messages: before=%d after=%v", calls, methods)
 			}
 		})
 	}

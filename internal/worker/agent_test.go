@@ -736,6 +736,10 @@ func testAgent(t *testing.T, redactPatterns ...string) (*Agent, protocol.Runtime
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Initialize acknowledges writing the notification, while the fake server
+	// records it asynchronously. Finish fixture setup before tests snapshot
+	// Calls to prove a rejected command sends no additional Codex messages.
+	waitFor(t, func() bool { return hasCall(server.Calls(), "initialized") })
 	runtime, err := store.BeginRuntime("profile", "Profile", root)
 	if err != nil {
 		t.Fatal(err)
