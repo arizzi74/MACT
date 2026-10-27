@@ -44,7 +44,9 @@ func (a *Agent) observeWebUISession(ctx context.Context, runtime protocol.Runtim
 	}
 	// Do not rely on the discovery map here: it reserves a subscription before
 	// its RPC completes. Await our own idempotent resume acknowledgment instead.
-	thread, err := client.ResumeThread(ctx, session.ThreadID, codexadapter.ThreadOptions{})
+	// A validated late acknowledgment may settle its RPC fence, while caller
+	// cancellation still prevents this browser's actor snapshot and readiness.
+	thread, err := client.ResumeThreadForObservation(ctx, session.ThreadID)
 	if err != nil {
 		return err
 	}

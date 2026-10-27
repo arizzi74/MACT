@@ -12,16 +12,17 @@ import (
 )
 
 type Runtime struct {
-	ID           string `json:"runtime_id"`
-	WorkerID     string `json:"worker_id,omitempty"`
-	ProfileID    string `json:"profile_id"`
-	Name         string `json:"name"`
-	Generation   uint64 `json:"generation"`
-	PID          int    `json:"pid"`
-	State        string `json:"state"`
-	CodexVersion string `json:"codex_version,omitempty"`
-	DefaultCWD   string `json:"default_cwd,omitempty"`
-	LocalSocket  string `json:"local_socket,omitempty"`
+	ID           string          `json:"runtime_id"`
+	WorkerID     string          `json:"worker_id,omitempty"`
+	ProfileID    string          `json:"profile_id"`
+	Name         string          `json:"name"`
+	Generation   uint64          `json:"generation"`
+	PID          int             `json:"pid"`
+	State        string          `json:"state"`
+	CodexVersion string          `json:"codex_version,omitempty"`
+	DefaultCWD   string          `json:"default_cwd,omitempty"`
+	LocalSocket  string          `json:"local_socket,omitempty"`
+	Metadata     json.RawMessage `json:"metadata,omitempty"`
 }
 
 type Session struct {

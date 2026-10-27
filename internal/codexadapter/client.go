@@ -35,6 +35,9 @@ var (
 	// ErrRequestNotPending rejects a stale or duplicate response to a
 	// server-initiated approval/input request.
 	ErrRequestNotPending = errors.New("codex app-server request is no longer pending")
+	// ErrObservationResumePending prevents retries from overlapping an
+	// observation resume whose delivery or completion is still uncertain.
+	ErrObservationResumePending = errors.New("codex app-server observation resume is still pending")
 )
 
 // Plugin and app catalogs can legitimately exceed the old 8 MiB Scanner
@@ -462,6 +465,7 @@ func (c *Client) handleLine(line []byte) {
 		Error  *RPCError       `json:"error"`
 	}
 	if err := json.Unmarshal(line, &message); err != nil {
+		c.invalidateObservationResponse(line)
 		c.emitEvent(Event{Method: "adapter/malformed", Raw: json.RawMessage(line), Unknown: true, Err: err})
 		return
 	}
@@ -480,13 +484,18 @@ func (c *Client) handleLine(line []byte) {
 		return
 	}
 	if len(message.ID) == 0 {
+		c.invalidateObservationResponse(line)
 		c.emitEvent(Event{Method: "adapter/malformed", Raw: json.RawMessage(line), Unknown: true, Err: errors.New("message has neither method nor id")})
 		return
 	}
-	valid, rejection := validateRPCResponse(line)
+	valid, rejection, observationAmbiguous := validateRPCResponse(line)
 	if !valid {
+		c.invalidateObservationResponse(line)
 		c.emitEvent(Event{Method: "adapter/malformed", Raw: json.RawMessage(line), Unknown: true, Err: errors.New("invalid or ambiguous RPC response")})
 		return
+	}
+	if observationAmbiguous {
+		c.invalidateObservationResponse(line)
 	}
 	var id int64
 	if err := json.Unmarshal(message.ID, &id); err != nil {
@@ -564,6 +573,12 @@ func (c *Client) closedErr() error {
 }
 
 func (c *Client) request(ctx context.Context, method string, params any, result any, allowUninitialized bool) error {
+	return c.requestWithObservation(ctx, method, params, result, allowUninitialized, "")
+}
+
+// observationThreadID is set only by the fixed-parameter observation API.
+// Generic resume requests and unknown future methods retain their usual fence.
+func (c *Client) requestWithObservation(ctx context.Context, method string, params any, result any, allowUninitialized bool, observationThreadID string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -578,12 +593,16 @@ func (c *Client) request(ctx context.Context, method string, params any, result 
 	ctx, cancel := c.withTimeout(ctx)
 	defer cancel()
 	id := c.nextID.Add(1)
-	pending := &pendingRPC{id: id, method: updateMethodName(method), readOnly: updateReadOnlyMethod(method), startedAt: time.Now().UTC(), done: make(chan struct{})}
+	pending := &pendingRPC{id: id, method: updateMethodName(method), readOnly: updateReadOnlyMethod(method), startedAt: time.Now().UTC(), done: make(chan struct{}), observationThreadID: observationThreadID}
 	c.mu.Lock()
 	if c.cause != nil {
 		err := c.cause
 		c.mu.Unlock()
 		return err
+	}
+	if observationThreadID != "" && c.observationResumePendingLocked(observationThreadID) {
+		c.mu.Unlock()
+		return ErrObservationResumePending
 	}
 	if len(c.pending) >= maxPendingRPCs {
 		c.mu.Unlock()
@@ -610,6 +629,7 @@ func (c *Client) request(ctx context.Context, method string, params any, result 
 	case <-pending.done:
 		c.mu.Lock()
 		reply := *pending.reply
+		observationAck := pending.observationAck
 		c.mu.Unlock()
 		consumed = true
 		if reply.Error != nil {
@@ -620,6 +640,9 @@ func (c *Client) request(ctx context.Context, method string, params any, result 
 				return &MethodUnavailableError{Method: method, RPC: reply.Error}
 			}
 			return reply.Error
+		}
+		if observationThreadID != "" && !observationAck {
+			return errors.New("invalid thread/resume observation acknowledgment")
 		}
 		if result != nil && len(reply.Result) != 0 {
 			if err := json.Unmarshal(reply.Result, result); err != nil {

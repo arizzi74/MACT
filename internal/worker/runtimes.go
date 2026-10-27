@@ -677,10 +677,11 @@ func (m *RuntimeManager) subscribeLoadedThread(ctx context.Context, runtime prot
 		return codexadapter.Thread{}, false, nil
 	}
 	// Reserve before issuing RPC so concurrent discovery ticks cannot attach the
-	// same client/thread twice. Release the reservation on failure for retry.
+	// same client/thread twice. Release the reservation on failure for retry;
+	// the adapter still fences retries until an abandoned observation settles.
 	current.subscriptions[threadID] = struct{}{}
 	m.mu.Unlock()
-	thread, err := client.ResumeThread(ctx, threadID, codexadapter.ThreadOptions{})
+	thread, err := client.ResumeThreadForObservation(ctx, threadID)
 	if err != nil {
 		m.mu.Lock()
 		if current := m.runtimes[runtime.ID]; !subscribed && current != nil && current.client == client && current.runtime.Generation == runtime.Generation {

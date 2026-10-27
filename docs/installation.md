@@ -542,6 +542,16 @@ update blocker once their transport write has settled. A matching, explicit
 protocol rejection can settle a canceled mutation; a late success alone does
 not prove that accepted work has completed. Unknown or unconfirmed mutations
 remain protected, and an idle thread snapshot does not clear them.
+
+The worker's own observer subscriptions use a separate resume operation without
+settings overrides. If its caller cancels, the update guard keeps waiting for
+the transport write and a successful acknowledgment for that exact thread. A
+validated late acknowledgment settles only that subscription; the worker must
+still perform its fresh checks for active turns, queues, goals, and approvals
+before updating. Repeated discovery attempts do not send another subscription
+while the first is unresolved. Missing or invalid acknowledgments and general
+resume requests with settings overrides remain protected.
+
 `codex-worker status` includes bounded RPC blocker
 diagnostics in `rpc_update_safety`, with sanitized method names, request start
 times, and pending/writing/unconfirmed phases, without request parameters or message
@@ -550,6 +560,11 @@ contents. If `jq` is installed, show just this part with:
 ```sh
 codex-worker status | jq '.rpc_update_safety'
 ```
+
+The same bounded diagnostics are included in hello and heartbeat runtime metadata
+under `metadata.rpc_update_safety`. The gateway retains them with its worker
+heartbeat metadata so operators can inspect the RPC blocker without SSH access.
+These diagnostics contain no thread identifiers, request parameters, or replies.
 
 This snapshot describes the RPC guard only. It is not an update reservation or
 proof that active turns, native clients, and durable work are idle; the live
@@ -580,7 +595,8 @@ older version also need this one-time upgrade: the running process must load the
 new guard before it can recover automatically.
 
 The same applies to an older worker permanently reporting
-`runtime has pending or unconfirmed requests` after a canceled metadata read.
+`runtime has pending or unconfirmed requests` after a canceled metadata read or
+an observer subscription whose completion the old worker did not recognize.
 Installing a newer binary alone cannot repair the state of the old running
 process. Finish all turns and pending approvals, exit attached CLIs, and use a
 separate terminal or SSH shell owned by the worker's user. Stopping the worker

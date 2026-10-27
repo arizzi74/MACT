@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -53,6 +54,13 @@ type pendingRPC struct {
 	responseSeen bool
 	rejected     bool
 	reply        *rpcResponse
+
+	// Only the fixed observation-resume API may settle after abandonment on a
+	// matching acknowledgment. The thread identity stays private and bounded by
+	// the existing request limits; no abandoned record retains response data.
+	observationThreadID  string
+	observationAck       bool
+	observationAmbiguous bool
 }
 
 func (c *Client) UpdateSafety() UpdateSafetyStatus {
@@ -101,6 +109,7 @@ func (c *Client) finishRPCCall(request *pendingRPC, admitted, consumed bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.pending, request.id)
+	consumedError := consumed && request.reply != nil && request.reply.Error != nil
 	request.reply = nil
 	if !admitted || c.cause != nil {
 		return
@@ -110,7 +119,13 @@ func (c *Client) finishRPCCall(request *pendingRPC, admitted, consumed bool) {
 	if !request.writeDone {
 		c.updateWriting[request.id] = request
 	}
-	if consumed || request.readOnly || request.rejected {
+	settled := consumed || request.readOnly || request.rejected
+	if request.observationThreadID != "" {
+		// Live callers retain the existing behavior for a consumed RPC error.
+		// Cancellation and late errors never receive that exception.
+		settled = !request.observationAmbiguous && (request.observationAck || request.rejected || consumedError)
+	}
+	if settled {
 		if request.readOnly && !request.responseSeen {
 			c.rememberUpdateReadLocked(request.id)
 		}
@@ -142,6 +157,7 @@ func (c *Client) acceptRPCResponse(id int64, response rpcResponse, rejection boo
 	if pending := c.pending[id]; pending != nil {
 		if !pending.responseSeen {
 			pending.responseSeen, pending.rejected = true, rejection
+			pending.observationAck = !pending.observationAmbiguous && observationResumeAcknowledged(pending.observationThreadID, response)
 			pending.reply = &response
 			close(pending.done)
 		}
@@ -150,7 +166,8 @@ func (c *Client) acceptRPCResponse(id int64, response rpcResponse, rejection boo
 	if abandoned := c.updateUnconfirmed[id]; abandoned != nil {
 		if !abandoned.responseSeen {
 			abandoned.responseSeen, abandoned.rejected = true, rejection
-			if rejection {
+			abandoned.observationAck = !abandoned.observationAmbiguous && observationResumeAcknowledged(abandoned.observationThreadID, response)
+			if !abandoned.observationAmbiguous && (rejection || abandoned.observationAck) {
 				delete(c.updateUnconfirmed, id)
 			}
 		}
@@ -161,6 +178,66 @@ func (c *Client) acceptRPCResponse(id int64, response rpcResponse, rejection boo
 		return true
 	}
 	return false
+}
+
+func (c *Client) observationResumePendingLocked(threadID string) bool {
+	for _, requests := range []map[int64]*pendingRPC{c.pending, c.updateWriting, c.updateUnconfirmed} {
+		for _, request := range requests {
+			if request.observationThreadID == threadID {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// A completed observation resume only removes RPC uncertainty. Worker update
+// preparation must still fence new work and independently verify fresh state.
+func observationResumeAcknowledged(threadID string, response rpcResponse) bool {
+	if threadID == "" || response.Error != nil {
+		return false
+	}
+	result, ok := uniqueJSONObject(response.Result)
+	if !ok || ambiguousJSONField(result, "thread") {
+		return false
+	}
+	thread, ok := uniqueJSONObject(result["thread"])
+	if !ok || ambiguousJSONField(thread, "id") {
+		return false
+	}
+	var id string
+	if json.Unmarshal(thread["id"], &id) != nil || id != threadID {
+		return false
+	}
+	decoded, err := decodeThread(result["thread"])
+	return err == nil && decoded.ID == threadID
+}
+
+func ambiguousJSONField(object map[string]json.RawMessage, name string) bool {
+	for key := range object {
+		if key != name && strings.EqualFold(key, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// Malformed replies are not completion evidence. If an ambiguous envelope has
+// no trustworthy identity, conservatively fence every outstanding observation
+// resume instead of letting a later success erase the first observation.
+func (c *Client) invalidateObservationResponse(raw []byte) {
+	var id int64
+	object, unique := uniqueJSONObject(raw)
+	identified := unique && !ambiguousJSONField(object, "id") && json.Unmarshal(object["id"], &id) == nil && !bytes.Equal(bytes.TrimSpace(object["id"]), []byte("null"))
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, requests := range []map[int64]*pendingRPC{c.pending, c.updateUnconfirmed} {
+		for requestID, request := range requests {
+			if request.observationThreadID != "" && !request.responseSeen && (!identified || requestID == id) {
+				request.observationAmbiguous = true
+			}
+		}
+	}
 }
 
 // Keep this explicit: a method suffix or an unknown future API is not evidence
@@ -192,34 +269,40 @@ func updateMethodName(method string) string {
 // Only standard pre-execution rejections can retire an abandoned mutation.
 // Internal/server errors may follow partially accepted work. Require an exact,
 // unambiguous envelope instead of trusting permissive struct unmarshalling.
-func validateRPCResponse(raw []byte) (bool, bool) {
+func validateRPCResponse(raw []byte) (valid, rejection, observationAmbiguous bool) {
 	object, ok := uniqueJSONObject(raw)
 	if !ok || object["method"] != nil || object["id"] == nil || (object["result"] != nil) == (object["error"] != nil) {
-		return false, false
+		return false, false, false
 	}
 	var id int64
 	if json.Unmarshal(object["id"], &id) != nil || bytes.Equal(bytes.TrimSpace(object["id"]), []byte("null")) {
-		return false, false
+		return false, false, false
 	}
 	if version, exists := object["jsonrpc"]; exists {
 		var text string
 		if json.Unmarshal(version, &text) != nil || text != "2.0" {
-			return false, false
+			return false, false, false
 		}
 	}
+	// Reuse the already parsed envelope. Ordinary history replies can be large,
+	// so observation-only validation must not parse every RPC a second time.
+	for _, name := range []string{"id", "result", "error", "method", "jsonrpc"} {
+		observationAmbiguous = observationAmbiguous || ambiguousJSONField(object, name)
+	}
 	if object["result"] != nil {
-		return true, false
+		return true, false, observationAmbiguous
 	}
 	failure, ok := uniqueJSONObject(object["error"])
 	if !ok || failure["code"] == nil || failure["message"] == nil {
-		return false, false
+		return false, false, false
 	}
 	var code int
 	var message string
 	if json.Unmarshal(failure["code"], &code) != nil || bytes.Equal(bytes.TrimSpace(failure["code"]), []byte("null")) || json.Unmarshal(failure["message"], &message) != nil || bytes.Equal(bytes.TrimSpace(failure["message"]), []byte("null")) {
-		return false, false
+		return false, false, false
 	}
-	return true, code == -32600 || code == -32601 || code == -32602
+	observationAmbiguous = observationAmbiguous || ambiguousJSONField(failure, "code") || ambiguousJSONField(failure, "message")
+	return true, code == -32600 || code == -32601 || code == -32602, observationAmbiguous
 }
 
 func uniqueJSONObject(raw []byte) (map[string]json.RawMessage, bool) {

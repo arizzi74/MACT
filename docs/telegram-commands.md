@@ -642,6 +642,11 @@ When the worker confirms that a complete answer was processed, visible progress
 is refreshed again at the bottom. Partial answers keep their immediate refresh
 while the remaining questions are collected. These refreshes survive gateway
 restarts and duplicate worker results without creating extra cards.
+If Codex's quoted user-message echo arrives after answer acceptance, progress
+moves again only after that echo has been fully delivered. Multipart echoes wait
+for their final chunk, including after a retry or restart. This refresh uses the
+echo's actual session and destination, and does not restore finished turns or
+move progress belonging to another selected session.
 If Telegram repeatedly refuses deletion, fresh progress can continue while the
 gateway keeps retrying cleanup of the old copies.
 

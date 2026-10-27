@@ -171,6 +171,9 @@ func (s *Store) MarkDeliverySent(ctx context.Context, id string, messageID int64
 			return err
 		}
 	}
+	if err := repositionDeliveredTelegramInputProgress(ctx, tx, deliveryID); err != nil {
+		return err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
@@ -356,6 +359,9 @@ func (s *Store) MarkDeliveryChunkSent(ctx context.Context, id string, index int,
 	if !pending {
 		_, err = tx.Exec(ctx, `UPDATE telegram_deliveries SET status='sent',sent_at=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z'),telegram_message_id=$2,last_error=NULL WHERE delivery_id=$1`, deliveryID, messageID)
 		if err != nil {
+			return err
+		}
+		if err := repositionDeliveredTelegramInputProgress(ctx, tx, deliveryID); err != nil {
 			return err
 		}
 	}

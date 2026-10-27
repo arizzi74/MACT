@@ -98,7 +98,7 @@ func (a *Agent) Run(ctx context.Context) error {
 			return dispatchErr
 		}
 	}
-	conn, err := a.newConnection(a.cfg, a.store, a.log, a.manager.Snapshot, a.HandleCommand)
+	conn, err := a.newConnection(a.cfg, a.store, a.log, a.manager.snapshotWithUpdateSafety, a.HandleCommand)
 	if err != nil {
 		return err
 	}

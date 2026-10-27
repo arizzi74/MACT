@@ -38,9 +38,14 @@ const pendingProgressRepositionSQL = `(EXISTS (
 // this after queueing or fencing their UI response, in the same transaction.
 // No session selection, conversation messages, or Codex events are changed.
 func repositionTelegramProgress(ctx context.Context, tx *dbTx, in IncomingUpdate) error {
+	return repositionTelegramProgressScope(ctx, tx, in, "")
+}
+
+func repositionTelegramProgressScope(ctx context.Context, tx *dbTx, in IncomingUpdate, sessionID string) error {
 	if _, err := tx.Exec(ctx, `UPDATE telegram_progress_messages SET retire_requested=1,
         next_attempt_at=CASE WHEN status='pending' THEN `+sqliteNow+` ELSE next_attempt_at END
-        WHERE bot_id=$1 AND chat_id=$2 AND message_thread_id=$3 AND status<>'deleted'`, in.BotID, in.ChatID, in.TopicID); err != nil {
+        WHERE bot_id=$1 AND chat_id=$2 AND message_thread_id=$3 AND status<>'deleted'
+          AND ($4='' OR session_id=$4)`, in.BotID, in.ChatID, in.TopicID, sessionID); err != nil {
 		return err
 	}
 	// Fence sent deliveries too: a late successful edit/checkpoint must remain
@@ -48,11 +53,15 @@ func repositionTelegramProgress(ctx context.Context, tx *dbTx, in IncomingUpdate
 	if _, err := tx.Exec(ctx, `UPDATE telegram_deliveries AS delivery SET visibility_revoked=1,progress_repositioned=1
         WHERE bot_id=$1 AND chat_id=$2 AND message_thread_id=$3
           AND kind IN ('agent_progress_message','tool_progress_message') AND progress_repositioned=0
+          AND ($4='' OR EXISTS(SELECT 1 FROM events scoped WHERE scoped.event_id=delivery.event_id AND scoped.session_id=$4))
           AND (status IN ('pending','failed','sending') OR EXISTS (
               SELECT 1 FROM telegram_progress_messages shown
               WHERE shown.delivery_id=delivery.delivery_id AND shown.status<>'deleted'
-          ))`, in.BotID, in.ChatID, in.TopicID); err != nil {
+          ))`, in.BotID, in.ChatID, in.TopicID, sessionID); err != nil {
 		return err
+	}
+	if sessionID != "" {
+		return restoreTelegramProgress(ctx, tx, in, sessionID)
 	}
 	return reconcileTelegramSelection(ctx, tx, in)
 }

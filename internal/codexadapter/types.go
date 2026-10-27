@@ -668,8 +668,23 @@ func (c *Client) StartThread(ctx context.Context, options ThreadOptions) (Thread
 // ResumeThread loads an existing persisted thread before it receives a turn.
 // Only metadata is needed here; embedded image history can exceed RPC limits.
 func (c *Client) ResumeThread(ctx context.Context, threadID string, options ThreadOptions) (Thread, error) {
+	return c.resumeThread(ctx, threadID, options, false)
+}
+
+// ResumeThreadForObservation subscribes to an existing thread without changing
+// its settings or submitting work. Unlike a generic resume, its first validated
+// matching success acknowledgment can settle RPC uncertainty after cancellation.
+// Callers must still independently verify runtime idle state before an update.
+func (c *Client) ResumeThreadForObservation(ctx context.Context, threadID string) (Thread, error) {
+	return c.resumeThread(ctx, threadID, ThreadOptions{}, true)
+}
+
+func (c *Client) resumeThread(ctx context.Context, threadID string, options ThreadOptions, observation bool) (Thread, error) {
 	if threadID == "" {
 		return Thread{}, errors.New("thread id is required")
+	}
+	if observation && len(threadID) > 256 {
+		return Thread{}, errors.New("thread id is too long for observation")
 	}
 	params := options.fields()
 	delete(params, "serviceName") // thread/resume does not accept serviceName.
@@ -678,7 +693,11 @@ func (c *Client) ResumeThread(ctx context.Context, threadID string, options Thre
 	var reply struct {
 		Thread json.RawMessage `json:"thread"`
 	}
-	if err := c.request(ctx, "thread/resume", params, &reply, false); err != nil {
+	observationThreadID := ""
+	if observation {
+		observationThreadID = threadID
+	}
+	if err := c.requestWithObservation(ctx, "thread/resume", params, &reply, false, observationThreadID); err != nil {
 		return Thread{}, err
 	}
 	thread, err := decodeThread(reply.Thread)
@@ -687,6 +706,9 @@ func (c *Client) ResumeThread(ctx context.Context, threadID string, options Thre
 	}
 	if thread.ID == "" {
 		return Thread{}, errors.New("thread/resume response omitted thread id")
+	}
+	if observation && thread.ID != threadID {
+		return Thread{}, errors.New("thread/resume observation returned a different thread")
 	}
 	return thread, nil
 }
