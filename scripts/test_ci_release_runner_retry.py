@@ -61,6 +61,7 @@ class ReleaseRunnerRetryTest(unittest.TestCase):
     def open(self, request, timeout):
         self.assertEqual(timeout, 30)
         self.assertEqual(request.get_header("Authorization"), "Bearer test-token-never-log")
+        self.assertEqual(request.get_header("Content-type"), "application/json")
         method = request.get_method()
         self.calls.append((method, request.full_url, request.data))
         self.assertTrue(request.full_url.startswith(POLICY.API + self.base + "/"))

@@ -56,6 +56,7 @@ jobs:
                   API + path, method=method, data=b"{}" if method == "POST" else None,
                   headers={"Authorization": "Bearer " + token,
                            "Accept": "application/vnd.github+json",
+                           "Content-Type": "application/json",
                            "X-GitHub-Api-Version": "2022-11-28"})
               # Never forward the job token to a redirected origin.
               with urllib.request.build_opener(NoRedirect).open(request, timeout=30) as response:
