@@ -180,6 +180,10 @@ func TestClaudeProcessHelper(t *testing.T) {
 func testConfig(t *testing.T) Config {
 	t.Helper()
 	root := t.TempDir()
+	// The socket parent must stay private independently of the runner's umask.
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	return Config{Command: os.Args[0], WorkingDirectory: root, StateDirectory: filepath.Join(root, "state"), SocketPath: filepath.Join(root, "s"), Env: append(os.Environ(), "MACT_CLAUDE_HELPER=1", "MACT_CLAUDE_HELPER_ROOT="+root, "HOME="+root, "CLAUDE_CONFIG_DIR="+filepath.Join(root, "native")), StartupTimeout: time.Second, RequestTimeout: 2 * time.Second}
 }
 
