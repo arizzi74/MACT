@@ -28,9 +28,13 @@ type rollout struct {
 	metadataRead              bool
 }
 
+func nativeVersion(version string) string {
+	return strings.TrimSpace(strings.TrimPrefix(version, "codex-cli "))
+}
+
 func supportedVersion(version string) error {
-	version = strings.TrimSpace(strings.TrimPrefix(version, "codex-cli "))
-	if version != "0.163.0" {
+	version = nativeVersion(version)
+	if _, ok := nativeSchemaFingerprints[version]; !ok {
 		return fmt.Errorf("%w: Codex version %q has not been validated", ErrUnsupported, version)
 	}
 	return nil
@@ -39,6 +43,21 @@ func supportedVersion(version string) error {
 // CheckCompatibility lets a worker reject an unvalidated native layout before
 // asking that runtime to perform archive-specific inventory or lifecycle RPCs.
 func CheckCompatibility(version string) error { return supportedVersion(version) }
+
+// CheckVersionCompatibility rejects cross-version imports until native schema
+// migration and replay have been proven for that exact source/target pair.
+func CheckVersionCompatibility(archiveVersion, runtimeVersion string) error {
+	if err := supportedVersion(archiveVersion); err != nil {
+		return err
+	}
+	if err := supportedVersion(runtimeVersion); err != nil {
+		return err
+	}
+	if nativeVersion(archiveVersion) != nativeVersion(runtimeVersion) {
+		return fmt.Errorf("%w: archive created with Codex %s requires the same runtime version; selected runtime is %s", ErrUnsupported, nativeVersion(archiveVersion), nativeVersion(runtimeVersion))
+	}
+	return nil
+}
 
 func openDB(filename string, readonly bool) (*sql.DB, error) {
 	if info, err := os.Lstat(filename); err == nil {
@@ -119,7 +138,36 @@ func threadTree(ctx context.Context, sqliteHome, root string) ([]string, error) 
 			}
 		}
 	}
+	// Attached side threads introduced in 0.165 have a separate lifecycle from
+	// spawned subagents. Until that lifecycle is independently proven, refuse
+	// both ends of an attached relationship rather than export an incomplete tree.
+	if err := checkAttachedThreads(ctx, db, ids); err != nil {
+		return nil, err
+	}
 	return ids, nil
+}
+
+func checkAttachedThreads(ctx context.Context, db *sql.DB, ids []string) error {
+	columns, err := columnNames(ctx, db, "threads")
+	if err != nil {
+		return err
+	}
+	for _, column := range columns {
+		if column != "attached_thread_parent_id" {
+			continue
+		}
+		for _, id := range ids {
+			var attached int
+			if err := db.QueryRowContext(ctx, "SELECT count(*) FROM threads WHERE (id=? AND attached_thread_parent_id IS NOT NULL) OR attached_thread_parent_id=?", id, id).Scan(&attached); err != nil {
+				return err
+			}
+			if attached != 0 {
+				return fmt.Errorf("%w: attached side threads have not been validated for archival", ErrUnsupported)
+			}
+		}
+		break
+	}
+	return nil
 }
 
 const maxNativeLineBytes = 32 << 20

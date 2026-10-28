@@ -1234,7 +1234,8 @@
       if (response.status === 401) { expire(); throw new Error('Sign in to continue.'); }
       let result; try { result = await response.json(); } catch (_) { /* Gateway errors can be plain text. */ }
       if (!response.ok) {
-        const error = new Error(result?.message || 'Worker request failed (' + response.status + '). Refresh workers and try again.'); error.status = response.status; error.result = result; throw error;
+        const fallback = 'Worker request failed (' + response.status + '). Refresh workers and try again.';
+        const error = new Error(operation.kind ? sessionOperationMessage(result?.error_code ? result : null, fallback, operation.kind) : result?.message || fallback); error.status = response.status; error.result = result; throw error;
       }
       if (!result || result.command_id !== operation.requestID || result.worker_id !== operation.workerID || result.runtime_id !== operation.runtimeID || result.runtime_generation !== operation.runtimeGeneration || typeof result.pending !== 'boolean') throw new Error('The worker returned an unexpected result.');
       return result;
@@ -1358,7 +1359,7 @@
     if (!worker[capability]) return worker.AgentKind === 'claude' ? 'Claude Code workers do not support this action.' : 'Update this worker to ' + action + '.';
     return '';
   }
-  function sessionOperationMessage(result, fallback) {
+  function sessionOperationMessage(result, fallback, kind = '') {
     const phases = { preparing: 'Preparing the operation on the worker…', exporting: 'Exporting the conversation…', compressing: 'Compressing the project and conversation…', recovering: 'Recovering the operation on the worker…', verifying: 'Verifying the archive…', archiving: 'Archiving the native conversation…', cleaning: 'Removing the original project directory…', extracting: 'Extracting the project files…', restoring: 'Restoring the conversation…' };
     if (result?.pending && phases[result.phase]) return phases[result.phase];
     const aliases = { path_exists: 'archive_conflict', archive_unsupported: 'archive_incompatible', codex_method_unsupported: 'archive_incompatible', worker_unavailable: 'worker_offline', archive_busy: 'session_busy', unsupported_operation: 'unsupported', stale_runtime: 'runtime_unavailable', codex_unavailable: 'runtime_unavailable', command_outcome_unknown: 'outcome_unknown' };
@@ -1367,7 +1368,7 @@
       shared_workspace: 'Other sessions share this project directory. Keep the original directory, or move those sessions before removing it.',
       archive_conflict: 'The original project path already exists. Move that directory on the worker, then explicitly retry the restore. Nothing was overwritten; the archive is kept.',
       path_conflict: 'The original project path already exists. Move that directory on the worker, then explicitly retry the restore. Nothing was overwritten; the archive is kept.',
-      archive_incompatible: 'This archive is incompatible with the selected Codex runtime. Choose a compatible runtime and retry. The archive is kept.',
+      archive_incompatible: kind === 'restore' ? 'Restoring this archive requires its original Codex version and a supported session layout. The project and archive have been kept.' : 'The Codex runtime version or session layout is not supported for archiving or restoring. The project and any existing archive have been kept.',
       archive_not_found: 'This archive is no longer available. Refresh the archive list and choose another archive.',
       archive_invalid: 'This archive failed verification. The original project and archive have been kept. Choose another archive or resolve the worker issue before retrying.',
       archive_corrupt: 'This archive failed verification. The original project and archive have been kept. Choose another archive or resolve the worker issue before retrying.',
@@ -1448,7 +1449,7 @@
       if (!operationCurrent(operation)) throw new Error('This request’s view expired.');
       if (response.status === 401) { expire(); throw new Error('Sign in to continue.'); }
       let result; try { result = await response.json(); } catch (_) { /* HTTP errors can be plain text. */ }
-      if (!response.ok) { const error = new Error(sessionOperationMessage(result, 'Request failed (' + response.status + '). Check status before retrying.')); error.status = response.status; throw error; }
+      if (!response.ok) { const error = new Error(sessionOperationMessage(result?.error_code ? result : null, 'Request failed (' + response.status + '). Check status before retrying.', operation.kind)); error.status = response.status; error.result = result; throw error; }
       if (!result || result.command_id !== operation.requestID || result.session_id !== operation.sessionID || result.worker_id !== operation.workerID ||
         result.runtime_id !== operation.runtimeID || result.runtime_generation !== operation.runtimeGeneration || typeof result.pending !== 'boolean') throw new Error('The worker returned an unexpected result.');
       return result;
@@ -1484,9 +1485,9 @@
       if (!result.session?.session_id || result.session.worker_id !== operation.workerID || result.session.runtime_id !== operation.runtimeID || result.session.archived) throw new Error('The worker did not confirm restoration on the chosen runtime.');
       applyConfirmedSession(result.session);
     }
-    operation.phase = 'complete'; operation.pending = false; operation.message = sessionOperationMessage(result, operation.kind === 'edit' ? 'Session name saved.' : operation.kind === 'archive' ? 'Archive saved on the worker. The session was archived.' : operation.kind === 'restore' ? 'Project restored. The original archive was kept.' : 'Choose an archive to restore.');
+    operation.phase = 'complete'; operation.pending = false; operation.message = sessionOperationMessage(result, operation.kind === 'edit' ? 'Session name saved.' : operation.kind === 'archive' ? 'Archive saved on the worker. The session was archived.' : operation.kind === 'restore' ? 'Project restored. The original archive was kept.' : 'Choose an archive to restore.', operation.kind);
     operation.warningCode = result.warning_code || '';
-    if (operation.warningCode === 'project_cleanup_failed') operation.message = sessionOperationMessage(result, 'Session archived. Project folder cleanup could not finish; the verified archive was kept.') + ' Review the retained project files on the worker.';
+    if (operation.warningCode === 'project_cleanup_failed') operation.message = sessionOperationMessage(result, 'Session archived. Project folder cleanup could not finish; the verified archive was kept.', operation.kind) + ' Review the retained project files on the worker.';
     if (result.archive_directory) operation.archiveDirectory = result.archive_directory;
     if (result.archive) operation.archive = result.archive;
     persistSessionOperations(); updateSessionOperationView(operation);
@@ -1512,12 +1513,12 @@
       operation.progress = result.phase || '';
       if (!result.pending && result.status === 'completed') { await finishSessionOperation(operation, result); return; }
       operation.phase = result.pending ? 'pending' : result.status === 'outcome_unknown' || result.error_code === 'outcome_unknown' ? 'unknown' : 'failed';
-      operation.message = sessionOperationMessage(result, result.pending ? 'Waiting for the worker…' : 'The worker could not complete this request.');
+      operation.message = sessionOperationMessage(result, result.pending ? 'Waiting for the worker…' : 'The worker could not complete this request.', operation.kind);
     } catch (error) {
       if (!current()) return;
       operation.phase = method === 'POST' && error.status >= 400 && error.status < 500 ? 'failed' : 'unknown';
       operation.pending = operation.phase !== 'failed';
-      operation.message = operation.phase === 'failed' ? error.result ? sessionOperationMessage(error.result?.error_code ? error.result : null, 'The worker rejected this request. Refresh workers and try again.') : error.message : 'The result has not been confirmed. This request may still be running. Check status; it will not be submitted again.';
+      operation.message = operation.phase === 'failed' ? error.result ? sessionOperationMessage(error.result?.error_code ? error.result : null, 'The worker rejected this request. Refresh workers and try again.', operation.kind) : error.message : 'The result has not been confirmed. This request may still be running. Check status; it will not be submitted again.';
     } finally {
       if (current()) {
         operation.checking = false; persistSessionOperations(); updateSessionOperationView(operation);

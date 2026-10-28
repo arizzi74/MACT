@@ -1,5 +1,7 @@
 // Native archive compatibility is deliberately limited to the exact validated
-// Codex 0.163.0 layout. SQLite schemas are fingerprinted; no global database or
+// Codex 0.163.0 and 0.165.0 layouts, with matching source and target versions.
+// Attached side-thread relationships fail closed pending lifecycle validation.
+// SQLite schemas are fingerprinted per version; no global database or
 // authentication file is copied. Legacy and paginated JSONL are canonical;
 // thread_history_1.sqlite contains rebuildable projections and is regenerated.
 // Fork source rollouts are frozen at referenced prefix boundaries. Filesystem

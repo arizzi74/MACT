@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -52,6 +53,14 @@ func TestNativeWorkerArchiveDeleteProjectAndRestoreOriginalSession(t *testing.T)
 		if err != nil {
 			t.Fatal(err)
 		}
+	}
+	expectedVersion := os.Getenv("CODEX_NATIVE_ARCHIVE_VERSION")
+	if expectedVersion == "" {
+		expectedVersion = "0.163.0"
+	}
+	versionOutput, err := exec.Command(binary, "--version").Output()
+	if err != nil || strings.TrimSpace(string(versionOutput)) != "codex-cli "+expectedVersion {
+		t.Fatalf("native worker proof expected Codex %s, got %q (%v)", expectedVersion, strings.TrimSpace(string(versionOutput)), err)
 	}
 	for _, fixture := range []struct {
 		mode, state string
@@ -230,7 +239,7 @@ func TestNativeWorkerArchiveDeleteProjectAndRestoreOriginalSession(t *testing.T)
 			if err != nil {
 				t.Fatal(err)
 			}
-			runtime.State, runtime.CodexVersion = "running", "0.163.0"
+			runtime.State, runtime.CodexVersion = "running", expectedVersion
 			a.manager.install(runtime, client)
 			session, err := store.UpsertRuntimeSession(runtime, sessionFromThread(runtime, thread, fixture.loaded))
 			if err != nil {

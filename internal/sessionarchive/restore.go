@@ -55,10 +55,13 @@ func Restore(ctx context.Context, o RestoreOptions) (Manifest, error) {
 	if err != nil {
 		return Manifest{}, err
 	}
-	if err := supportedVersion(m.CodexVersion); err != nil {
+	if err := CheckVersionCompatibility(m.CodexVersion, o.CodexVersion); err != nil {
 		return Manifest{}, err
 	}
 	if err := validateNativeSnapshot(ctx, stage, m); err != nil {
+		return Manifest{}, err
+	}
+	if err := validateNativeRestoreTarget(ctx, o, m); err != nil {
 		return Manifest{}, err
 	}
 	if o.Destination == "" {

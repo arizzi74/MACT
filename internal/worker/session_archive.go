@@ -168,6 +168,16 @@ func (a *Agent) prepareRestoreJob(ctx context.Context, c protocol.Command, job *
 	if manifest.ArchiveID != job.ArchiveID || (job.Session.ThreadID != "" && job.Session.ThreadID != manifest.ThreadID) {
 		return &protocol.Error{Code: protocol.ArchiveInvalid, Message: "The selected archive identity changed."}
 	}
+	_, runtime, available := a.manager.Client(c.RuntimeID)
+	if !available || runtime.State != "running" {
+		return &protocol.Error{Code: protocol.CodexUnavailable, Message: "The archive runtime is not available. Retry after it has started."}
+	}
+	// Recovery can resume after importing files but before native unarchive.
+	// Refuse a different runtime before changing the saved identity or issuing
+	// any lifecycle RPC, even when the import phase was already completed.
+	if err := sessionarchive.CheckVersionCompatibility(manifest.CodexVersion, runtime.CodexVersion); err != nil {
+		return err
+	}
 	if job.ProjectPath != "" && job.ProjectPath != manifest.OriginalPath {
 		return &protocol.Error{Code: protocol.ArchiveInvalid, Message: "The selected archive project path changed."}
 	}
@@ -437,14 +447,26 @@ func (a *Agent) runArchiveJob(c protocol.Command, job *sessionArchiveJob) (proto
 				return protocol.Result{}, err
 			}
 		}
-		if manifest.ThreadID != job.Session.ThreadID || manifest.OriginalPath != job.ProjectPath {
-			return protocol.Result{}, &protocol.Error{Code: protocol.ArchiveInvalid, Message: "The archive manifest does not match the selected session."}
+		checkManifest := func(m sessionarchive.Manifest) error {
+			if m.ThreadID != job.Session.ThreadID || m.OriginalPath != job.ProjectPath {
+				return &protocol.Error{Code: protocol.ArchiveInvalid, Message: "The archive manifest does not match the selected session."}
+			}
+			// A restart can resume a previously exported job under a newer
+			// native runtime. Check both the initial and verified manifests
+			// before archiving the conversation or removing its project.
+			return sessionarchive.CheckVersionCompatibility(m.CodexVersion, runtime.CodexVersion)
+		}
+		if err := checkManifest(manifest); err != nil {
+			return protocol.Result{}, err
 		}
 		manifest, err = a.sessionArchiveEngine().verify(ctx, filename, sessionarchive.VerifyOptions{CodexBinary: profileBinary, Progress: progress})
 		if err != nil || !manifest.VerifiedSelfContained {
 			if err == nil {
 				err = sessionarchive.ErrUnsupported
 			}
+			return protocol.Result{}, err
+		}
+		if err := checkManifest(manifest); err != nil {
 			return protocol.Result{}, err
 		}
 		if !job.NativeArchived {
@@ -498,8 +520,9 @@ func (a *Agent) runArchiveJob(c protocol.Command, job *sessionArchiveJob) (proto
 	if err := phase("extracting"); err != nil {
 		return protocol.Result{}, err
 	}
+	var restoredManifest sessionarchive.Manifest
 	if !job.Imported {
-		_, err = a.sessionArchiveEngine().restore(ctx, sessionarchive.RestoreOptions{ArchivePath: filename, CodexHome: info.CodexHome, SQLiteHome: sqliteHome, Destination: job.ProjectPath, CodexVersion: runtime.CodexVersion, Progress: progress})
+		restoredManifest, err = a.sessionArchiveEngine().restore(ctx, sessionarchive.RestoreOptions{ArchivePath: filename, CodexHome: info.CodexHome, SQLiteHome: sqliteHome, Destination: job.ProjectPath, CodexVersion: runtime.CodexVersion, Progress: progress})
 		if err != nil {
 			return protocol.Result{}, err
 		}
@@ -510,6 +533,17 @@ func (a *Agent) runArchiveJob(c protocol.Command, job *sessionArchiveJob) (proto
 		if err := phase("restoring"); err != nil {
 			return protocol.Result{}, err
 		}
+	} else {
+		restoredManifest, err = a.sessionArchiveEngine().read(ctx, filename)
+		if err != nil {
+			return protocol.Result{}, err
+		}
+	}
+	if restoredManifest.ArchiveID != job.ArchiveID || restoredManifest.ThreadID != job.Session.ThreadID || restoredManifest.OriginalPath != job.ProjectPath {
+		return protocol.Result{}, &protocol.Error{Code: protocol.ArchiveInvalid, Message: "The selected archive identity changed."}
+	}
+	if err := sessionarchive.CheckVersionCompatibility(restoredManifest.CodexVersion, runtime.CodexVersion); err != nil {
+		return protocol.Result{}, err
 	}
 	archivedIDs, err := client.ArchivedThreadIDs(ctx)
 	if err != nil {

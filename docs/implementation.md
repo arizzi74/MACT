@@ -49,7 +49,7 @@ local entrypoint. Darwin executables were cross-built with CGO disabled; the
 LaunchAgent was not run on a Darwin host.
 
 The session archive release gate additionally downloads the supported official
-Codex 0.163.0 binary with a pinned SHA-256. Isolated legacy and paginated/forked
+Codex 0.163.0 and 0.165.0 binaries, each with a pinned SHA-256. Isolated legacy and paginated/forked
 fixtures prove restoration with their original native store, project and
 attachment removed, process restarts, and continued model turns against a local
 mock provider. A worker-level round trip exercises native archive, optional
@@ -63,10 +63,10 @@ The worker round trips run in an isolated subprocess with `umask 0077` and
 explicitly check `0640`, `0644` and `0755` source, archive and restored modes.
 Unit tests also reject concurrent permission changes during export and prove
 that content, permission and entry changes still prevent cleanup. No account
-credentials or paid API calls are used. With that version installed locally:
+credentials or paid API calls are used. With either version installed locally:
 
 ```sh
-CODEX_NATIVE_ARCHIVE_TEST=1 CODEX_REAL_BINARY=/path/to/codex \
+CODEX_NATIVE_ARCHIVE_TEST=1 CODEX_NATIVE_ARCHIVE_VERSION=0.165.0 CODEX_REAL_BINARY=/path/to/codex \
   go test ./internal/sessionarchive ./internal/worker \
   -run '^TestNative(SelfContainedResume|ContinuedTurn|WorkerArchive)' -count=1
 ```

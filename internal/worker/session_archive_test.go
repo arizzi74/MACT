@@ -30,6 +30,7 @@ func archiveJobFixture(t *testing.T) (*Agent, protocol.Runtime, *codextest.Serve
 		t.Fatal(err)
 	}
 	t.Cleanup(server.Close)
+	runtime.CodexVersion = "0.163.0"
 	a.manager.install(runtime, client)
 	project := filepath.Join(runtime.DefaultCWD, "project")
 	if err := os.Mkdir(project, 0700); err != nil {
@@ -530,6 +531,139 @@ func TestArchiveRecoveredExportDoesNotReexport(t *testing.T) {
 	record := waitArchiveTerminal(t, a, c.ID)
 	if record.State != CommandCompleted || exports.Load() != 0 || countCall(server.Calls(), "thread/archive") != 1 {
 		t.Fatalf("recovered export replayed: %#v exports=%d calls=%#v", record, exports.Load(), server.Calls())
+	}
+}
+
+func TestArchiveRecoveredExportRefusesChangedCodexVersion(t *testing.T) {
+	a, runtime, server, session, manifest := archiveJobFixture(t)
+	client, _, ok := a.manager.Client(runtime.ID)
+	if !ok {
+		t.Fatal("fixture runtime unavailable")
+	}
+	// The first export was made before the worker's Codex runtime updated.
+	runtime.CodexVersion = "0.165.0"
+	a.manager.install(runtime, client)
+	manifest.CodexVersion = "0.163.0"
+	var verified atomic.Int32
+	a.archiveOperations.verify = func(context.Context, string, sessionarchive.VerifyOptions) (sessionarchive.Manifest, error) {
+		verified.Add(1)
+		return sessionarchive.Manifest{VerifiedSelfContained: true}, nil
+	}
+	projectFile := filepath.Join(session.CWD, "keep.txt")
+	if err := os.WriteFile(projectFile, []byte("project survives"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	c := agentCommand(runtime, session, protocol.ArchiveSession)
+	c.Arguments.CWD = session.CWD
+	c.Arguments.SessionArchive = &protocol.SessionArchiveRequest{DeleteProject: true}
+	if _, err := a.store.Receive(c); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	manifest.ArchiveID = "recovered-version.tar.xz"
+	archiveFile := filepath.Join(dir, manifest.ArchiveID)
+	if err := os.WriteFile(archiveFile, []byte("existing archive"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	job := sessionArchiveJob{ArchiveID: manifest.ArchiveID, Directory: dir, ProjectPath: session.CWD, Session: session, Phase: "verifying", Exported: true}
+	if err := a.store.saveArchiveJob(c, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.recoverArchiveJobs(); err != nil {
+		t.Fatal(err)
+	}
+	record := waitArchiveTerminal(t, a, c.ID)
+	if record.State != CommandFailed || record.Result == nil || record.Result.Error == nil || record.Result.Error.Code != protocol.CodexMethodUnsupported {
+		t.Fatalf("different native version did not safely refuse recovery: %#v", record)
+	}
+	if verified.Load() != 0 || countCall(server.Calls(), "thread/archive") != 0 {
+		t.Fatal("version mismatch reached verification or native archive")
+	}
+	if data, err := os.ReadFile(projectFile); err != nil || string(data) != "project survives" {
+		t.Fatal("version mismatch changed the original project")
+	}
+	if data, err := os.ReadFile(archiveFile); err != nil || string(data) != "existing archive" {
+		t.Fatal("version mismatch changed the previously exported archive")
+	}
+}
+
+func TestArchiveRefusesDifferentVersionReturnedByVerifier(t *testing.T) {
+	a, runtime, server, session, manifest := archiveJobFixture(t)
+	projectFile := filepath.Join(session.CWD, "keep.txt")
+	if err := os.WriteFile(projectFile, []byte("project survives"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	a.archiveOperations.verify = func(context.Context, string, sessionarchive.VerifyOptions) (sessionarchive.Manifest, error) {
+		changed := *manifest
+		changed.CodexVersion = "0.165.0"
+		changed.VerifiedSelfContained = true
+		return changed, nil
+	}
+	c := agentCommand(runtime, session, protocol.ArchiveSession)
+	c.Arguments.CWD = session.CWD
+	c.Arguments.SessionArchive = &protocol.SessionArchiveRequest{DeleteProject: true}
+	if ack, err := a.HandleCommand(t.Context(), c); err != nil || ack.Status != "accepted" {
+		t.Fatalf("archive admission = %#v %v", ack, err)
+	}
+	record := waitArchiveTerminal(t, a, c.ID)
+	if record.State != CommandFailed || record.Result == nil || record.Result.Error == nil || record.Result.Error.Code != protocol.CodexMethodUnsupported {
+		t.Fatalf("changed verified manifest was not rejected: %#v", record)
+	}
+	if countCall(server.Calls(), "thread/archive") != 0 {
+		t.Fatal("mismatched verified archive reached native archive")
+	}
+	if data, err := os.ReadFile(projectFile); err != nil || string(data) != "project survives" {
+		t.Fatal("mismatched verified archive changed the project")
+	}
+}
+
+func TestRestoreRecoveredImportRefusesChangedCodexVersion(t *testing.T) {
+	a, runtime, server, session, manifest := archiveJobFixture(t)
+	client, _, ok := a.manager.Client(runtime.ID)
+	if !ok {
+		t.Fatal("fixture runtime unavailable")
+	}
+	runtime.CodexVersion = "0.165.0"
+	a.manager.install(runtime, client)
+	manifest.CodexVersion = "0.163.0"
+	manifest.ArchiveID = "restore-before-runtime-update.tar.xz"
+	dir := t.TempDir()
+	archiveFile := filepath.Join(dir, manifest.ArchiveID)
+	projectFile := filepath.Join(session.CWD, "keep.txt")
+	for path, data := range map[string]string{archiveFile: "existing archive", projectFile: "existing project"} {
+		if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var imports atomic.Int32
+	a.archiveOperations.restore = func(context.Context, sessionarchive.RestoreOptions) (sessionarchive.Manifest, error) {
+		imports.Add(1)
+		return *manifest, nil
+	}
+	c := agentCommand(runtime, protocol.Session{}, protocol.RestoreSession)
+	c.Arguments.SessionArchive = &protocol.SessionArchiveRequest{ArchiveID: manifest.ArchiveID}
+	if _, err := a.store.Receive(c); err != nil {
+		t.Fatal(err)
+	}
+	job := sessionArchiveJob{ArchiveID: manifest.ArchiveID, Directory: dir, ProjectPath: session.CWD, Session: session, Phase: "restoring", Imported: true}
+	if err := a.store.saveArchiveJob(c, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.recoverArchiveJobs(); err != nil {
+		t.Fatal(err)
+	}
+	record := waitArchiveTerminal(t, a, c.ID)
+	if record.State != CommandFailed || record.Result == nil || record.Result.Error == nil || record.Result.Error.Code != protocol.CodexMethodUnsupported {
+		t.Fatalf("different native version did not safely refuse restore recovery: %#v", record)
+	}
+	if imports.Load() != 0 || countCall(server.Calls(), "thread/unarchive") != 0 || countCall(server.Calls(), "thread/resume") != 0 {
+		t.Fatal("version mismatch reached import or native restore")
+	}
+	if data, err := os.ReadFile(projectFile); err != nil || string(data) != "existing project" {
+		t.Fatal("version mismatch changed the original project")
+	}
+	if data, err := os.ReadFile(archiveFile); err != nil || string(data) != "existing archive" {
+		t.Fatal("version mismatch changed the original archive")
 	}
 }
 

@@ -2,8 +2,10 @@ package sessionarchive
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -143,6 +145,53 @@ func TestVerifyDoesNotRecordProofWhenRestartFails(t *testing.T) {
 	assertVerificationPasses(t, readVerificationLog(t, logPath), m, 2)
 }
 
+func TestVerifyRejectsUnsafeExecutableVersionWithoutChangingArchive(t *testing.T) {
+	for _, kind := range []string{"different-version", "no-version", "unknown-version", "invalid-version", "version-error", "version-timeout", "oversized-version"} {
+		t.Run(kind, func(t *testing.T) {
+			o, _ := fixture(t, "legacy")
+			m, err := Export(t.Context(), o)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.ReadFile(m.ArchivePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			binary, logPath := verificationFixtureBinary(t, m, verificationFault{Method: "--version", Kind: kind}, true)
+			t.Setenv("OPENAI_API_KEY", "version-probe-must-not-inherit")
+			t.Setenv("CODEX_HOME", o.CodexHome)
+			t.Setenv("CODEX_SQLITE_HOME", o.SQLiteHome)
+			t.Setenv("HTTPS_PROXY", "http://version-probe.invalid")
+			ctx := t.Context()
+			if kind == "version-timeout" {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, 200*time.Millisecond)
+				defer cancel()
+			}
+			verified, err := Verify(ctx, m.ArchivePath, VerifyOptions{CodexBinary: binary})
+			wantError := ErrUnsupported
+			if kind == "version-timeout" {
+				wantError = context.DeadlineExceeded
+			}
+			if !errors.Is(err, wantError) || verified.VerifiedSelfContained {
+				t.Fatalf("unsafe executable version produced proof: %#v %v", verified, err)
+			}
+			events := readVerificationLog(t, logPath)
+			if len(events) != 1 || events[0].Type != "version" {
+				t.Fatalf("version failure started native verification: %#v", events)
+			}
+			assertIsolatedVersionProbe(t, events[0])
+			if _, err := os.Stat(events[0].Project); !os.IsNotExist(err) {
+				t.Fatalf("version probe scratch retained: %v", err)
+			}
+			after, err := os.ReadFile(m.ArchivePath)
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatalf("version failure changed archive: %v", err)
+			}
+		})
+	}
+}
+
 // The root deliberately follows a descendant in this synthetic manifest. The
 // verifier must use ThreadID to resume the parent before inspecting descendants.
 func verificationManifest() Manifest {
@@ -191,6 +240,9 @@ func verificationFixtureBinary(t *testing.T, m Manifest, fault verificationFault
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "fixture.json")
 	logPath := filepath.Join(dir, "requests.jsonl")
+	if m.CodexVersion == "" {
+		m.CodexVersion = "0.163.0"
+	}
 	data, err := json.Marshal(verificationFixture{Manifest: m, LogPath: logPath, Fault: fault, CheckRestore: checkRestore})
 	if err != nil {
 		t.Fatal(err)
@@ -267,6 +319,10 @@ func assertVerificationPasses(t *testing.T, events []verificationEvent, m Manife
 	starts := map[int]verificationEvent{}
 	requests := map[int][]verificationEvent{}
 	for _, event := range events {
+		if event.Type == "version" {
+			assertIsolatedVersionProbe(t, event)
+			continue
+		}
 		if event.Type == "start" {
 			if _, exists := starts[event.Pass]; exists {
 				t.Fatalf("duplicate process for pass %d", event.Pass)
@@ -306,6 +362,13 @@ func assertVerificationPasses(t *testing.T, events []verificationEvent, m Manife
 	}
 }
 
+func assertIsolatedVersionProbe(t *testing.T, event verificationEvent) {
+	t.Helper()
+	if event.Home != filepath.Join(event.Project, "user-home") || event.CodexHome != filepath.Join(event.Project, "codex") || event.SQLiteHome != event.CodexHome || len(event.Credentials) != 0 {
+		t.Fatalf("version probe was not isolated: %#v", event)
+	}
+}
+
 // This subprocess uses the real stdio transport and loses its loaded-thread
 // state on every restart. It rejects standalone v2 subagent resumes and any
 // request that could start model work, and records requests before responding.
@@ -322,9 +385,6 @@ func TestArchiveVerificationAppServerProcess(t *testing.T) {
 }
 
 func runVerificationFixture(configPath string, args []string) error {
-	if !reflect.DeepEqual(args, []string{"app-server", "--listen", "stdio://", "-c", "features.plugins=false"}) {
-		return fmt.Errorf("unexpected app-server arguments: %v", args)
-	}
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return err
@@ -332,6 +392,48 @@ func runVerificationFixture(configPath string, args []string) error {
 	var config verificationFixture
 	if err := json.Unmarshal(data, &config); err != nil {
 		return err
+	}
+	if reflect.DeepEqual(args, []string{"--version"}) {
+		log, err := os.OpenFile(config.LogPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+		if err != nil {
+			return err
+		}
+		defer log.Close()
+		event, err := verificationProcessEnvironment("version")
+		if err != nil {
+			return err
+		}
+		if err := json.NewEncoder(log).Encode(event); err != nil {
+			return err
+		}
+		if config.Fault.Method == "--version" {
+			switch config.Fault.Kind {
+			case "different-version":
+				fmt.Println("codex-cli 0.165.0")
+				return nil
+			case "no-version":
+				return nil
+			case "unknown-version":
+				fmt.Println("codex-cli 0.166.0")
+				return nil
+			case "invalid-version":
+				fmt.Println("not a Codex version")
+				return nil
+			case "version-error":
+				return fmt.Errorf("fixture version command failed")
+			case "version-timeout":
+				time.Sleep(time.Minute)
+				return nil
+			case "oversized-version":
+				fmt.Print(strings.Repeat("x", 4097))
+				return nil
+			}
+		}
+		fmt.Println("codex-cli " + config.Manifest.CodexVersion)
+		return nil
+	}
+	if !reflect.DeepEqual(args, []string{"app-server", "--listen", "stdio://", "-c", "features.plugins=false"}) {
+		return fmt.Errorf("unexpected app-server arguments: %v", args)
 	}
 	pass := 1
 	if previous, err := os.Open(config.LogPath); err == nil {
@@ -357,16 +459,12 @@ func runVerificationFixture(configPath string, args []string) error {
 		return err
 	}
 	defer log.Close()
-	project, err := os.Getwd()
+	start, err := verificationProcessEnvironment("start")
 	if err != nil {
 		return err
 	}
-	start := verificationEvent{Type: "start", Pass: pass, PID: os.Getpid(), Project: project, Home: os.Getenv("HOME"), CodexHome: os.Getenv("CODEX_HOME"), SQLiteHome: os.Getenv("CODEX_SQLITE_HOME")}
-	for _, key := range []string{"OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_AUTH_TOKEN", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"} {
-		if os.Getenv(key) != "" {
-			start.Credentials = append(start.Credentials, key)
-		}
-	}
+	start.Pass = pass
+	project := start.Project
 	if err := json.NewEncoder(log).Encode(start); err != nil {
 		return err
 	}
@@ -485,4 +583,18 @@ func runVerificationFixture(configPath string, args []string) error {
 		}
 	}
 	return scanner.Err()
+}
+
+func verificationProcessEnvironment(kind string) (verificationEvent, error) {
+	project, err := os.Getwd()
+	if err != nil {
+		return verificationEvent{}, err
+	}
+	event := verificationEvent{Type: kind, PID: os.Getpid(), Project: project, Home: os.Getenv("HOME"), CodexHome: os.Getenv("CODEX_HOME"), SQLiteHome: os.Getenv("CODEX_SQLITE_HOME")}
+	for _, key := range []string{"OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_AUTH_TOKEN", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"} {
+		if os.Getenv(key) != "" {
+			event.Credentials = append(event.Credentials, key)
+		}
+	}
+	return event, nil
 }

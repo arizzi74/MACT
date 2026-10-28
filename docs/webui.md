@@ -120,8 +120,12 @@ the original project path and resumes the original conversation. An unchanged
 existing project/native session can be reused; different existing data causes a
 conflict instead of being overwritten. The archive remains available after
 restoring. A compatible worker and an allowed original project path are
-required; the initial native format supports **Codex 0.163.0** exactly. Older
-workers show an update instruction instead of accepting unsupported requests.
+required. Archive and restore support **Codex 0.163.0 and 0.165.0**; an
+archive must currently be restored using the same Codex version that created
+it. Sessions with attached side threads are refused until their lifecycle has
+been validated. Unsupported versions and layouts leave the project and any
+existing archive in place. Older workers show an update instruction instead of
+accepting unsupported requests.
 
 Archive and restore run as durable background worker jobs. Closing the dialog,
 switching sessions, losing the network or reloading the page does not repeat or

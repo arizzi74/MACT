@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -28,7 +29,7 @@ func TestNativeSelfContainedResumeAcrossRestart(t *testing.T) {
 	}
 	for _, mode := range []string{"legacy", "paginated"} {
 		t.Run(mode, func(t *testing.T) {
-			o, root := fixture(t, mode)
+			o, root := nativeFixture(t, mode)
 			ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 			defer cancel()
 			m, err := Export(ctx, o)
@@ -64,7 +65,7 @@ func TestNativeSelfContainedV2SubagentTreeAcrossRestart(t *testing.T) {
 	}
 	for _, mode := range []string{"legacy", "paginated"} {
 		t.Run(mode, func(t *testing.T) {
-			o, root := fixture(t, mode)
+			o, root := nativeFixture(t, mode)
 			ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
 			defer cancel()
 			writeProofConfig(t, o.CodexHome, "http://127.0.0.1:1")
@@ -180,7 +181,7 @@ func TestNativeContinuedTurnPreservesCompactionToolsAttachmentsAndDescendants(t 
 		t.Run(scenario, func(t *testing.T) {
 			mode := strings.TrimSuffix(scenario, "-retained")
 			retained := strings.HasSuffix(scenario, "-retained")
-			o, root := fixture(t, mode)
+			o, root := nativeFixture(t, mode)
 			ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 			defer cancel()
 			requests := make(chan []byte, 8)
@@ -207,9 +208,9 @@ func TestNativeContinuedTurnPreservesCompactionToolsAttachmentsAndDescendants(t 
 			ancestor := o.ThreadID
 			if mode == "paginated" {
 				ancestor = uuid.NewString()
-				writeFixtureRollout(t, o.CodexHome, o.ProjectPath, ancestor, mode, nil)
+				writeFixtureRollout(t, o.CodexHome, o.ProjectPath, ancestor, mode, nil, o.CodexVersion)
 			}
-			ancestorPath := filepath.Join(o.CodexHome, "sessions", "2026", "10", "18", "rollout-2026-10-18T12-00-00-"+ancestor+".jsonl")
+			ancestorPath := nativeFixtureRollout(t, o.CodexHome, ancestor)
 			appendCompaction(t, ancestorPath, mode)
 			if mode == "paginated" {
 				prefix, err := os.ReadFile(ancestorPath)
@@ -218,7 +219,14 @@ func TestNativeContinuedTurnPreservesCompactionToolsAttachmentsAndDescendants(t 
 				}
 				ordinal := bytes.Count(prefix, []byte{'\n'})
 				base := map[string]any{"thread_id": ancestor, "end_ordinal_exclusive": ordinal, "end_byte_offset": len(prefix)}
-				forkPath := writeFixtureRollout(t, o.CodexHome, o.ProjectPath, o.ThreadID, mode, base)
+				originalPath := nativeFixtureRollout(t, o.CodexHome, o.ThreadID)
+				forkPath := writeFixtureRollout(t, o.CodexHome, o.ProjectPath, o.ThreadID, mode, base, o.CodexVersion)
+				if forkPath != originalPath {
+					if err := os.Rename(forkPath, originalPath); err != nil {
+						t.Fatal(err)
+					}
+					forkPath = originalPath
+				}
 				adjustFixtureOrdinals(t, forkPath, ordinal)
 				// A continuation after the frozen fork point must neither be bundled
 				// nor become part of the resumed child's model-visible context.
@@ -449,6 +457,89 @@ func writeProofConfig(t *testing.T, home, baseURL string) {
 	}
 }
 
+// The native gate starts the selected real runtime, obtains its own thread ID
+// and session metadata, then appends fabricated history for the preservation
+// scenarios. Both the manifest version and SQLite schemas come from that exact
+// binary, rather than relabelling a 0.163 fixture as a newer archive.
+func nativeFixture(t *testing.T, mode string) (ExportOptions, string) {
+	t.Helper()
+	o, root := fixture(t, mode)
+	if err := os.Remove(nativeFixtureRollout(t, o.CodexHome, o.ThreadID)); err != nil {
+		t.Fatal(err)
+	}
+	version := os.Getenv("CODEX_NATIVE_ARCHIVE_VERSION")
+	if version == "" {
+		version = "0.163.0"
+	}
+	binary := os.Getenv("CODEX_REAL_BINARY")
+	if binary == "" {
+		binary = "codex"
+	}
+	versionCommand := exec.Command(binary, "--version")
+	versionCommand.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + root, "CODEX_HOME=" + o.CodexHome, "CODEX_SQLITE_HOME=" + o.CodexHome}
+	raw, err := versionCommand.Output()
+	if err != nil || nativeVersion(string(raw)) != version {
+		t.Fatalf("native proof requires exact Codex %s, got %q: %v", version, raw, err)
+	}
+	o.CodexVersion = version
+	writeProofConfig(t, o.CodexHome, "http://127.0.0.1:1")
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	client, err := startVerificationServer(ctx, binary, o.CodexHome, o.ProjectPath, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var started struct {
+		Thread struct {
+			ID string `json:"id"`
+		} `json:"thread"`
+	}
+	if err := client.call("thread/start", map[string]any{"cwd": o.ProjectPath, "historyMode": mode, "modelProvider": "archive_verify", "model": "archive-proof"}, &started); err != nil {
+		client.close()
+		t.Fatal(err)
+	}
+	o.ThreadID = started.Thread.ID
+	if err := client.call("thread/name/set", map[string]any{"threadId": o.ThreadID, "name": "Native archive proof"}, nil); err != nil {
+		client.close()
+		t.Fatal(err)
+	}
+	client.close()
+	filename := nativeFixtureRollout(t, o.CodexHome, o.ThreadID)
+	contents, err := os.ReadFile(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var generated map[string]any
+	if err := json.Unmarshal(bytes.SplitN(contents, []byte{'\n'}, 2)[0], &generated); err != nil {
+		t.Fatal(err)
+	}
+	metadata, ok := generated["payload"].(map[string]any)
+	if !ok || generated["type"] != "session_meta" || metadata["cli_version"] != version || metadata["id"] != o.ThreadID {
+		t.Fatalf("runtime did not generate matching native metadata: %#v", generated)
+	}
+	records := fixtureRecords(o.ProjectPath, o.ThreadID, mode, nil, version)
+	records[0] = generated
+	var rewritten bytes.Buffer
+	for _, record := range records {
+		if err := json.NewEncoder(&rewritten).Encode(record); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filename, rewritten.Bytes(), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return o, root
+}
+
+func nativeFixtureRollout(t *testing.T, home, id string) string {
+	t.Helper()
+	all, err := scanRollouts(t.Context(), home)
+	if err != nil || all[id] == nil {
+		t.Fatalf("native fixture rollout missing for %s: %v", id, err)
+	}
+	return all[id].path
+}
+
 func appendCompaction(t *testing.T, filename, mode string) {
 	t.Helper()
 	original, err := os.ReadFile(filename)
@@ -510,7 +601,7 @@ func (c *verificationServer) waitNotification(method string) error {
 
 func writeSubagentFixture(t *testing.T, o ExportOptions, id, mode string) {
 	t.Helper()
-	records := fixtureRecords(o.ProjectPath, id, mode, nil)
+	records := fixtureRecords(o.ProjectPath, id, mode, nil, o.CodexVersion)
 	meta := records[0]["payload"].(map[string]any)
 	meta["session_id"] = o.ThreadID
 	meta["parent_thread_id"] = o.ThreadID

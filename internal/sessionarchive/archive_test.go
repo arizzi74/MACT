@@ -34,8 +34,12 @@ func fixture(t *testing.T, mode string) (ExportOptions, string) {
 	return ExportOptions{CodexHome: home, SQLiteHome: home, ThreadID: id, ProjectPath: project, ArchiveDir: filepath.Join(root, "archives"), ArchiveID: uuid.NewString() + ".tar.xz", DisplayName: "Archive test", CodexVersion: "0.163.0"}, root
 }
 
-func fixtureRecords(project, id, mode string, base any) []map[string]any {
-	meta := map[string]any{"id": id, "session_id": id, "timestamp": "2026-10-18T12:00:00Z", "cwd": project, "originator": "codex_cli_rs", "cli_version": "0.163.0", "source": "cli", "model_provider": "archive_verify", "history_mode": mode, "base_instructions": map[string]any{"text": "Preserve the native archive fixture exactly.", "version": 1}}
+func fixtureRecords(project, id, mode string, base any, versions ...string) []map[string]any {
+	version := "0.163.0"
+	if len(versions) > 0 {
+		version = versions[0]
+	}
+	meta := map[string]any{"id": id, "session_id": id, "timestamp": "2026-10-18T12:00:00Z", "cwd": project, "originator": "codex_cli_rs", "cli_version": version, "source": "cli", "model_provider": "archive_verify", "history_mode": mode, "base_instructions": map[string]any{"text": "Preserve the native archive fixture exactly.", "version": 1}}
 	if base != nil {
 		meta["history_base"] = base
 	}
@@ -52,7 +56,7 @@ func fixtureRecords(project, id, mode string, base any) []map[string]any {
 	return records
 }
 
-func writeFixtureRollout(t *testing.T, home, project, id, mode string, base any) string {
+func writeFixtureRollout(t *testing.T, home, project, id, mode string, base any, versions ...string) string {
 	t.Helper()
 	dir := filepath.Join(home, "sessions", "2026", "10", "18")
 	if err := os.MkdirAll(dir, 0700); err != nil {
@@ -60,7 +64,7 @@ func writeFixtureRollout(t *testing.T, home, project, id, mode string, base any)
 	}
 	filename := filepath.Join(dir, "rollout-2026-10-18T12-00-00-"+id+".jsonl")
 	var b bytes.Buffer
-	for _, record := range fixtureRecords(project, id, mode, base) {
+	for _, record := range fixtureRecords(project, id, mode, base, versions...) {
 		if err := json.NewEncoder(&b).Encode(record); err != nil {
 			t.Fatal(err)
 		}

@@ -3,6 +3,7 @@ package sessionarchive
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"fmt"
 	"os"
@@ -10,19 +11,31 @@ import (
 	"strings"
 )
 
-// These schema fingerprints come from an isolated, official 0.163.0
-// app-server initialization and are exercised by the native acceptance gate.
+// These schema fingerprints come from isolated official app-server
+// initializations and are exercised by the native acceptance gate per version.
 // They permit only the exact native triggers and prohibit additional triggers,
 // views, virtual tables and arbitrary schema expressions
 // in an untrusted archive before any staged database is opened for writing.
-var schema163 = map[string]string{
-	"state_5.sqlite":    "d0db110fce9a15a2f86a4553809bcb3ff50b5de13581f74f17d1146781a84276",
-	"goals_1.sqlite":    "21a58c68564e332b540dc8714a738577b773a89ec813180a2948d74c0ab439dc",
-	"queue_1.sqlite":    "a8d391824fc26b21cc7ea4a547b30a64ea42da392491de183ce3f7aee553b7b2",
-	"memories_1.sqlite": "caae05f24d3219b5a2fccc6ed3ca15766ce11ae604de5b86cc939f54f4b7d674",
+var nativeSchemaFingerprints = map[string]map[string]string{
+	"0.163.0": {
+		"state_5.sqlite":    "d0db110fce9a15a2f86a4553809bcb3ff50b5de13581f74f17d1146781a84276",
+		"goals_1.sqlite":    "21a58c68564e332b540dc8714a738577b773a89ec813180a2948d74c0ab439dc",
+		"queue_1.sqlite":    "a8d391824fc26b21cc7ea4a547b30a64ea42da392491de183ce3f7aee553b7b2",
+		"memories_1.sqlite": "caae05f24d3219b5a2fccc6ed3ca15766ce11ae604de5b86cc939f54f4b7d674",
+	},
+	"0.165.0": {
+		"state_5.sqlite":    "f86df5c3d56ea28d766afaba74bf6fd7dcd3665173fbe253aafdea84e8b7ba56",
+		"goals_1.sqlite":    "21a58c68564e332b540dc8714a738577b773a89ec813180a2948d74c0ab439dc",
+		"queue_1.sqlite":    "a8d391824fc26b21cc7ea4a547b30a64ea42da392491de183ce3f7aee553b7b2",
+		"memories_1.sqlite": "caae05f24d3219b5a2fccc6ed3ca15766ce11ae604de5b86cc939f54f4b7d674",
+	},
 }
 
 func validateNativeSnapshot(ctx context.Context, stage string, m Manifest) error {
+	if err := supportedVersion(m.CodexVersion); err != nil {
+		return err
+	}
+	schemas := nativeSchemaFingerprints[nativeVersion(m.CodexVersion)]
 	all, err := scanRollouts(ctx, filepath.Join(stage, "native", "home"))
 	if err != nil {
 		return err
@@ -114,37 +127,20 @@ func validateNativeSnapshot(ctx context.Context, stage string, m Manifest) error
 		if err != nil {
 			return err
 		}
-		rows, err := db.QueryContext(ctx, "SELECT type,name,tbl_name,coalesce(sql,'') FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name")
+		fingerprint, tables, err := nativeSchemaFingerprint(ctx, db)
 		if err != nil {
 			db.Close()
 			return err
 		}
-		hash := sha256.New()
-		var tables []string
-		for rows.Next() {
-			var kind, name, table, ddl string
-			if err := rows.Scan(&kind, &name, &table, &ddl); err != nil {
-				rows.Close()
+		if fingerprint != schemas[filename] {
+			db.Close()
+			return fmt.Errorf("%w: unexpected native schema in %s (%s)", ErrUnsupported, filename, fingerprint)
+		}
+		if filename == "state_5.sqlite" {
+			if err := checkAttachedThreads(ctx, db, m.ThreadIDs); err != nil {
 				db.Close()
 				return err
 			}
-			for _, field := range []string{kind, name, table, ddl} {
-				hash.Write([]byte(field))
-				hash.Write([]byte{0})
-			}
-			if kind == "table" {
-				tables = append(tables, name)
-			}
-		}
-		err = rows.Err()
-		rows.Close()
-		if err != nil {
-			db.Close()
-			return err
-		}
-		if hex.EncodeToString(hash.Sum(nil)) != schema163[filename] {
-			db.Close()
-			return fmt.Errorf("%w: unexpected native schema in %s (%s)", ErrUnsupported, filename, hex.EncodeToString(hash.Sum(nil)))
 		}
 		marks := strings.TrimSuffix(strings.Repeat("?,", len(m.ThreadIDs)), ",")
 		args := make([]any, len(m.ThreadIDs))
@@ -243,6 +239,63 @@ func validateNativeSnapshot(ctx context.Context, stage string, m Manifest) error
 	for _, id := range closure {
 		if !selected[id] {
 			return fmt.Errorf("native manifest includes an unrelated thread")
+		}
+	}
+	return nil
+}
+
+func nativeSchemaFingerprint(ctx context.Context, db *sql.DB) (string, []string, error) {
+	rows, err := db.QueryContext(ctx, "SELECT type,name,tbl_name,coalesce(sql,'') FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name")
+	if err != nil {
+		return "", nil, err
+	}
+	defer rows.Close()
+	hash := sha256.New()
+	var tables []string
+	for rows.Next() {
+		var kind, name, table, ddl string
+		if err := rows.Scan(&kind, &name, &table, &ddl); err != nil {
+			return "", nil, err
+		}
+		for _, field := range []string{kind, name, table, ddl} {
+			hash.Write([]byte(field))
+			hash.Write([]byte{0})
+		}
+		if kind == "table" {
+			tables = append(tables, name)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return "", nil, err
+	}
+	return hex.EncodeToString(hash.Sum(nil)), tables, nil
+}
+
+// Validate every existing target DB before publishing a single native file or
+// row. Equal column names alone cannot prove a compatible schema or triggers.
+func validateNativeRestoreTarget(ctx context.Context, o RestoreOptions, m Manifest) error {
+	schemas := nativeSchemaFingerprints[nativeVersion(o.CodexVersion)]
+	for _, name := range nativeDBs {
+		path := filepath.Join(o.SQLiteHome, name)
+		if _, err := os.Lstat(path); os.IsNotExist(err) {
+			continue
+		} else if err != nil {
+			return err
+		}
+		db, err := openDB(path, true)
+		if err != nil {
+			return err
+		}
+		fingerprint, _, err := nativeSchemaFingerprint(ctx, db)
+		if err == nil && fingerprint != schemas[name] {
+			err = fmt.Errorf("%w: target native schema in %s does not match Codex %s", ErrUnsupported, name, nativeVersion(o.CodexVersion))
+		}
+		if err == nil && name == "state_5.sqlite" {
+			err = checkAttachedThreads(ctx, db, m.ThreadIDs)
+		}
+		db.Close()
+		if err != nil {
+			return err
 		}
 	}
 	return nil

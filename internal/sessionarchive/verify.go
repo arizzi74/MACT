@@ -27,6 +27,11 @@ func Verify(ctx context.Context, archivePath string, o VerifyOptions) (Manifest,
 	defer os.RemoveAll(root)
 	home := filepath.Join(root, "codex")
 	project := filepath.Join(root, "project")
+	// The profile's executable can have been updated independently of the
+	// running app-server. Never prove an archive using a different native version.
+	if err := verifyExecutableVersion(ctx, o.CodexBinary, m.CodexVersion, root); err != nil {
+		return Manifest{}, err
+	}
 	progress(o.Progress, "Verifying restore in an isolated Codex home")
 	if _, err := Restore(ctx, RestoreOptions{ArchivePath: archivePath, CodexHome: home, SQLiteHome: home, Destination: project, CodexVersion: m.CodexVersion}); err != nil {
 		return Manifest{}, fmt.Errorf("isolated native import: %w", err)
@@ -53,6 +58,55 @@ func Verify(ctx context.Context, archivePath string, o VerifyOptions) (Manifest,
 	}
 	m.VerifiedSelfContained = true
 	return m, nil
+}
+
+func verifyExecutableVersion(ctx context.Context, binary, archiveVersion, root string) error {
+	if binary == "" {
+		binary = "codex"
+	}
+	probeRoot := filepath.Join(root, "version-check")
+	home := filepath.Join(probeRoot, "codex")
+	if err := os.MkdirAll(home, 0700); err != nil {
+		return err
+	}
+	environment, err := verificationEnvironment(home, probeRoot)
+	if err != nil {
+		return err
+	}
+	versionCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(versionCtx, binary, "--version")
+	cmd.Dir = probeRoot
+	cmd.Env = environment
+	cmd.Stderr = io.Discard
+	cmd.WaitDelay = time.Second
+	var output verificationVersionOutput
+	cmd.Stdout = &output
+	if err := cmd.Run(); err != nil || output.overflow {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return fmt.Errorf("%w: the selected Codex executable's version could not be confirmed", ErrUnsupported)
+	}
+	return CheckVersionCompatibility(archiveVersion, string(output.data))
+}
+
+// An executable's diagnostics must not turn a bounded version probe into an
+// unbounded allocation. Continue draining output while retaining only 4 KiB.
+type verificationVersionOutput struct {
+	data     []byte
+	overflow bool
+}
+
+func (o *verificationVersionOutput) Write(data []byte) (int, error) {
+	n := len(data)
+	remaining := 4096 - len(o.data)
+	if len(data) > remaining {
+		o.overflow = true
+		data = data[:remaining]
+	}
+	o.data = append(o.data, data...)
+	return n, nil
 }
 
 func verifyRestoredThreads(client *verificationServer, m Manifest, project string, pass int) error {
@@ -122,11 +176,11 @@ func startVerificationServer(ctx context.Context, binary, home, project, root st
 	cmd.Dir = project
 	// A complete environment prevents inherited credentials, real HOME, remote
 	// state overrides, proxy settings, and connected service configuration.
-	userHome := filepath.Join(root, "user-home")
-	if err := os.MkdirAll(userHome, 0700); err != nil {
+	environment, err := verificationEnvironment(home, root)
+	if err != nil {
 		return nil, err
 	}
-	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + userHome, "CODEX_HOME=" + home, "CODEX_SQLITE_HOME=" + home, "TERM=xterm-256color"}
+	cmd.Env = environment
 	cmd.Stderr = io.Discard
 	in, err := cmd.StdinPipe()
 	if err != nil {
@@ -150,6 +204,14 @@ func startVerificationServer(ctx context.Context, binary, home, project, root st
 		return nil, err
 	}
 	return c, nil
+}
+
+func verificationEnvironment(home, root string) ([]string, error) {
+	userHome := filepath.Join(root, "user-home")
+	if err := os.MkdirAll(userHome, 0700); err != nil {
+		return nil, err
+	}
+	return []string{"PATH=" + os.Getenv("PATH"), "HOME=" + userHome, "CODEX_HOME=" + home, "CODEX_SQLITE_HOME=" + home, "TERM=xterm-256color"}, nil
 }
 func (c *verificationServer) call(method string, params any, result any) error {
 	c.next++

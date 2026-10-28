@@ -46,6 +46,7 @@ const hostile = '<img src=x onerror="window.injected=true">';
         }
         statuses.set(body.request_id, status);
         routedPosts.emit('post', recorded);
+        if (behaviors[kind] === 'incompatible-http') { delete behaviors[kind]; return reply({ error_code: 'codex_method_unsupported', message: 'SECRET arbitrary native backend error' }, 400); }
         if (behaviors[kind] === 'hold') { delete behaviors[kind]; heldReplies.set(body.request_id, { route, status }); return; }
         if (behaviors[kind] === 'drop') { delete behaviors[kind]; return route.abort('failed'); }
         return reply(status, kind === 'list' ? 200 : 202);
@@ -148,6 +149,26 @@ const hostile = '<img src=x onerror="window.injected=true">';
     assert.equal(await page.locator('#connection-text').textContent(), 'Connected · Renamed from another client', 'An inventory rename updates the connected session label');
     assert.equal(await page.evaluate(() => window.testSockets.length), sockets, 'Renaming the selected session preserves its existing connection');
 
+    await openEditor('b');
+    const unsupportedArchive = await waitPost('archive', () => page.locator('#edit-session-archive').click());
+    Object.assign(statuses.get(unsupportedArchive.request_id), { pending: false, status: 'failed', error_code: 'codex_method_unsupported', message: 'SECRET arbitrary native backend error' });
+    await page.clock.fastForward(1800);
+    await page.waitForFunction(() => document.querySelector('#edit-session-message').textContent.includes('runtime version or session layout'));
+    const unsupportedMessage = await page.locator('#edit-session-message').textContent();
+    assert.match(unsupportedMessage, /runtime version or session layout.*archiving or restoring/);
+    assert.match(unsupportedMessage, /project and any existing archive have been kept/);
+    assert.doesNotMatch(unsupportedMessage, /This archive is incompatible|SECRET|arbitrary native/);
+    assert.equal(statuses.get(unsupportedArchive.request_id).archive, undefined, 'An unsupported export can fail before an archive exists');
+    assert.equal(await selected('b').count(), 1, 'Unsupported archiving leaves the original session available');
+    assert.equal(await page.locator('#edit-session-archive').isDisabled(), false, 'A confirmed unsupported result allows an explicit retry');
+    assert.equal(posts('archive').filter(row => row.request_id === unsupportedArchive.request_id).length, 1, 'Unsupported archiving is never retried automatically');
+    behaviors.archive = 'incompatible-http';
+    const rejectedArchive = await waitPost('archive', () => page.locator('#edit-session-archive').click());
+    await page.waitForFunction(() => !document.querySelector('#edit-session-archive').disabled);
+    assert.equal(await page.locator('#edit-session-message').textContent(), unsupportedMessage, 'HTTP archive failures use the same safe fixed message');
+    assert.equal(posts('archive').filter(row => row.request_id === rejectedArchive.request_id).length, 1);
+    await page.locator('#edit-session-cancel').click();
+
     await openEditor('b'); assert.equal(await page.locator('#edit-session-delete-project').isChecked(), false);
     const archived = await waitPost('archive', () => page.locator('#edit-session-archive').click());
     assert.equal(archived.delete_project, false); assert.equal(archived.cwd, '/home/demo/CODEX/b');
@@ -184,6 +205,23 @@ const hostile = '<img src=x onerror="window.injected=true">';
     await page.locator('#new-session-archives-refresh').click();
     await page.waitForFunction(() => !document.querySelector('#new-session-archives-refresh').disabled);
     await page.locator('input[name="session-archive"]').check();
+    const unsupportedRestore = await waitPost('restore', () => page.locator('#new-session-submit').click());
+    Object.assign(statuses.get(unsupportedRestore.request_id), { pending: false, status: 'failed', error_code: 'archive_incompatible', message: 'SECRET arbitrary native backend error' });
+    await page.clock.fastForward(1800);
+    await page.waitForFunction(() => document.querySelector('#new-session-message').textContent.includes('original Codex version'));
+    const restoreMessage = await page.locator('#new-session-message').textContent();
+    assert.match(restoreMessage, /original Codex version and a supported session layout/);
+    assert.match(restoreMessage, /project and archive have been kept/);
+    assert.doesNotMatch(restoreMessage, /SECRET|arbitrary native/);
+    assert.equal(await page.locator('input[name="session-archive"]:checked').inputValue(), archive.id, 'An incompatible restore retains its selected archive');
+    assert.equal(await selected('a').getAttribute('aria-current'), 'true', 'An incompatible restore preserves the selected session');
+    assert.equal(posts('restore').filter(row => row.request_id === unsupportedRestore.request_id).length, 1, 'An incompatible restore is never retried automatically');
+    behaviors.restore = 'incompatible-http';
+    const rejectedRestore = await waitPost('restore', () => page.locator('#new-session-submit').click());
+    await page.waitForFunction(() => !document.querySelector('#new-session-submit').disabled);
+    assert.equal(await page.locator('#new-session-message').textContent(), restoreMessage, 'HTTP restore failures preserve the specific version guidance and hide upstream messages');
+    assert.equal(posts('restore').filter(row => row.request_id === rejectedRestore.request_id).length, 1);
+    const restoresBeforeCollision = posts('restore').length;
     const restore = await waitPost('restore', () => page.locator('#new-session-submit').click());
     assert.deepEqual({ worker_id: restore.worker_id, runtime_id: restore.runtime_id, runtime_generation: restore.runtime_generation, archive_id: restore.archive_id, confirmed: restore.confirmed }, { worker_id: 'w', runtime_id: 'other', runtime_generation: 9, archive_id: archive.id, confirmed: true });
     Object.assign(statuses.get(restore.request_id), { pending: false, status: 'failed', error_code: 'archive_conflict', message: 'internal filesystem error must not appear' });
@@ -194,7 +232,7 @@ const hostile = '<img src=x onerror="window.injected=true">';
     const retry = await waitPost('restore', () => page.locator('#new-session-submit').click());
     assert.notEqual(retry.request_id, restore.request_id); complete(retry); await page.clock.fastForward(1800);
     await page.waitForFunction(() => document.querySelector('#session-title').textContent === 'Session restored');
-    assert.equal(posts('restore').length, 2, 'Restore only repeats after an explicit click');
+    assert.equal(posts('restore').length, restoresBeforeCollision + 2, 'Restore only repeats after an explicit click');
     assert.equal(statuses.get(requests.find(row => row.kind === 'list').request_id).archives[0].id, archive.id, 'Restore preserves the original archive');
 
     await page.locator('[data-create-worker-id="w"]').click(); await page.locator('#new-session-mode-restore').click();
