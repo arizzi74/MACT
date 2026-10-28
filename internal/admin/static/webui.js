@@ -28,6 +28,7 @@
   const activity = { socket: null, timer: null, generation: 0, revision: -1, sequence: -1, inventoryRevision: '', sessions: new Map(), attempts: 0, watchdog: null, ready: false };
   const telegramBots = { rows: [], revision: '', activityRevision: '', httpRevision: '', epoch: 0, ready: false, read: null, readAgain: false, pending: null, errorTimer: null };
   const sessionSettings = new Map(), activitySettingsRevisions = new Map();
+  const sessionErrors = new Map(), sessionErrorDismissals = new Map(), sessionErrorTurns = new Map();
   let settingsSerial = 0;
   let permissionSettings = null, permissionRevision = 0;
   let claudeStatus = null, claudeStatusRevision = 0;
@@ -171,11 +172,73 @@
     }
     return true;
   }
-  let noticeRecovery = '';
+  let noticeRecovery = '', noticeText = '';
   let steerNoticeTimer = null, steerNoticeTurn = null;
-  function notice(text = '', recovery = '') {
-    noticeRecovery = text ? recovery : '';
+  function renderNotice() {
+    const error = state.authenticated && state.selected ? sessionErrors.get(state.selected.session_id) : null;
+    const text = [error?.message, noticeText].filter((value, index, values) => value && values.indexOf(value) === index).join('\n\n');
     $('notice').textContent = text; $('notice').hidden = !text;
+  }
+  function notice(text = '', recovery = '') {
+    noticeText = text;
+    noticeRecovery = text ? recovery : '';
+    renderNotice();
+  }
+  function errorWasDismissed(id, value) {
+    const dismissed = sessionErrorDismissals.get(id);
+    return dismissed && (value.revision && value.revision === dismissed.revision || value.turnID && value.turnID === dismissed.turnID);
+  }
+  function rememberSessionError(id, message, turnID = '', revision = '', source = 'native') {
+    if (!id || typeof message !== 'string') return;
+    message = clean(message).trim().slice(0, 8192);
+    if (!message) return;
+    const value = { message, turnID, revision, source };
+    if (errorWasDismissed(id, value)) return;
+    if (turnID && source === 'activity' && state.selected?.session_id === id && state.turn && state.turn !== turnID) return;
+    const previous = sessionErrors.get(id);
+    // A live result may carry only a generic fallback after the activity feed
+    // already delivered the detailed, durable error for this same turn.
+    if (source === 'native' && previous?.source === 'activity' && previous.turnID === turnID) return;
+    sessionErrors.set(id, value);
+    if (source === 'activity' && turnID) sessionErrorTurns.set(id, turnID);
+    if (state.selected?.session_id === id) renderNotice();
+  }
+  function dismissSessionError(id = state.selected?.session_id) {
+    if (!id) return;
+    const previous = sessionErrors.get(id);
+    if (previous) sessionErrorDismissals.set(id, previous);
+    else if (sessionErrorTurns.has(id)) sessionErrorDismissals.set(id, { turnID: sessionErrorTurns.get(id) });
+    sessionErrors.delete(id);
+    if (state.selected?.session_id === id) renderNotice();
+  }
+  function startSessionTurn(id, turnID) {
+    if (!id || !turnID) return;
+    const previous = sessionErrors.get(id);
+    if (previous && previous.turnID !== turnID) dismissSessionError(id);
+    sessionErrorTurns.set(id, turnID);
+  }
+  function applyActivityError(row) {
+    const id = row.session_id;
+    if (row.active_turn_id) startSessionTurn(id, row.active_turn_id);
+    if (typeof row.error_message === 'string' && row.error_message.trim()) {
+      rememberSessionError(id, row.error_message, typeof row.error_turn_id === 'string' ? row.error_turn_id : '',
+        typeof row.error_revision === 'string' ? row.error_revision : '', 'activity');
+    } else {
+      // An empty activity row can race ahead of a just-received native error.
+      // Only clear errors this feed has acknowledged; a new turn explicitly
+      // clears native-only errors even when an older gateway lacks this field.
+      if (sessionErrors.get(id)?.source === 'activity') sessionErrors.delete(id);
+      if (state.selected?.session_id === id) renderNotice();
+    }
+  }
+  function rememberLatestTurnError(turn) {
+    const id = state.selected?.session_id;
+    if (!id || !turn?.id) return;
+    // A prompt can fail before a new native turn exists. Its durable error is
+    // newer than the latest saved turn, even though it has no turn ID yet.
+    if (sessionErrors.has(id)) return;
+    if (!sessionErrorTurns.has(id)) sessionErrorTurns.set(id, turn.id);
+    if (turn.error) rememberSessionError(id, turn.error.message || 'The turn failed.', turn.id);
   }
   function recoverNotice(...scopes) {
     // A recovered transport does not confirm an interrupted send or resolve
@@ -560,7 +623,7 @@
         if (!validTelegramBots(message.telegram_bots, message.telegram_bots_revision)) { recover(0); return; }
         applyTelegramBots(message.telegram_bots, message.telegram_bots_revision, 'activity');
         activity.sessions = new Map(message.sessions.map(row => [row.session_id, row]));
-        for (const row of message.sessions) applyActivitySettings(row);
+        for (const row of message.sessions) { applyActivitySettings(row); applyActivityError(row); }
         activity.ready = true;
         const known = new Set(state.sessions.map(row => row.session_id));
         inventoryChanged = known.size !== activity.sessions.size || [...activity.sessions.keys()].some(id => !known.has(id));
@@ -576,6 +639,7 @@
           if (typeof message.session_id !== 'string' || message.session !== null) { recover(0); return; }
           activity.sessions.delete(message.session_id);
           sessionSettings.delete(message.session_id); activitySettingsRevisions.delete(message.session_id);
+          sessionErrors.delete(message.session_id); sessionErrorDismissals.delete(message.session_id); sessionErrorTurns.delete(message.session_id);
           state.sessions = state.sessions.filter(row => row.session_id !== message.session_id);
           if (state.selected?.session_id === message.session_id) clearGoal();
           inventoryChanged = true;
@@ -584,6 +648,7 @@
           inventoryChanged = !activity.sessions.has(message.session_id) || message.event === 'session_changed';
           activity.sessions.set(message.session_id, message.session);
           applyActivitySettings(message.session);
+          applyActivityError(message.session);
         }
       } else { recover(0); return; }
       activity.sequence = message.sequence; activity.revision = message.revision;
@@ -925,6 +990,7 @@
     notificationUI?.setAuthenticated(false);
     closeActivity(); activity.sessions.clear(); activity.inventoryRevision = ''; activity.attempts = 0; activityStatus('disconnected', 'Sign in for live updates');
     sessionSettings.clear(); activitySettingsRevisions.clear();
+    sessionErrors.clear(); sessionErrorDismissals.clear(); sessionErrorTurns.clear();
     state.selected = null;
     state.sessions = [];
     state.workers = []; state.runtimes = [];
@@ -1874,7 +1940,13 @@
       if (message.type === 'error') { notice(message.message || 'Worker connection failed.', 'connection'); return; }
       if (message.id !== undefined && !message.method) {
         const request = state.pending.get(String(message.id));
-        if (request) { clearTimeout(request.timer); state.pending.delete(String(message.id)); message.error ? request.reject(new Error(message.error.message || agentLabel() + ' rejected this request.')) : request.resolve(message.result); }
+        if (request) {
+          clearTimeout(request.timer); state.pending.delete(String(message.id));
+          if (message.error) {
+            const error = new Error(message.error.message || agentLabel() + ' rejected this request.');
+            error.rpcResponse = true; request.reject(error);
+          } else request.resolve(message.result);
+        }
         else if (message.error && state.questions.has(String(message.id))) {
           state.questions.get(String(message.id)).answered = false;
           renderQuestions(); notice(message.error.message || 'The answer was rejected. Check whether this question is still pending.');
@@ -1993,6 +2065,7 @@
     if (!current()) return;
     turnCursor = metadata.nextCursor || null;
     rememberTurns(metadata.data || []);
+    rememberLatestTurnError(metadata.data?.[0]);
     for (const item of state.items.values()) {
       const turn = turnTimes.get(item._turn);
       if (turn) {
@@ -2470,7 +2543,7 @@
       for (const [key, request] of state.questions) if (request.source === 'worker' && p.itemId && p.itemId === request.params.itemId && !request.synthetic) state.questions.delete(key);
       state.questions.set(String(message.id), { ...message, answered: false }); if (!deferRender) renderQuestions(); return;
     }
-    if (method === 'turn/started') { state.turn = p.turn?.id || p.turnId; ingestTurn(p.turn || {}); }
+    if (method === 'turn/started') { state.turn = p.turn?.id || p.turnId; startSessionTurn(state.selected?.session_id, state.turn); ingestTurn(p.turn || {}); }
     else if (method === 'turn/completed') {
       questionRevision++;
       const turn = { ...p.turn, id: p.turn?.id || p.turnId, status: p.turn?.status || 'completed' };
@@ -2478,7 +2551,7 @@
       ingestTurn(turn); rememberTurns([turn]);
       for (const item of state.items.values()) if (item._turn === turn.id) { item._complete = true; item._terminalTurnStatus = turn.status; }
 
-      if (p.turn?.error) notice(p.turn.error.message || 'The turn failed.');
+      if (p.turn?.error) rememberSessionError(state.selected?.session_id, p.turn.error.message || 'The turn failed.', turn.id);
       else if (['completed', 'interrupted'].includes(p.turn?.status)) recoverNotice('retry:' + (p.turn?.id || p.turnId));
       for (const [key, question] of state.questions) if (!question.synthetic && question.params?.turnId === (p.turn?.id || p.turnId)) { state.questions.delete(key); }
       renderQuestions();
@@ -2519,7 +2592,11 @@
       const text = p.error?.message || p.message || 'Codex reported an error.';
       // The native event owns its turn ID even if the active-turn snapshot is
       // still catching up. Do not turn that transient retry into a sticky error.
-      notice((retrying ? 'Codex is retrying: ' : '') + text, retrying && p.turnId ? 'retry:' + p.turnId : '');
+      if (retrying) notice(agentLabel() + ' is retrying: ' + text, p.turnId ? 'retry:' + p.turnId : '');
+      else {
+        recoverNotice('retry:' + p.turnId);
+        rememberSessionError(state.selected?.session_id, text, p.turnId || state.turn || '');
+      }
       return;
     }
     else return;
@@ -2751,6 +2828,7 @@
       uncertainDrafts.add(sessionId);
       if (draftRecovery?.enabled()) { draftRecovery.clear(); syncRecoveryDrafts(true); }
       const params = { threadId, input };
+      dismissSessionError(sessionId);
       let result;
       if (steerTurn) result = await rpc('turn/steer', { ...params, expectedTurnId: steerTurn });
       else result = await rpc('turn/start', params);
@@ -2760,7 +2838,13 @@
       if (result?.turn?.id) { state.turn = result.turn.id; ingestTurn(result.turn); }
       if (steerTurn) queuedSteer(steerTurn);
       jump();
-    } catch (error) { if (sameDraft()) notice(error.message + (file?.uploadedPath ? ' The file is already uploaded. Retrying this draft will reuse it.' : '')); }
+    } catch (error) {
+      if (sameDraft()) {
+        const message = error.message + (file?.uploadedPath ? ' The file is already uploaded. Retrying this draft will reuse it.' : '');
+        if (error.rpcResponse && !steerTurn) { rememberSessionError(sessionId, message); notice(); }
+        else notice(message);
+      }
+    }
     finally { if (generation === state.generation && state.socket === socket) { state.submitting = false; updateControls(); } }
   }
   function prependHistoryPage(result, generation) {

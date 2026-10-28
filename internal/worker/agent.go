@@ -375,6 +375,12 @@ func (a *Agent) actorForThread(runtimeID, threadID string) *sessionActor {
 }
 
 func (a *Agent) onEvent(runtime protocol.Runtime, event codexadapter.Event) {
+	if event.Method == "thread/history/recovered" {
+		if event.ThreadID != "" {
+			a.webHistory.forgetSession(runtime.ID, event.ThreadID)
+		}
+		return
+	}
 	if event.Kind == "thread_closed" || event.Kind == "thread_deleted" {
 		a.manager.forgetWebUIObserver(runtime, event.ThreadID)
 	}

@@ -317,6 +317,16 @@ type Result struct {
 	Session        *Session              `json:"session,omitempty"`
 }
 
+// SessionPromptEvent records a browser prompt dispatch and a definitive native
+// rejection before a turn exists. RequestID identifies one dispatch across
+// sockets; AfterEventSeq binds a failure to its durable started event.
+type SessionPromptEvent struct {
+	RequestID     string    `json:"request_id"`
+	StartedAt     time.Time `json:"started_at"`
+	AfterEventSeq uint64    `json:"after_event_seq,omitempty"`
+	Error         *Error    `json:"error,omitempty"`
+}
+
 // PermissionMenu contains choices resolved by the worker for this session.
 // IDs are arguments to the typed permissions command, never arbitrary RPCs.
 type PermissionMenu struct {

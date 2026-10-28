@@ -119,11 +119,12 @@ func decodeConversationTurn(raw json.RawMessage) ([]protocol.HistoryMessage, err
 			continue
 		}
 		var item struct {
-			ID      string          `json:"id"`
-			Type    string          `json:"type"`
-			Phase   string          `json:"phase"`
-			Text    *string         `json:"text"`
-			Content json.RawMessage `json:"content"`
+			ID           string          `json:"id"`
+			Type         string          `json:"type"`
+			Phase        string          `json:"phase"`
+			Text         *string         `json:"text"`
+			Content      json.RawMessage `json:"content"`
+			RecordedAtMS json.RawMessage `json:"recordedAtMs"`
 		}
 		if json.Unmarshal(rawItem, &item) != nil {
 			return nil, fmt.Errorf("invalid conversation item: %w", ErrHistoryUnavailable)
@@ -151,6 +152,9 @@ func decodeConversationTurn(raw json.RawMessage) ([]protocol.HistoryMessage, err
 			}
 		default:
 			continue
+		}
+		if recordedAt := historyRecordedTimestamp(item.RecordedAtMS); recordedAt != nil {
+			message.Timestamp, message.TimestampSource = recordedAt, "message"
 		}
 		if strings.TrimSpace(item.ID) == "" || len(item.ID) > 512 || seen[item.ID] {
 			return nil, fmt.Errorf("invalid conversation message identity: %w", ErrHistoryUnavailable)

@@ -576,9 +576,12 @@ func (s *Store) applyEvent(ctx context.Context, tx *dbTx, workerID uuid.UUID, ev
 		}
 	}
 	if target.runtimeCurrent && target.sessionID != nil {
+		if err := applySessionTerminalError(ctx, tx, event, *target.sessionID, result); err != nil {
+			return false, nil, err
+		}
 		state, active, terminal := sessionTransition(event.Kind, result)
 		if state != "" {
-			if err := setSessionState(ctx, tx, *target.sessionID, state, active, terminal); err != nil {
+			if err := setSessionState(ctx, tx, *target.sessionID, state, active, terminal, event.RuntimeGeneration); err != nil {
 				return false, nil, err
 			}
 		}

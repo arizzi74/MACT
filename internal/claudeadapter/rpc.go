@@ -232,6 +232,8 @@ func (s *server) handle(peer *peer, msg rpcMessage, p params) (any, error) {
 		return nil, errors.New("Claude session was not found")
 	}
 	switch msg.Method {
+	case "thread/history/recover":
+		return s.recoverNativeHistory(t.ID, p.TurnID)
 	case "thread/read", "thread/resume":
 		if msg.Method == "thread/resume" {
 			if p.CWD != "" {

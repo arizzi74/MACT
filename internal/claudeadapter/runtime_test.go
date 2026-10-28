@@ -93,7 +93,7 @@ func TestClaudeProcessHelper(t *testing.T) {
 			}
 			_ = json.Unmarshal(msg["request"], &request)
 			if request.Subtype == "initialize" {
-				if request.Hooks["PreToolUse"] == nil {
+				if request.Hooks["PreToolUse"] != nil || os.Getenv("CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS") != "1" {
 					os.Exit(35)
 				}
 				if os.Getenv("MACT_CLAUDE_HELPER_HANG_INIT") == "1" {
@@ -135,7 +135,7 @@ func TestClaudeProcessHelper(t *testing.T) {
 			case "question":
 				send(map[string]any{"type": "control_request", "request_id": "native-question", "request": map[string]any{"subtype": "can_use_tool", "tool_name": "AskUserQuestion", "tool_use_id": "tool-question", "input": map[string]any{"questions": []any{map[string]any{"question": "Which database?", "header": "Database", "options": []any{map[string]any{"label": "SQLite", "description": "A local file"}, map[string]any{"label": "Postgres", "description": "A server"}}}}}}})
 			case "background":
-				send(map[string]any{"type": "control_request", "request_id": "native-hook", "request": map[string]any{"subtype": "hook_callback", "callback_id": "mact_background_guard", "input": map[string]any{"tool_input": map[string]any{"run_in_background": true}}}})
+				send(map[string]any{"type": "control_request", "request_id": "native-background", "request": map[string]any{"subtype": "can_use_tool", "tool_name": "Agent", "tool_use_id": "background-launch", "input": map[string]any{"run_in_background": true, "description": "Background review"}}})
 			default:
 				id := uuid.NewString()
 				send(map[string]any{"type": "stream_event", "event": map[string]any{"type": "message_start", "message": map[string]any{"id": id}}})
@@ -165,12 +165,11 @@ func TestClaudeProcessHelper(t *testing.T) {
 				selected, _ := answers["Which database?"].(string)
 				result("selected: " + selected)
 			}
-			if response.RequestID == "native-hook" {
-				output, _ := response.Response["hookSpecificOutput"].(map[string]any)
-				if output["permissionDecision"] != "deny" {
+			if response.RequestID == "native-background" {
+				if response.Response["behavior"] != "allow" {
 					os.Exit(36)
 				}
-				result("background denied")
+				result("background allowed")
 			}
 		}
 	}
@@ -321,7 +320,7 @@ func awaitAny(t *testing.T, r *Runtime) codexadapter.Event {
 	return codexadapter.Event{}
 }
 
-func TestApprovalsQuestionsAndBackgroundGuard(t *testing.T) {
+func TestApprovalsQuestionsAndBackgroundPermission(t *testing.T) {
 	r := startTest(t, testConfig(t))
 	thread := startThread(t, r)
 	if _, err := r.StartTurn(context.Background(), thread.ID, "approval"); err != nil {
@@ -353,7 +352,17 @@ func TestApprovalsQuestionsAndBackgroundGuard(t *testing.T) {
 		t.Fatalf("native question answer = %s", event.Text)
 	}
 	awaitEvent(t, r, "turn_completed")
-	runTurn(t, r, thread.ID, "background")
+	if _, err := r.StartTurn(context.Background(), thread.ID, "background"); err != nil {
+		t.Fatal(err)
+	}
+	request = awaitRequest(t, r)
+	if request.Kind != "approval_requested" || request.Command != "Agent" {
+		t.Fatalf("background permission was not forwarded: %+v", request)
+	}
+	if err := r.ReplyApproval(context.Background(), request.RequestID, codexadapter.ApprovalResponse{Decision: "accept"}); err != nil {
+		t.Fatal(err)
+	}
+	awaitEvent(t, r, "turn_completed")
 }
 
 func TestInterruptAndUnexpectedExitAlwaysSettleTurn(t *testing.T) {

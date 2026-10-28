@@ -59,6 +59,8 @@ type webUIRelay struct {
 	timestampJobs   chan *webUIHistoryTimestampWork
 	timestampCancel context.CancelFunc
 	timestampGroup  sync.WaitGroup
+	promptRequests  map[string]webUIPromptAttempt
+	promptResults   chan struct{}
 }
 
 type webUIRequest struct {
@@ -266,8 +268,17 @@ func (r *webUIRelay) run() error {
 		return err
 	}
 	readDone := make(chan error, 1)
-	go func() { readDone <- r.read(conn) }()
-	defer func() { conn.CloseNow(); <-readDone }()
+	// A dispatched prompt's explicit rejection remains observable after its
+	// browser detaches. The worker connection owns the reader during a bounded
+	// drain; disconnects still never replay a mutation or imply failure.
+	readCtx, stopReader := context.WithCancel(r.pool.ctx)
+	go func() { readDone <- r.read(conn, readCtx) }()
+	defer func() {
+		r.drainPromptResults(readDone)
+		stopReader()
+		conn.CloseNow()
+		<-readDone
+	}()
 	for {
 		select {
 		case <-r.ctx.Done():
@@ -347,6 +358,11 @@ func (r *webUIRelay) forwardInput(conn *websocket.Conn, data []byte) error {
 	if rpc.Method == "gateway/upload" {
 		return r.upload(rpc)
 	}
+	if rpc.Method == "turn/start" {
+		if err := r.startPromptAttempt(rpc.ID); err != nil {
+			return err
+		}
+	}
 	writeCtx, stop := context.WithTimeout(r.ctx, 10*time.Second)
 	err = conn.Write(writeCtx, websocket.MessageText, forward)
 	stop()
@@ -356,9 +372,9 @@ func (r *webUIRelay) forwardInput(conn *websocket.Conn, data []byte) error {
 	return nil
 }
 
-func (r *webUIRelay) read(conn *websocket.Conn) error {
+func (r *webUIRelay) read(conn *websocket.Conn, ctx context.Context) error {
 	for {
-		kind, data, err := conn.Read(r.ctx)
+		kind, data, err := conn.Read(ctx)
 		if err != nil {
 			return err
 		}
@@ -372,11 +388,20 @@ func (r *webUIRelay) read(conn *websocket.Conn) error {
 		if len(forward) == 0 {
 			continue
 		}
+		if r.ctx.Err() != nil {
+			if !r.hasPendingPrompt() {
+				return nil
+			}
+			continue
+		}
 		forward, err = redactWebUIJSON(r.pool.c.store.redactor.Load(), forward)
 		if err != nil {
 			return err
 		}
 		if err := r.pool.send(r.ctx, protocol.WebUIFrame{ID: r.id, Action: "output", Data: forward}); err != nil {
+			if r.ctx.Err() != nil && r.hasPendingPrompt() {
+				continue
+			}
 			return err
 		}
 	}
@@ -673,6 +698,11 @@ func (r *webUIRelay) serverMessage(data []byte) ([]byte, error) {
 			return nil, nil
 		}
 		method := r.pending[id]
+		if method == "turn/start" {
+			if err := r.finishPromptAttemptLocked(id, rpc.Error); err != nil {
+				return nil, err
+			}
+		}
 		if method == "gateway/upload" || method == "gateway/command" || method == "gateway/questions" || method == "gateway/answer" {
 			return nil, nil // Only the session actor may complete local commands.
 		}

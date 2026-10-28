@@ -44,15 +44,6 @@ func (p *process) request(id string, raw json.RawMessage) {
 	if id == "" || json.Unmarshal(raw, &request) != nil {
 		return
 	}
-	if request.Subtype == "hook_callback" && request.CallbackID == "mact_background_guard" {
-		input, _ := request.Input["tool_input"].(map[string]any)
-		if background, _ := input["run_in_background"].(bool); background {
-			p.controlSuccess(id, map[string]any{"hookSpecificOutput": map[string]any{"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "Background tools are unavailable in this worker. Run the tool in the foreground."}})
-		} else {
-			p.controlSuccess(id, map[string]any{})
-		}
-		return
-	}
 	if request.Subtype != "can_use_tool" {
 		p.controlError(id)
 		return
@@ -60,10 +51,6 @@ func (p *process) request(id string, raw json.RawMessage) {
 	t := p.server.threads[p.threadID]
 	if t == nil || t.active() == nil || p.interrupting {
 		p.controlSuccess(id, map[string]any{"behavior": "deny", "message": "The turn is no longer active", "interrupt": true})
-		return
-	}
-	if background, _ := request.Input["run_in_background"].(bool); background {
-		p.controlSuccess(id, map[string]any{"behavior": "deny", "message": "Run the tool in the foreground; background tools are unavailable in this worker."})
 		return
 	}
 	for _, pending := range p.server.pending {

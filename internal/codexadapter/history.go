@@ -22,8 +22,8 @@ type UserPrompt struct {
 	TurnID string
 	ItemID string
 	Text   string
-	// Timestamp is the saved turn start, not the history read time. App-server
-	// thread items omit the individual message times kept in local rollouts.
+	// Timestamp is the saved message time when supplied by the adapter, with
+	// the saved turn start as a fallback. It never uses the history read time.
 	Timestamp *time.Time
 }
 
@@ -137,8 +137,9 @@ func decodeUserPromptTurns(turns []json.RawMessage) ([]UserPrompt, error) {
 				continue
 			}
 			var item struct {
-				ID      string          `json:"id"`
-				Content json.RawMessage `json:"content"`
+				ID           string          `json:"id"`
+				Content      json.RawMessage `json:"content"`
+				RecordedAtMS json.RawMessage `json:"recordedAtMs"`
 			}
 			if json.Unmarshal(rawItem, &item) != nil {
 				return nil, errors.New("invalid user-prompt history user message")
@@ -156,7 +157,11 @@ func decodeUserPromptTurns(turns []json.RawMessage) ([]UserPrompt, error) {
 				return nil, err
 			}
 			if strings.TrimSpace(text) != "" {
-				result = append(result, UserPrompt{TurnID: turn.ID, ItemID: item.ID, Text: text, Timestamp: historyTimestamp(turn.StartedAt)})
+				stamp := historyRecordedTimestamp(item.RecordedAtMS)
+				if stamp == nil {
+					stamp = historyTimestamp(turn.StartedAt)
+				}
+				result = append(result, UserPrompt{TurnID: turn.ID, ItemID: item.ID, Text: text, Timestamp: stamp})
 			}
 		}
 	}

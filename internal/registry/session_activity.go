@@ -14,8 +14,9 @@ import (
 
 var ErrSessionActivityLimit = errors.New("registry: session activity subscriber limit reached")
 
-// SessionActivity contains live indicators and confirmed current settings. It
-// never reads conversation histories, event payloads, statistics or text.
+// SessionActivity contains live indicators, confirmed settings, and the bounded
+// public terminal error projected when a turn fails. It never reads histories
+// or event payloads when producing an activity snapshot.
 type SessionActivity struct {
 	SessionID          string `json:"session_id"`
 	State              string `json:"state"`
@@ -27,6 +28,10 @@ type SessionActivity struct {
 	Model              string `json:"model"`
 	ReasoningEffort    string `json:"reasoning_effort"`
 	SettingsRevision   string `json:"settings_revision"`
+	ErrorTurnID        string `json:"error_turn_id,omitempty"`
+	ErrorMessage       string `json:"error_message,omitempty"`
+	ErrorCode          string `json:"error_code,omitempty"`
+	ErrorRevision      string `json:"error_revision,omitempty"`
 }
 
 type SessionActivitySnapshot struct {
@@ -214,7 +219,7 @@ func activityEvent(kind string) bool {
 	switch kind {
 	case "session_discovered", "session_state_changed", "runtime_started", "runtime_stopped", "runtime_failed", "runtime_degraded",
 		"turn_started", "turn_completed", "turn_interrupted", "turn_failed", "approval_requested", "approval_resolved", "user_input_requested", "user_input_answered",
-		"command_completed", "command_failed":
+		"command_completed", "command_failed", "user_message", "session_prompt_started", "session_prompt_failed":
 		return true
 	default:
 		return false
@@ -275,6 +280,10 @@ const sessionActivityColumns = `SELECT session.session_id,session.state,COALESCE
     CASE WHEN worker.enabled=FALSE THEN 'disabled' ELSE worker.connectivity END,runtime.state,
     COALESCE(settings.model,''),COALESCE(settings.reasoning_effort,''),
     CASE WHEN settings.revision IS NOT NULL THEN CAST(settings.runtime_generation AS TEXT)||':'||CAST(settings.revision AS TEXT) ELSE '' END,
+    COALESCE(json_extract(session.metadata,'$.terminal_error.turn_id'),''),
+    COALESCE(json_extract(session.metadata,'$.terminal_error.message'),''),
+    COALESCE(json_extract(session.metadata,'$.terminal_error.code'),''),
+    COALESCE(json_extract(session.metadata,'$.terminal_error.revision'),''),
     (SELECT json_group_array(json_object('id',approval.approval_id,'answered',json((
         SELECT json_group_array(answer.key) FROM json_each(approval.input_answers) answer
         WHERE json_array_length(answer.value)>0))))
@@ -300,7 +309,8 @@ func scanSessionActivity(row interface{ Scan(...any) error }) (SessionActivity, 
 	var session SessionActivity
 	var pending []byte
 	if err := row.Scan(&session.SessionID, &session.State, &session.ActiveTurnID, &session.WorkerConnectivity, &session.RuntimeState,
-		&session.Model, &session.ReasoningEffort, &session.SettingsRevision, &pending); err != nil {
+		&session.Model, &session.ReasoningEffort, &session.SettingsRevision,
+		&session.ErrorTurnID, &session.ErrorMessage, &session.ErrorCode, &session.ErrorRevision, &pending); err != nil {
 		return session, err
 	}
 	var err error

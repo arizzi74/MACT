@@ -30,7 +30,7 @@ func readStatus(t *testing.T, r *Runtime, threadID string) ClaudeStatus {
 }
 
 func nativeStatusProcess(r *Runtime, threadID string) *process {
-	return &process{server: r.server, threadID: threadID, seenMessages: make(map[string]bool), tools: make(map[string]map[string]any), streamItem: make(map[int]string)}
+	return &process{server: r.server, threadID: threadID, tools: make(map[string]map[string]any), streamItem: make(map[int]string)}
 }
 
 func acceptStatusTurn(t *testing.T, r *Runtime, threadID string) string {
@@ -54,6 +54,10 @@ func acceptStatusTurn(t *testing.T, r *Runtime, threadID string) string {
 func feedStatus(p *process, raw string) {
 	p.server.mu.Lock()
 	defer p.server.mu.Unlock()
+	if thread := p.server.threads[p.threadID]; thread.active() != nil && thread.active().ID != p.lifecycle.turnID {
+		p.beginLifecycle(thread, thread.active().ID)
+		p.lifecycle.submitted = true
+	}
 	p.handle([]byte(raw))
 }
 

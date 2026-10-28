@@ -3,6 +3,8 @@ package claudeadapter
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -30,10 +32,21 @@ type process struct {
 	stopOnce      sync.Once
 	interrupting  bool   // Protected by server.mu.
 	providerError string // Protected by server.mu; never persisted verbatim.
-	seenMessages  map[string]bool
+	messageOwners map[string]string
+	messageOrder  []string
+	seenFrames    map[string]bool
+	frameOrder    []string
 	streamID      string
 	streamItem    map[int]string
+	streamBlocks  map[int]*streamContentBlock
 	tools         map[string]map[string]any
+	lifecycle     turnLifecycle // Protected by server.mu, including task state.
+	tasks         map[string]*backgroundTask
+	taskRuns      map[string]string // Run ID -> owning MACT turn, including retired runs.
+	backgroundSet map[string]string // Latest native level snapshot: task ID -> run ID.
+	stateEvents   bool              // Session-state support is detected once per process.
+	seenResults   map[string]bool
+	resultOrder   []string
 }
 
 type controlReply struct {
@@ -82,6 +95,9 @@ func (s *server) startProcess(thread *savedThread) (*process, error) {
 	if err != nil {
 		return nil, err
 	}
+	// A result ends one native query, which can be an intermediate reply while
+	// background agents continue. The opt-in idle signal ends the whole run.
+	env, _ = childEnvironment(env, map[string]string{"CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS": "1", "CLAUDE_CODE_BG_TASKS_REPORT_RUNNING": "1"})
 	if err := s.rememberNativeRoot(thread, env); err != nil {
 		return nil, err
 	}
@@ -104,14 +120,14 @@ func (s *server) startProcess(thread *savedThread) (*process, error) {
 		_ = out.Close()
 		return nil, errors.New("Cannot start Claude Code; check the configured executable")
 	}
-	p := &process{server: s, threadID: thread.ID, cmd: cmd, in: in, out: out, controls: make(map[string]chan controlReply), ready: make(chan struct{}), done: make(chan struct{}), seenMessages: make(map[string]bool), streamItem: make(map[int]string), tools: make(map[string]map[string]any)}
+	p := &process{server: s, threadID: thread.ID, cmd: cmd, in: in, out: out, controls: make(map[string]chan controlReply), ready: make(chan struct{}), done: make(chan struct{}), streamItem: make(map[int]string), tools: make(map[string]map[string]any)}
 	s.wg.Add(2)
 	go func() { defer s.wg.Done(); p.read() }()
 	go func() {
 		defer s.wg.Done()
 		ctx, cancel := context.WithTimeout(s.ctx, s.cfg.StartupTimeout)
 		defer cancel()
-		_, p.initErr = p.control(ctx, map[string]any{"subtype": "initialize", "hooks": map[string]any{"PreToolUse": []any{map[string]any{"matcher": "Bash|Agent|Task", "hookCallbackIds": []string{"mact_background_guard"}}}}})
+		_, p.initErr = p.control(ctx, map[string]any{"subtype": "initialize", "hooks": map[string]any{}})
 		close(p.ready)
 		if p.initErr != nil {
 			p.stop()
@@ -194,10 +210,10 @@ func (p *process) submit(turnID string, content []map[string]any) {
 		p.writeMu.Unlock()
 		return
 	}
-	p.seenMessages = make(map[string]bool)
 	p.providerError = ""
+	p.lifecycle.submitted = true
 	p.server.mu.Unlock()
-	err := p.writeLocked(map[string]any{"type": "user", "session_id": p.threadID, "message": map[string]any{"role": "user", "content": content}, "parent_tool_use_id": nil, "uuid": uuid.NewString()})
+	err := p.writeLocked(map[string]any{"type": "user", "session_id": p.threadID, "message": map[string]any{"role": "user", "content": content}, "parent_tool_use_id": nil, "uuid": turnID, "origin": map[string]any{"kind": "human"}})
 	p.writeMu.Unlock()
 	if err != nil {
 		p.stop()
@@ -316,21 +332,25 @@ func (p *process) read() {
 
 func (p *process) handle(data []byte) {
 	var envelope struct {
-		Type            string          `json:"type"`
-		Subtype         string          `json:"subtype"`
-		SessionID       string          `json:"session_id"`
-		ParentToolUseID *string         `json:"parent_tool_use_id"`
-		RequestID       string          `json:"request_id"`
-		Request         json.RawMessage `json:"request"`
-		Event           json.RawMessage `json:"event"`
-		IsError         bool            `json:"is_error"`
-		Result          string          `json:"result"`
-		Error           json.RawMessage `json:"error"`
-		Errors          []string        `json:"errors"`
-		UUID            string          `json:"uuid"`
-		Model           string          `json:"model"`
-		PermissionMode  string          `json:"permissionMode"`
-		Message         struct {
+		Type             string          `json:"type"`
+		Subtype          string          `json:"subtype"`
+		SessionID        string          `json:"session_id"`
+		ParentToolUseID  *string         `json:"parent_tool_use_id"`
+		RequestID        string          `json:"request_id"`
+		Request          json.RawMessage `json:"request"`
+		Event            json.RawMessage `json:"event"`
+		IsError          bool            `json:"is_error"`
+		Result           string          `json:"result"`
+		Error            json.RawMessage `json:"error"`
+		Errors           []string        `json:"errors"`
+		UUID             string          `json:"uuid"`
+		Model            string          `json:"model"`
+		PermissionMode   string          `json:"permissionMode"`
+		UserMessageUUID  string          `json:"user_message_uuid"`
+		UserMessageUUIDs []string        `json:"user_message_uuids"`
+		Origin           messageOrigin   `json:"origin"`
+		ToolUseResult    json.RawMessage `json:"tool_use_result"`
+		Message          struct {
 			ID         string          `json:"id"`
 			Model      string          `json:"model"`
 			StopReason string          `json:"stop_reason"`
@@ -349,6 +369,15 @@ func (p *process) handle(data []byte) {
 	if envelope.ParentToolUseID != nil && *envelope.ParentToolUseID != "" {
 		return
 	}
+	if envelope.SessionID != "" && envelope.SessionID != t.ID {
+		p.stop()
+		return
+	}
+	if envelope.Type == "assistant" || envelope.Type == "user" || envelope.Type == "stream_event" || envelope.Type == "result" {
+		if !(envelope.Type == "result" && p.interrupting) && !p.acceptTurnFrame(t, envelope.UserMessageUUID, envelope.UserMessageUUIDs, envelope.Origin) {
+			return
+		}
+	}
 	// Output from a user query can win the scheduling race with submit's
 	// post-write metadata commit. Record that evidence before a result can
 	// publish idle state or a settings update can retire this process.
@@ -361,6 +390,9 @@ func (p *process) handle(data []byte) {
 	case "control_cancel_request":
 		p.cancelPermission(envelope.RequestID)
 	case "system":
+		if p.handleLifecycle(t, data, envelope.Subtype) {
+			return
+		}
 		if envelope.Subtype == "init" && envelope.SessionID != "" && envelope.SessionID != t.ID {
 			p.stop()
 			return
@@ -391,6 +423,29 @@ func (p *process) handle(data []byte) {
 		if t.active() == nil {
 			return
 		}
+		if !p.acceptMessageOwner(t, envelope.Message.ID) {
+			return
+		}
+		// SDK assistant frames contain ONE completed content block. Several
+		// frames share message.id (thinking, text, tool calls), with distinct
+		// wrapper UUIDs. Deduplicate frames without discarding later blocks.
+		frameID := envelope.UUID
+		if frameID == "" {
+			sum := sha256.Sum256(envelope.Message.Content)
+			frameID = envelope.Message.ID + "-" + hex.EncodeToString(sum[:])
+		}
+		if p.seenFrames[frameID] {
+			return
+		}
+		if p.seenFrames == nil {
+			p.seenFrames = make(map[string]bool)
+		}
+		p.seenFrames[frameID] = true
+		p.frameOrder = append(p.frameOrder, frameID)
+		if len(p.frameOrder) > 4096 {
+			delete(p.seenFrames, p.frameOrder[0])
+			p.frameOrder = p.frameOrder[1:]
+		}
 		if p.observeUsage(t, envelope.Message.Model, envelope.Message.Usage) {
 			p.publishStatus(t)
 		}
@@ -415,10 +470,7 @@ func (p *process) handle(data []byte) {
 		if messageID == "" {
 			messageID = uuid.NewString()
 		}
-		if p.seenMessages[messageID] {
-			return
-		}
-		p.seenMessages[messageID] = true
+		p.noteParentActivity()
 		var content []struct {
 			Type  string          `json:"type"`
 			ID    string          `json:"id"`
@@ -436,22 +488,27 @@ func (p *process) handle(data []byte) {
 			}
 		}
 		for i, block := range content {
+			streamIndex, streamed := p.claimStreamBlock(messageID, block.Type, block.ID)
 			switch block.Type {
 			case "text":
 				if block.Text == "" {
 					continue
 				}
-				id := messageID + "-" + strconvIndex(i)
-				if p.streamID == messageID && p.streamItem[i] != "" {
-					id = p.streamItem[i]
+				id := messageID + "-" + frameID + "-" + strconvIndex(i)
+				if streamed && p.streamItem[streamIndex] != "" {
+					id = p.streamItem[streamIndex]
 				}
 				phase := "final_answer"
-				if hasTool || envelope.Message.StopReason == "tool_use" {
+				if hasTool || envelope.Message.StopReason == "tool_use" || envelope.Message.StopReason == "" || p.hasBackgroundWork() {
 					phase = "commentary"
 				}
 				item := map[string]any{"id": id, "type": "agentMessage", "text": block.Text, "phase": phase}
 				p.appendItem(t, item)
 				p.notifyItem(t, "item/completed", item)
+				p.lifecycle.lastText = item
+				p.lifecycle.lastMessage = messageID
+				p.lifecycle.messageTexts[messageID] = append(p.lifecycle.messageTexts[messageID], block.Text)
+				p.lifecycle.textItems[messageID] = append(p.lifecycle.textItems[messageID], item)
 			case "tool_use":
 				if block.ID == "" {
 					continue
@@ -494,6 +551,9 @@ func (p *process) handle(data []byte) {
 				}
 			}
 		}
+		if len(content) == 1 && content[0].Type == "tool_result" {
+			p.observeToolLifecycle(t, envelope.ToolUseResult, content[0].ToolUseID)
+		}
 		if err := p.server.save(t); err != nil {
 			p.stop()
 		}
@@ -515,9 +575,22 @@ func (p *process) handle(data []byte) {
 					return
 				}
 			}
+			if p.seenResults[envelope.UUID] {
+				return
+			}
+			if p.seenResults == nil {
+				p.seenResults = make(map[string]bool)
+			}
+			p.seenResults[envelope.UUID] = true
+			p.resultOrder = append(p.resultOrder, envelope.UUID)
+			if len(p.resultOrder) > 2048 {
+				delete(p.seenResults, p.resultOrder[0])
+				p.resultOrder = p.resultOrder[1:]
+			}
 			t.active().NativeResultID = envelope.UUID
 		}
 		p.observeResult(t, data, envelope.Subtype)
+		p.observeTurnCost(t, data)
 		p.publishStatus(t)
 		status := "completed"
 		message := ""
@@ -539,12 +612,14 @@ func (p *process) handle(data []byte) {
 				}
 			}
 		}
-		if status == "completed" && envelope.Result != "" && !hasAssistantText(t.active()) {
+		if status == "completed" && envelope.Result != "" && !p.hasAssistantText(t.active(), envelope.Result) {
 			item := map[string]any{"id": uuid.NewString(), "type": "agentMessage", "text": envelope.Result, "phase": "final_answer"}
 			p.appendItem(t, item)
 			p.notifyItem(t, "item/completed", item)
+			p.lifecycle.lastText = item
+			p.lifecycle.lastMessage = ""
 		}
-		p.finish(t, status, message)
+		p.recordResult(t, status, message, envelope.Origin)
 	}
 }
 
@@ -559,6 +634,7 @@ func (p *process) stream(t *savedThread, raw json.RawMessage) {
 		} `json:"message"`
 		Block struct {
 			Type string `json:"type"`
+			ID   string `json:"id"`
 			Text string `json:"text"`
 		} `json:"content_block"`
 		Delta struct {
@@ -571,12 +647,21 @@ func (p *process) stream(t *savedThread, raw json.RawMessage) {
 	}
 	switch event.Type {
 	case "message_start":
+		if !p.acceptMessageOwner(t, event.Message.ID) {
+			return
+		}
+		p.noteParentActivity()
 		if p.observeUsage(t, event.Message.Model, event.Message.Usage) {
 			p.publishStatus(t)
 		}
 		p.streamID = event.Message.ID
 		p.streamItem = make(map[int]string)
+		p.streamBlocks = make(map[int]*streamContentBlock)
 	case "content_block_start":
+		if p.streamBlocks == nil {
+			p.streamBlocks = make(map[int]*streamContentBlock)
+		}
+		p.streamBlocks[event.Index] = &streamContentBlock{kind: event.Block.Type, toolID: event.Block.ID}
 		if event.Block.Type == "text" {
 			id := p.streamID + "-" + strconvIndex(event.Index)
 			if p.streamID == "" {
@@ -624,6 +709,20 @@ func (p *process) finish(t *savedThread, status, message string) {
 		p.notifyItem(t, "item/completed", item)
 		delete(p.tools, id)
 	}
+	for _, task := range p.tasks {
+		if task.turnID == turn.ID && task.active {
+			if status == "completed" && task.ambient {
+				p.endTask(t, task, "completed")
+				task.turnID = ""
+				continue
+			}
+			task.active = false
+			p.endTask(t, task, "interrupted")
+		}
+	}
+	if status != "completed" {
+		p.backgroundSet = nil
+	}
 	if status != "completed" && !p.server.closed && len(t.Queue) > 0 {
 		t.Queue = nil
 		item := map[string]any{"id": uuid.NewString(), "type": "agentMessage", "text": "Queued messages were cancelled because the preceding turn ended early; resend them.", "phase": "final_answer"}
@@ -653,9 +752,14 @@ func (p *process) finish(t *savedThread, status, message string) {
 	}
 }
 
-func hasAssistantText(t *savedTurn) bool {
+func (p *process) hasAssistantText(t *savedTurn, text string) bool {
 	for _, item := range t.Items {
-		if item["type"] == "agentMessage" && item["text"] != "" {
+		if item["type"] == "agentMessage" && item["text"] == text {
+			return true
+		}
+	}
+	for _, blocks := range p.lifecycle.messageTexts {
+		if strings.Join(blocks, "\n") == text || strings.Join(blocks, "") == text || strings.Join(blocks, "\n\n") == text {
 			return true
 		}
 	}

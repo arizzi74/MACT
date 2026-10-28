@@ -372,7 +372,9 @@ func (s *sessionActor) webUIHistory(request webUIActorCommand) (json.RawMessage,
 			}
 		}
 		for position.index >= 0 && position.index < len(snapshot.turn.Items) && len(page.Data) < history.Limit {
-			page.Data = append(page.Data, webUIHistoryEntry{TurnID: snapshot.turn.ID, Item: snapshot.turn.Items[position.index], RecordedAtMS: s.agent.webHistory.recordedAt(snapshot, position.index), TurnStartedAt: webUIHistoryTimestamp(snapshot.turn.StartedAt), TurnCompletedAt: webUIHistoryTimestamp(snapshot.turn.CompletedAt), TurnStatus: snapshot.turn.Status})
+			entry := webUIHistoryEntry{TurnID: snapshot.turn.ID, Item: snapshot.turn.Items[position.index], RecordedAtMS: s.agent.webHistory.recordedAt(snapshot, position.index), TurnStartedAt: webUIHistoryTimestamp(snapshot.turn.StartedAt), TurnCompletedAt: webUIHistoryTimestamp(snapshot.turn.CompletedAt), TurnStatus: snapshot.turn.Status}
+			webUIHistoryNativeItemTiming(&entry)
+			page.Data = append(page.Data, entry)
 			queries = append(queries, snapshot.timestampQueries[position.index])
 			timestampTargets = append(timestampTargets, webUIHistoryTimestampTarget{snapshot, position.index})
 			if history.Direction == "desc" {
@@ -420,6 +422,23 @@ func webUIHistoryTimestamp(value *int64) *int64 {
 	}
 	return value
 }
+
+func webUIHistoryNativeItemTiming(entry *webUIHistoryEntry) {
+	var item struct {
+		StartedAtMS   json.RawMessage `json:"startedAtMs"`
+		CompletedAtMS json.RawMessage `json:"completedAtMs"`
+		RecordedAtMS  json.RawMessage `json:"recordedAtMs"`
+	}
+	if json.Unmarshal(entry.Item, &item) != nil {
+		return
+	}
+	entry.StartedAtMS = webUIHistoryMilliseconds(item.StartedAtMS)
+	entry.CompletedAtMS = webUIHistoryMilliseconds(item.CompletedAtMS)
+	if entry.RecordedAtMS == nil {
+		entry.RecordedAtMS = webUIHistoryMilliseconds(item.RecordedAtMS)
+	}
+}
+
 func webUISanitizeHistoryItems(redactor *auth.Redactor, items []json.RawMessage) ([]json.RawMessage, error) {
 	result := make([]json.RawMessage, 0, len(items))
 	seen := make(map[string]bool, len(items))
@@ -447,6 +466,11 @@ func webUISanitizeHistoryItems(redactor *auth.Redactor, items []json.RawMessage)
 			for _, key := range []string{"status", "createdAt", "phase", "role"} {
 				if len(source[key]) <= 256 && len(source[key]) > 0 {
 					placeholder[key] = source[key]
+				}
+			}
+			for _, key := range []string{"startedAtMs", "completedAtMs", "recordedAtMs"} {
+				if value := webUIHistoryMilliseconds(source[key]); value != nil {
+					placeholder[key] = *value
 				}
 			}
 			if item.Type == "reasoning" {

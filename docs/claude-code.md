@@ -125,12 +125,21 @@ button **Queue**; Telegram's active-turn messages follow the same queue behavior
 A worker restart never silently replays uncertain prompts. Pending bridge queue
 items are cancelled with a saved history notice so they can be resent explicitly.
 
+Claude background agents and commands remain part of the request that launched
+them, including agents that Claude starts in the background implicitly. MACT
+keeps the turn active while that work runs and while the parent assembles its
+final response. Interim replies and task updates stay in the same conversation;
+queued input starts after the request finishes. Account changes and maintenance
+remain blocked during this work. **Stop** cancels the turn and retires its Claude
+process group before another message can start. Ambient housekeeping does not
+keep a request active. A deliberately persistent background command keeps its
+request active until it ends or you stop it.
+
 This first integration does not provide Claude project archive/restore,
 Codex goals, Codex quotas/reset redemption, native Codex terminal
 attachment, or Codex-specific settings and plugins. These capabilities are not
-advertised for Claude workers. Background tools are rejected so detached work
-cannot be mistaken for an idle worker during maintenance. Session naming changes
-only the name displayed in MACT and Telegram.
+advertised for Claude workers. Session naming changes only the name displayed in
+MACT and Telegram.
 
 ### Delete a session
 
@@ -150,6 +159,30 @@ until the gateway acknowledges them, then the worker removes them normally.
 The project directory and every file in it are kept, including directories under
 `~/CLAUDE_CODE/` and any custom project path. This action does not archive or
 delete the project.
+
+### Recover missed native output
+
+For a turn completed prematurely by an older worker, an administrator can call
+`thread/history/recover` on the worker's private local runtime socket after
+initialization, supplying the existing `threadId` and `turnId`:
+
+```json
+{"id":2,"method":"thread/history/recover","params":{"threadId":"SESSION_UUID","turnId":"TURN_UUID"}}
+```
+
+Recovery requires a completed saved turn, its recorded native location, and no
+open native process, active or queued input, pending approvals, or deletion.
+After confirming sessions are idle, restarting the worker closes idle native
+processes. Recovery reads the matching main native transcript without starting
+Claude or submitting a prompt. It preserves the saved turn and existing item
+identities, imports missed parent replies, tool calls and parent-visible task
+completion summaries, and retains native message timestamps. Child transcripts
+and private reasoning are excluded. Repeating a successful recovery adds no
+duplicates. Ambiguous or changing sources leave saved history untouched.
+
+The repaired turn ends at the final native reply. When the additional activity
+has no trustworthy cumulative cost result, consumption is shown as unknown.
+Refresh an open conversation to load the repaired history.
 
 ## Status line and account credit
 

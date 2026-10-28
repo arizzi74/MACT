@@ -435,20 +435,36 @@ itemTimes['timestamp-older-completed'] = { startedAtMs: null, completedAtMs: tim
     assert.ok(geometry.last <= geometry.composer + 1, context + ': the latest message remains above the composer');
   };
   const assertToolColors = async context => {
-    const details = page.locator('[data-item-id="tool-a"] details');
-    const expanded = await details.evaluate(element => element.open);
-    // A style probe must not scroll an older tool into view as a real click would.
-    if (!expanded) await details.evaluate(element => { element.open = true; });
-    await details.locator('pre').first().waitFor({ state: 'visible' });
-    for (const selector of ['.role', 'pre']) {
-      const rgb = await page.evaluate(selector => getComputedStyle(document.querySelector('[data-item-id="tool-a"] ' + selector)).color.match(/\d+/g).map(Number), selector);
-      assert.ok(rgb[2] > rgb[0], 'Tool ' + selector + ' uses blue text in ' + context);
+    // Select and probe in one browser task. A locator's resolved element handle
+    // can be detached by a transcript render before its evaluate callback runs.
+    // DOM click also avoids scrolling an old tool into view for this CSS check.
+    const colors = await page.evaluate(context => {
+      const details = document.querySelector('[data-item-id="tool-a"] details');
+      if (!details) throw new Error('Tool disclosure is missing in ' + context);
+      const expanded = details.open;
+      // Programmatically opening a disclosure queues toggle asynchronously. If
+      // that happened just before this probe, use the normal click handler to
+      // materialize its lazy body synchronously without waiting on that event.
+      if (expanded && !details.querySelector('pre')) details.open = false;
+      if (!details.open) details.querySelector('summary').click();
+      const article = details.closest('article');
+      const result = {
+        role: getComputedStyle(article.querySelector('.role')).color,
+        output: getComputedStyle(details.querySelector('pre')).color,
+        summary: getComputedStyle(details.querySelector('summary')).color,
+        title: getComputedStyle(details.querySelector('.tool-title')).color,
+        muted: getComputedStyle(document.querySelector('#session-location')).color,
+      };
+      if (!expanded) details.open = false;
+      return result;
+    }, context);
+    for (const key of ['role', 'output']) {
+      const channels = colors[key].match(/\d+/g);
+      assert.ok(channels, 'Tool ' + key + ' has a computed RGB color in ' + context + ': ' + JSON.stringify(colors));
+      const rgb = channels.map(Number);
+      assert.ok(rgb[2] > rgb[0], 'Tool ' + key + ' uses blue text in ' + context);
     }
-    for (const selector of ['summary', '.tool-title']) {
-      const colors = await page.evaluate(selector => ({ command: getComputedStyle(document.querySelector('[data-item-id="tool-a"] ' + selector)).color, muted: getComputedStyle(document.querySelector('#session-location')).color }), selector);
-      assert.equal(colors.command, colors.muted, 'Tool command ' + selector + ' uses muted gray text in ' + context);
-    }
-    if (!expanded) await details.evaluate(element => { element.open = false; });
+    for (const key of ['summary', 'title']) assert.equal(colors[key], colors.muted, 'Tool command ' + key + ' uses muted gray text in ' + context);
   };
   const choose = async id => {
     if (await page.locator('#show-sessions').isVisible() && await page.locator('#show-sessions').getAttribute('aria-expanded') !== 'true') await page.locator('#show-sessions').click();

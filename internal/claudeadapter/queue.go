@@ -7,7 +7,7 @@ import (
 )
 
 // All queue operations run under server.mu. User input is written to the
-// native CLI only after the preceding top-level result has settled.
+// native CLI only after the preceding parent run and its background work settle.
 func (s *server) beginTurn(t *savedThread, content []map[string]any) (*savedTurn, *process, map[string]any, error) {
 	t.ensureStatus().Cost.LastTurnUSD = nil
 	turn := &savedTurn{ID: uuid.NewString(), Status: "inProgress", StartedAt: time.Now().Unix(), Items: []map[string]any{}}
@@ -32,6 +32,7 @@ func (s *server) beginTurn(t *savedThread, content []map[string]any) (*savedTurn
 		}
 		s.runners[t.ID] = proc
 	}
+	proc.beginLifecycle(t, turn.ID)
 	return turn, proc, userItem, nil
 }
 

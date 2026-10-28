@@ -127,19 +127,24 @@ func setSessionWaiting(ctx context.Context, tx *dbTx, sessionID uuid.UUID, state
 	return nil
 }
 
-func setSessionState(ctx context.Context, tx *dbTx, sessionID uuid.UUID, state, activeTurnID, terminalTurnID string) error {
+func setSessionState(ctx context.Context, tx *dbTx, sessionID uuid.UUID, state, activeTurnID, terminalTurnID string, generation uint64) error {
 	if !validSessionState(state) {
 		return ErrEventTarget
 	}
 	if terminalTurnID != "" {
 		ct, err := tx.Exec(ctx, `UPDATE sessions SET state = $2,
             active_turn_id = NULL, last_activity_at = (strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z')
-            WHERE session_id = $1 AND (active_turn_id IS NULL OR active_turn_id = $3)`, sessionID, state, terminalTurnID)
+            WHERE session_id = $1 AND (active_turn_id IS NULL OR active_turn_id = $3)
+              AND COALESCE(json_extract(metadata,'$.terminal_error_prompt_id'),'')=''
+              AND (COALESCE(json_extract(metadata,'$.terminal_error_generation'),0)<>$4
+                OR json_type(metadata,'$.terminal_error_turn') IS NULL
+                OR COALESCE(json_extract(metadata,'$.terminal_error_turn'),'')=$3)`, sessionID, state, terminalTurnID, int64(generation))
 		if err != nil {
 			return fmt.Errorf("registry: update terminal session state: %w", err)
 		}
 		// An older turn completing after a newer turn started is valid history;
-		// it must not clear or downgrade that newer active turn.
+		// it must not clear or downgrade that newer turn, including after the
+		// newer turn completed and active_turn_id became NULL.
 		if ct.RowsAffected() == 0 {
 			return nil
 		}

@@ -68,7 +68,7 @@ var supportedMethods = []string{
 	"initialize", "thread/start", "thread/resume", "thread/read", "thread/list",
 	"thread/loaded/list", "thread/name/set", "thread/turns/list", "turn/start",
 	"turn/interrupt", "turn/steer", "thread/queue/list", "thread/queue/clear", "config/read", "model/list",
-	"thread/status/read", "thread/delete",
+	"thread/status/read", "thread/delete", "thread/history/recover",
 }
 
 // SupportedMethods is an exhaustive allowlist. In particular Claude's queued
@@ -168,6 +168,7 @@ func Start(ctx context.Context, cfg Config) (*Runtime, error) {
 		if s.deletions[thread.ID] != nil {
 			continue
 		}
+		settleInterruptedTaskItems(thread)
 		s.applyStatusSettings(thread, settings, false)
 		if err := s.save(thread); err != nil {
 			cancel()
@@ -263,6 +264,11 @@ func (r *Runtime) WithIdleSettingsUpdate(update func() error) error {
 	for _, t := range s.threads {
 		if t.active() != nil || len(t.Queue) > 0 {
 			return errors.New("Claude runtime has an active turn")
+		}
+	}
+	for _, p := range s.runners {
+		if p.hasBackgroundWork() {
+			return errors.New("Claude runtime has active background work")
 		}
 	}
 	if update != nil {
