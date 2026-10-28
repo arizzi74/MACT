@@ -242,14 +242,11 @@ func TestClaudeRuntimeSettingsIdleFenceAndCodexRejection(t *testing.T) {
 		t.Fatalf("native busy update wrote settings: %v", err)
 	}
 	a.cfg.AgentKind = "codex"
-	for _, action := range []string{"get", "put"} {
-		r := claudeSettingsRequest(a, action, nil)
-		if action == "put" {
-			r.Settings = update
-		}
-		if response := a.runtimeSettings(t.Context(), r); response.ErrorCode != "unsupported" {
-			t.Fatalf("Codex accepted runtime settings: %#v", response)
-		}
+	if response := a.runtimeSettings(t.Context(), claudeSettingsRequest(a, "put", update)); response.ErrorCode != "unsupported" {
+		t.Fatalf("Codex accepted Claude runtime settings: %#v", response)
+	}
+	if response := a.runtimeSettings(t.Context(), claudeSettingsRequest(a, "get", nil)); response.ErrorCode != "" || response.Settings == nil || response.Settings.Provider != "codex" {
+		t.Fatalf("Codex defaults unavailable: %#v", response)
 	}
 }
 

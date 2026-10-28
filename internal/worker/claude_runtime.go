@@ -82,12 +82,16 @@ func (m *RuntimeManager) startClaudeProfile(ctx context.Context, profile config.
 
 var claudeVersionPattern = regexp.MustCompile(`^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$`)
 
-func (a *Agent) newThreadOptions(cwd, historyMode string) codexadapter.ThreadOptions {
+func (a *Agent) newThreadOptions(cwd, historyMode string) (codexadapter.ThreadOptions, error) {
 	options := codexadapter.ThreadOptions{CWD: cwd, HistoryMode: historyMode}
 	if a.cfg.AgentKind != "claude" {
-		options.ApprovalPolicy, options.Sandbox = "on-request", "workspace-write"
+		defaults, err := readCodexDefaults(codexDefaultsPath(a.cfg))
+		if err != nil {
+			return options, validationError("Codex session defaults are unavailable. Check this worker's runtime settings before creating a session.")
+		}
+		options = codexDefaultThreadOptions(defaults, cwd, historyMode)
 	}
-	return options
+	return options, nil
 }
 
 func claudeExecutableVersion(ctx context.Context, binary string) (string, error) {

@@ -77,6 +77,15 @@ gateway WSS URL, allowed workspace roots, and runtime profiles. Keep all real co
 credentials outside the repository. See [operations](operations.md) for setup
 and recovery details.
 
+After enrollment, use **Workers → Codex defaults** in the administrator console
+to set the worker's model, reasoning effort and permissions for future sessions.
+Existing sessions keep their saved settings until cleared. These optional
+defaults are stored privately beside the worker's state file as
+`<StateFile>.codex-defaults.json`; they are separate from `worker.json` and native
+Codex configuration. Empty overrides use native model/reasoning settings and the
+worker's safe workspace / on-request permissions. See
+[Codex worker defaults](admin.md#codex-worker-defaults) for details.
+
 ## Download the installer
 
 ```sh

@@ -485,7 +485,12 @@ func (a *Agent) createLoop(runtimeID string, queue <-chan protocol.Command) {
 					continue
 				}
 			}
-			thread, err := client.StartThread(a.ctx, a.newThreadOptions(cwd, c.Arguments.HistoryMode))
+			options, err := a.newThreadOptions(cwd, c.Arguments.HistoryMode)
+			if err != nil {
+				a.report(a.executionError(c, err))
+				continue
+			}
+			thread, err := client.StartThread(a.ctx, options)
 			if err != nil {
 				a.report(a.executionError(c, err))
 				continue

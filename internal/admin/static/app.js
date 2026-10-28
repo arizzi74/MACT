@@ -986,7 +986,8 @@ function renderWorkers(workers) {
     info.append(el('b', '', worker.Name), el('div', 'muted', [worker.Connectivity, [worker.OS, worker.Arch].filter(Boolean).join('/'), worker.Version && 'v' + worker.Version].filter(Boolean).join(' · ')), el('div', 'muted', 'Worker ID: ' + worker.ID));
     const actions = el('div', 'worker-actions');
     if (worker.Enabled !== false) {
-      if (worker.SupportsWorkerRuntimeSettings) actions.append(button('Claude Code settings', 'secondary', () => openWorkerRuntimeSettings(worker)));
+      const provider = worker.AgentKind || 'codex';
+      if (worker.SupportsWorkerRuntimeSettings && ['claude', 'codex'].includes(provider)) actions.append(button(provider === 'codex' ? 'Codex defaults' : 'Claude Code settings', 'secondary', () => openWorkerRuntimeSettings(worker)));
       actions.append(button('Rotate token', 'secondary', async () => {
         const result = await sensitiveCall('/workers/' + encodeURIComponent(worker.ID) + '/rotate-token', { method: 'POST', body: '{}' });
         showToken(worker.ID, result.token);
@@ -1031,8 +1032,18 @@ function updateWorkerRuntimeControls() {
   $('worker-runtime-key').disabled = $('worker-runtime-clear').checked;
   if ($('worker-runtime-clear').checked) $('worker-runtime-key').value = '';
   $('worker-runtime-bypass').hidden = $('worker-runtime-permissions').value !== 'bypassPermissions';
+  $('worker-runtime-codex-full-access').hidden = $('worker-runtime-codex-permissions').value !== 'full-access';
 }
 function fillWorkerRuntimeSettings(settings) {
+  if (workerRuntimeTarget?.provider === 'codex') {
+    if (settings.provider !== 'codex' || !settings.codex_defaults) throw new Error('Unexpected worker settings.');
+    $('worker-runtime-codex-model').value = settings.codex_defaults.model || '';
+    $('worker-runtime-codex-reasoning').value = settings.codex_defaults.reasoning_effort || '';
+    $('worker-runtime-codex-permissions').value = settings.codex_defaults.permission_level || '';
+    updateWorkerRuntimeControls();
+    return;
+  }
+  if (settings.provider !== 'claude') throw new Error('Unexpected worker settings.');
   $('worker-runtime-model').value = settings.model || '';
   $('worker-runtime-url').value = settings.base_url || '';
   $('worker-runtime-auth').value = settings.auth_mode || 'login';
@@ -1047,9 +1058,13 @@ function fillWorkerRuntimeSettings(settings) {
 function showWorkerRuntimeError(error) {
   if (error.status === 401) { sessionAuth.expire('expired'); return; }
   const messages = {
-    runtime_settings_busy: 'The worker is busy. Wait for its current work to finish and try again.',
-    runtime_settings_unsupported: 'Use a dedicated Claude Code worker with runtime settings support.',
-    invalid_runtime_settings: 'The worker rejected these settings. Check the credential and configuration, then try again.',
+    runtime_settings_busy: workerRuntimeTarget?.provider === 'codex'
+      ? 'Worker maintenance is in progress. Wait for it to finish and try again.'
+      : 'The worker is busy. Wait for its current work to finish and try again.',
+    runtime_settings_unsupported: 'Update this worker to enable settings for its provider.',
+    invalid_runtime_settings: workerRuntimeTarget?.provider === 'codex'
+      ? 'The worker rejected these defaults. Check the model, reasoning effort and permissions, then try again.'
+      : 'The worker rejected these settings. Check the credential and configuration, then try again.',
   };
   // Upstream errors can quote a submitted credential. Display only local text.
   $('worker-runtime-error').textContent = messages[error.code] || 'Settings could not be confirmed. Close this dialog and reload the worker settings before trying again.';
@@ -1057,8 +1072,18 @@ function showWorkerRuntimeError(error) {
 }
 async function openWorkerRuntimeSettings(worker) {
   closeWorkerRuntimeSettings();
-  workerRuntimeTarget = { id: worker.ID, name: worker.Name };
+  const provider = worker.AgentKind || 'codex';
+  workerRuntimeTarget = { id: worker.ID, name: worker.Name, provider };
   const sequence = workerRuntimeSequence;
+  const codex = provider === 'codex';
+  $('worker-runtime-heading').textContent = codex ? 'Codex defaults' : 'Claude Code settings';
+  $('worker-runtime-description').textContent = codex
+    ? 'Defaults are saved on this worker and apply to every new session, including after /clear. Existing sessions keep their saved settings until cleared. The worker must be online.'
+    : 'Settings are saved on this worker. The worker must be online and idle. Changes apply to subsequent Claude Code turns.';
+  $('worker-runtime-codex').hidden = !codex;
+  $('worker-runtime-claude').hidden = codex;
+  $('worker-runtime-codex-reset').hidden = !codex;
+  $('worker-runtime-save').textContent = codex ? 'Save defaults' : 'Save settings';
   $('worker-runtime-target').textContent = worker.Name || worker.ID;
   $('worker-runtime-status').textContent = 'Loading worker settings…';
   $('worker-runtime-dialog').showModal();
@@ -1078,10 +1103,13 @@ async function saveWorkerRuntimeSettings(event) {
   if (workerRuntimeBusy || !workerRuntimeTarget) return;
   const sequence = workerRuntimeSequence;
   const id = workerRuntimeTarget.id;
-  const update = { model: $('worker-runtime-model').value.trim(), base_url: $('worker-runtime-url').value.trim(),
+  const codex = workerRuntimeTarget.provider === 'codex';
+  const update = codex ? { codex_defaults: { model: $('worker-runtime-codex-model').value.trim(),
+    reasoning_effort: $('worker-runtime-codex-reasoning').value, permission_level: $('worker-runtime-codex-permissions').value } }
+    : { model: $('worker-runtime-model').value.trim(), base_url: $('worker-runtime-url').value.trim(),
     auth_mode: $('worker-runtime-auth').value, permission_mode: $('worker-runtime-permissions').value };
-  if ($('worker-runtime-clear').checked) update.api_key = '';
-  else if ($('worker-runtime-key').value) update.api_key = $('worker-runtime-key').value;
+  if (!codex && $('worker-runtime-clear').checked) update.api_key = '';
+  else if (!codex && $('worker-runtime-key').value) update.api_key = $('worker-runtime-key').value;
   // Credentials are held only by this request; never retain them as a draft.
   $('worker-runtime-key').value = '';
   workerRuntimeBusy = true;
@@ -1094,7 +1122,9 @@ async function saveWorkerRuntimeSettings(event) {
       { method: 'PUT', body: JSON.stringify(update), cache: 'no-store' }, current);
     if (!current()) return;
     fillWorkerRuntimeSettings(settings);
-    $('worker-runtime-status').textContent = 'Saved. Subsequent Claude Code turns use these settings.';
+    $('worker-runtime-status').textContent = codex
+      ? 'Saved. Every new session, including after /clear, uses these defaults. Existing sessions keep their saved settings until cleared.'
+      : 'Saved. Subsequent Claude Code turns use these settings.';
   } catch (error) {
     if (current()) { $('worker-runtime-status').textContent = ''; showWorkerRuntimeError(error); }
   } finally {
@@ -1649,6 +1679,14 @@ $('worker-runtime-dialog').addEventListener('cancel', event => { event.preventDe
 $('worker-runtime-form').addEventListener('submit', saveWorkerRuntimeSettings);
 $('worker-runtime-clear').addEventListener('change', updateWorkerRuntimeControls);
 $('worker-runtime-permissions').addEventListener('change', updateWorkerRuntimeControls);
+$('worker-runtime-codex-permissions').addEventListener('change', updateWorkerRuntimeControls);
+$('worker-runtime-codex-reset').addEventListener('click', () => {
+  if (workerRuntimeBusy || workerRuntimeTarget?.provider !== 'codex') return;
+  for (const id of ['worker-runtime-codex-model', 'worker-runtime-codex-reasoning', 'worker-runtime-codex-permissions']) $(id).value = '';
+  updateWorkerRuntimeControls();
+  $('worker-runtime-error').hidden = true;
+  $('worker-runtime-status').textContent = 'Defaults reset in this form. Select Save defaults to apply.';
+});
 window.addEventListener('pagehide', closeWorkerRuntimeSettings);
 $('new-worker').addEventListener('click', openWorkerEnrollment);
 $('enrollment-access').addEventListener('change', () => runEnrollment(createEnrollment));

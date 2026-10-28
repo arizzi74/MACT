@@ -319,7 +319,11 @@ func (s *sessionActor) webUINewSession(ctx context.Context, client *codexadapter
 	// Official 0.156 cannot rejoin an empty paginated thread until its first
 	// prompt materializes the source rollout. Its supported legacy contract
 	// permits immediate browser attachment and still supports bounded reads.
-	thread, err := client.StartThread(ctx, s.agent.newThreadOptions(cwd, "legacy"))
+	threadOptions, err := s.agent.newThreadOptions(cwd, "legacy")
+	if err != nil {
+		return protocol.Result{}, err
+	}
+	thread, err := client.StartThread(ctx, threadOptions)
 	if err != nil {
 		return protocol.Result{}, err
 	}

@@ -36,6 +36,7 @@ type attachmentProxy struct {
 	pausedEpoch       uint64
 	queueThreads      map[string]struct{}
 	deletedThreads    map[string]struct{}
+	newThreadDefaults func([]byte) ([]byte, error)
 	sessions          map[*attachmentSession]struct{}
 	group             sync.WaitGroup
 	done              chan struct{}
@@ -60,6 +61,14 @@ type attachmentSession struct {
 type attachmentConnectionKey struct{}
 
 func newAttachmentProxy(path, backend string, archiveFences ...map[string]*nativeArchiveFence) (*attachmentProxy, error) {
+	var fences map[string]*nativeArchiveFence
+	if len(archiveFences) > 0 {
+		fences = archiveFences[0]
+	}
+	return newAttachmentProxyWithDefaults(path, backend, nil, fences)
+}
+
+func newAttachmentProxyWithDefaults(path, backend string, defaults func([]byte) ([]byte, error), archiveFences map[string]*nativeArchiveFence) (*attachmentProxy, error) {
 	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
 	if err != nil {
 		return nil, err
@@ -68,10 +77,7 @@ func newAttachmentProxy(path, backend string, archiveFences ...map[string]*nativ
 		listener.Close()
 		return nil, err
 	}
-	p := &attachmentProxy{listener: listener, backend: backend, sessions: make(map[*attachmentSession]struct{}), done: make(chan struct{})}
-	if len(archiveFences) > 0 {
-		p.archiveFences = archiveFences[0]
-	}
+	p := &attachmentProxy{listener: listener, backend: backend, newThreadDefaults: defaults, archiveFences: archiveFences, sessions: make(map[*attachmentSession]struct{}), done: make(chan struct{})}
 	p.server = &http.Server{
 		Handler: http.HandlerFunc(p.accept), ReadHeaderTimeout: 5 * time.Second, MaxHeaderBytes: 16 << 10,
 		ConnContext: func(ctx context.Context, connection net.Conn) context.Context {
@@ -241,6 +247,16 @@ func (s *attachmentSession) fromFrontend() {
 
 func (s *attachmentSession) forwardClient(payload []byte) bool {
 	p := s.proxy
+	p.mu.Lock()
+	defaults := p.newThreadDefaults
+	p.mu.Unlock()
+	if defaults != nil {
+		forwarded, err := defaults(payload)
+		if err != nil {
+			return s.rejectNativeRequest(payload, err.Error())
+		}
+		payload = forwarded
+	}
 	for {
 		p.mu.Lock()
 		if p.closed {
@@ -296,6 +312,10 @@ func nativeResponseMessage(payload []byte) bool {
 }
 
 func (s *attachmentSession) rejectDuringUpdate(payload []byte) bool {
+	return s.rejectNativeRequest(payload, "Worker update in progress; retry after reconnecting.")
+}
+
+func (s *attachmentSession) rejectNativeRequest(payload []byte, message string) bool {
 	var request struct {
 		ID     json.RawMessage `json:"id"`
 		Method string          `json:"method"`
@@ -304,7 +324,7 @@ func (s *attachmentSession) rejectDuringUpdate(payload []byte) bool {
 		return false
 	}
 	response, err := json.Marshal(map[string]any{"id": request.ID, "error": map[string]any{
-		"code": -32002, "message": "Worker update in progress; retry after reconnecting.",
+		"code": -32002, "message": message,
 	}})
 	if err != nil {
 		return false

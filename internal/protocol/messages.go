@@ -45,6 +45,8 @@ type Session struct {
 	Settings     *SessionSettings `json:"settings,omitempty"`
 }
 
+// Codex session defaults have a separate capability from the original
+// Claude-only runtime settings, allowing gateways and workers to update separately.
 type Hello struct {
 	AgentKind                     string    `json:"agent_kind,omitempty"`
 	SupportsWebUI                 bool      `json:"supports_webui,omitempty"`
@@ -52,6 +54,7 @@ type Hello struct {
 	SupportsWebUIUploads          bool      `json:"supports_webui_uploads,omitempty"`
 	SupportsWorkerUpdate          bool      `json:"supports_worker_update,omitempty"`
 	SupportsWorkerRuntimeSettings bool      `json:"supports_worker_runtime_settings,omitempty"`
+	SupportsCodexSessionDefaults  bool      `json:"supports_codex_session_defaults,omitempty"`
 	WorkerID                      string    `json:"worker_id"`
 	WorkerName                    string    `json:"worker_name"`
 	Hostname                      string    `json:"hostname"`
@@ -86,6 +89,7 @@ type Heartbeat struct {
 	SupportsWebUIUploads          bool      `json:"supports_webui_uploads,omitempty"`
 	SupportsWorkerUpdate          bool      `json:"supports_worker_update,omitempty"`
 	SupportsWorkerRuntimeSettings bool      `json:"supports_worker_runtime_settings,omitempty"`
+	SupportsCodexSessionDefaults  bool      `json:"supports_codex_session_defaults,omitempty"`
 	WorkerID                      string    `json:"worker_id"`
 	SupportsImageInput            bool      `json:"supports_image_input,omitempty"`
 	SupportsFileInput             bool      `json:"supports_file_input,omitempty"`

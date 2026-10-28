@@ -141,7 +141,7 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		supportsFileInput:             hello.SupportsFileInput,
 		maxFileBytes:                  hello.MaxFileBytes,
 		supportsWorkerUpdate:          hello.SupportsWorkerUpdate,
-		supportsWorkerRuntimeSettings: hello.SupportsWorkerRuntimeSettings,
+		supportsWorkerRuntimeSettings: hello.SupportsWorkerRuntimeSettings || hello.SupportsCodexSessionDefaults,
 		supportsSessionWorkspaces:     hello.SupportsSessionWorkspaces || legacySessionSupport,
 		supportsWebUISessionCreation:  hello.SupportsWebUISessionCreation,
 		supportsSessionEditing:        hello.SupportsSessionEditing,

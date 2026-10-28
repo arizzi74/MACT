@@ -109,6 +109,9 @@ func TestAdminWorkerRuntimeSettingsCapabilityAndProviderProjection(t *testing.T)
 		supported bool
 	}{
 		{`{"agent_kind":"claude","supports_worker_runtime_settings":true,"api_key":"PRIVATE_SENTINEL"}`, "claude", true},
+		{`{"agent_kind":"codex","supports_codex_session_defaults":true}`, "codex", true},
+		{`{"agent_kind":"codex","supports_worker_runtime_settings":false,"supports_codex_session_defaults":true}`, "codex", true},
+		{`{"agent_kind":"codex","supports_worker_runtime_settings":false,"supports_codex_session_defaults":false}`, "codex", false},
 		{`{"agent_kind":"PRIVATE_SENTINEL","supports_worker_runtime_settings":false}`, "codex", false},
 		{`{}`, "codex", false},
 	} {

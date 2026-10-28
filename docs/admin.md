@@ -89,7 +89,7 @@ The browser uses these endpoints:
 | `DELETE /tgw/api/v1/admin/workers/{id}` | Revokes a worker. |
 | `DELETE /tgw/api/v1/admin/workers/{id}/purge` | Permanently deletes a revoked worker and its related gateway database records; requires `{"confirmed":true}`. |
 | `POST /tgw/api/v1/admin/workers/{id}/rotate-token` | Returns a replacement worker authentication token. |
-| `GET, PUT /tgw/api/v1/admin/workers/{id}/runtime-settings` | Reads or changes a dedicated Claude Code worker's runtime settings over its live connection. Writes require recent authentication. |
+| `GET, PUT /tgw/api/v1/admin/workers/{id}/runtime-settings` | Reads or changes a supported Codex worker's session defaults or a dedicated Claude Code worker's runtime settings over its live connection. Writes require recent authentication. |
 
 All state-changing admin requests require the exact configured `Origin`, the strict
 same-site session, and a double-submit `X-CSRF-Token`. Ceremony cookies bind
@@ -97,6 +97,48 @@ the browser to a five-minute, server-persisted WebAuthn session. Admin sessions
 are opaque hashed random tokens, normally expire after eight hours, and can be revoked.
 Worker tokens are only included in the installer redemption or legacy
 create/rotate response and are never logged or returned later.
+
+## Codex worker defaults
+
+Expand **Workers** and select **Codex defaults** for a supported Codex worker.
+Enter a model ID available to that worker, choose a supported reasoning effort,
+and select permissions. Empty model and reasoning fields use native Codex
+defaults. **Worker default** retains the safe worker permission behavior:
+workspace writes with approval when needed. Other choices
+are **Ask for approval**, **Read only** and **Full access**. Full access permits
+commands outside the workspace without approval prompts.
+
+Defaults apply to every new session created on this worker, including a new
+session after `/clear` in the Web UI or `/tgclear` in Telegram. Existing sessions
+keep their saved model, reasoning and permissions until cleared; saving worker
+defaults does not change their next turn. **Reset defaults** clears the form;
+select **Save defaults** to persist that reset.
+
+The worker must be online, and saving requires authentication within the
+previous five minutes. Current work can continue while defaults change.
+Settings use the authenticated worker connection and are saved privately on that
+worker, independently of Claude Code settings. Older workers do not show the
+button until they support runtime settings. A connection
+failure can have an uncertain outcome; reopen the dialog to read the saved values
+before submitting again.
+
+Codex reads include `{"provider":"codex","codex_defaults":{"model":"",
+"reasoning_effort":"","permission_level":""}}`, with saved values replacing
+the empty strings. Writes send only `{"codex_defaults":{"model":"",
+"reasoning_effort":"","permission_level":""}}`. Empty strings explicitly
+remove the corresponding overrides; empty permissions restore the worker's
+safe default. Claude credential, endpoint and authentication fields do not belong
+in a Codex request.
+
+Defaults persist across restarts in the owner-only
+`<worker StateFile>.codex-defaults.json` file, separate from `worker.json` and
+native Codex configuration. Include it when backing up the worker's local state.
+They apply to fresh sessions from Telegram and the Web UI. An attached native
+CLI follows worker defaults once they have been explicitly saved; before the
+first save, it keeps its existing behavior. **Reset defaults → Save defaults**
+also applies the native model/reasoning and safe permission defaults to fresh
+CLI sessions, clearing carried overrides. Selecting or resuming an existing
+session preserves that session's settings.
 
 ## Claude Code worker settings
 

@@ -40,7 +40,7 @@ func (s *Server) workerRuntimeSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if update.Validate() != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_runtime_settings", "message": "Check the model, endpoint, authentication and permission settings."})
+			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_runtime_settings", "message": "Check the model, reasoning, permissions and provider settings."})
 			return
 		}
 	}
@@ -61,7 +61,7 @@ func (s *Server) workerRuntimeSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.runtimeSettings == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "runtime_settings_unavailable", "message": "Reconnect this worker to manage its Claude Code settings."})
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "runtime_settings_unavailable", "message": "Reconnect this worker to manage its agent settings."})
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
@@ -71,11 +71,11 @@ func (s *Server) workerRuntimeSettings(w http.ResponseWriter, r *http.Request) {
 		code, message, status := "runtime_settings_unavailable", "Settings could not be confirmed. Reconnect the worker and reload its settings before trying again.", http.StatusServiceUnavailable
 		switch {
 		case errors.Is(err, gateway.ErrWorkerRuntimeSettingsUnsupported):
-			code, message, status = "runtime_settings_unsupported", "Use a dedicated Claude Code worker with runtime settings support.", http.StatusConflict
+			code, message, status = "runtime_settings_unsupported", "Update this worker to a version with agent settings support.", http.StatusConflict
 		case errors.Is(err, gateway.ErrWorkerRuntimeSettingsBusy):
 			code, message, status = "runtime_settings_busy", "The worker is busy. Wait for its current work to finish and try again.", http.StatusConflict
 		case errors.Is(err, gateway.ErrWorkerRuntimeSettingsInvalid):
-			code, message, status = "invalid_runtime_settings", "The worker rejected these settings. Check the credential and configuration, then try again.", http.StatusBadRequest
+			code, message, status = "invalid_runtime_settings", "The worker rejected these settings. Check the model, reasoning, permissions and provider configuration, then try again.", http.StatusBadRequest
 		}
 		// Worker errors may contain credentials. Return only fixed local text.
 		writeJSON(w, status, map[string]string{"code": code, "message": message})

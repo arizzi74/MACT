@@ -86,6 +86,7 @@ func (s *Store) RegisterConnection(ctx context.Context, token string, connection
 	helloMetadata, err := json.Marshal(struct {
 		AgentKind                     string `json:"agent_kind,omitempty"`
 		SupportsWorkerRuntimeSettings bool   `json:"supports_worker_runtime_settings,omitempty"`
+		SupportsCodexSessionDefaults  bool   `json:"supports_codex_session_defaults,omitempty"`
 		SupportsSessionDeletion       bool   `json:"supports_session_deletion,omitempty"`
 		ProtocolMin                   int    `json:"protocol_min"`
 		ProtocolMax                   int    `json:"protocol_max"`
@@ -96,7 +97,7 @@ func (s *Store) RegisterConnection(ctx context.Context, token string, connection
 		SupportsWebUISessionCreation  bool   `json:"supports_webui_session_creation,omitempty"`
 		SupportsSessionEditing        bool   `json:"supports_session_editing,omitempty"`
 		SupportsSessionArchives       bool   `json:"supports_session_archives,omitempty"`
-	}{hello.AgentKind, hello.SupportsWorkerRuntimeSettings, hello.SupportsSessionDeletion, hello.ProtocolMin, hello.ProtocolMax, hello.SupportsImageInput, hello.SupportsFileInput, hello.MaxFileBytes, hello.SupportsSessionWorkspaces, hello.SupportsWebUISessionCreation, hello.SupportsSessionEditing, hello.SupportsSessionArchives})
+	}{hello.AgentKind, hello.SupportsWorkerRuntimeSettings, hello.SupportsCodexSessionDefaults, hello.SupportsSessionDeletion, hello.ProtocolMin, hello.ProtocolMax, hello.SupportsImageInput, hello.SupportsFileInput, hello.MaxFileBytes, hello.SupportsSessionWorkspaces, hello.SupportsWebUISessionCreation, hello.SupportsSessionEditing, hello.SupportsSessionArchives})
 	if err != nil {
 		return Worker{}, fmt.Errorf("registry: marshal hello metadata: %w", err)
 	}

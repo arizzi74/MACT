@@ -147,3 +147,41 @@ func TestWorkerRuntimeSettingsMalformedErrorNeverQuotesInput(t *testing.T) {
 		t.Fatal("old worker received an unsupported settings frame")
 	}
 }
+
+func TestCodexWorkerDefaultsUseTransientRuntimeSettingsRPC(t *testing.T) {
+	h, p, store := runtimeSettingsHub(t)
+	defaults := protocol.CodexSessionDefaults{Model: "custom-model", ReasoningEffort: "high", PermissionLevel: "read-only"}
+	finished := make(chan error, 1)
+	go func() {
+		settings, err := h.WorkerRuntimeSettings(t.Context(), p.workerID, &protocol.WorkerRuntimeSettingsUpdate{CodexDefaults: &defaults})
+		if err == nil && (settings.Provider != "codex" || settings.CodexDefaults == nil || *settings.CodexDefaults != defaults) {
+			err = errors.New("incorrect Codex defaults response")
+		}
+		finished <- err
+	}()
+	request := receiveRuntimeSettingsRequest(t, p)
+	if request.Action != "put" || request.Settings.CodexDefaults == nil || *request.Settings.CodexDefaults != defaults || request.Settings.APIKey != nil {
+		t.Fatal("Codex defaults lost or changed in transit")
+	}
+	envelope, err := protocol.NewEnvelope("worker_runtime_settings_result", protocol.WorkerRuntimeSettingsResult{
+		RequestID: request.RequestID,
+		Settings:  &protocol.WorkerRuntimeSettings{Provider: "codex", CodexDefaults: &defaults},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.handle(t.Context(), p, envelope); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-finished; err != nil {
+		t.Fatal(err)
+	}
+	dashboard, err := store.AdminDashboardSnapshot(t.Context())
+	if err != nil || dashboard.QueuedCommands != 0 {
+		t.Fatal("Codex defaults entered the durable command queue")
+	}
+	watermark, err := store.EventWatermark(t.Context(), p.workerID)
+	if err != nil || watermark != 0 || len(h.runtimeSettings) != 0 {
+		t.Fatal("Codex defaults entered the event journal or retained an RPC")
+	}
+}

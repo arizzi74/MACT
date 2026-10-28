@@ -245,22 +245,33 @@
 <dialog id="worker-runtime-dialog" class="bot-dialog" aria-labelledby="worker-runtime-heading">
   <div class="row bot-dialog-heading"><h2 id="worker-runtime-heading">Claude Code settings</h2><button id="worker-runtime-close" type="button" class="secondary">Close</button></div>
   <p id="worker-runtime-target"></p>
-  <p class="muted">Settings are saved on this worker. The worker must be online and idle. Changes apply to subsequent Claude Code turns.</p>
+  <p id="worker-runtime-description" class="muted">Settings are saved on this worker. The worker must be online and idle. Changes apply to subsequent Claude Code turns.</p>
   <p id="worker-runtime-status" class="muted" role="status" aria-live="polite"></p>
   <p id="worker-runtime-error" class="notice error" role="alert" hidden></p>
   <form id="worker-runtime-form" autocomplete="off">
     <fieldset id="worker-runtime-fields" disabled>
-      <label for="worker-runtime-model">Model<input id="worker-runtime-model" maxlength="256" autocomplete="off" spellcheck="false" placeholder="Claude Code default"></label>
-      <p class="muted">A custom model also replaces Claude’s Opus, Sonnet and Haiku model aliases.</p>
-      <label for="worker-runtime-url">API endpoint<input id="worker-runtime-url" type="url" maxlength="2048" autocomplete="off" spellcheck="false" placeholder="Anthropic default"></label>
-      <label for="worker-runtime-auth">Authentication<select id="worker-runtime-auth"><option value="login">Existing Claude Code login</option><option value="api_key">API key</option><option value="auth_token">Auth token</option></select></label>
-      <p class="muted">Existing login uses credentials already available to Claude Code on the worker. API key and auth token use their corresponding Anthropic authentication method.</p>
-      <label for="worker-runtime-key">API key / auth token<input id="worker-runtime-key" type="password" maxlength="8192" autocomplete="new-password" spellcheck="false" aria-describedby="worker-runtime-key-help"></label>
-      <p id="worker-runtime-key-help" class="muted">Leave blank to keep the saved credential. The saved value is never returned.</p>
-      <label class="audio-toggle"><input id="worker-runtime-clear" type="checkbox"><span>Remove saved API key / auth token</span></label>
-      <label for="worker-runtime-permissions">Permissions<select id="worker-runtime-permissions"><option value="default">Ask before protected actions</option><option value="acceptEdits">Allow file edits</option><option value="plan">Plan only</option><option value="bypassPermissions">Bypass permission checks</option></select></label>
-      <p id="worker-runtime-bypass" class="notice" hidden>Bypass allows Claude Code to run tools and commands without permission prompts. Use it only on a worker you have isolated and trust.</p>
-      <div class="bot-dialog-actions"><button id="worker-runtime-save" type="submit">Save settings</button></div>
+      <div id="worker-runtime-claude">
+        <label for="worker-runtime-model">Model<input id="worker-runtime-model" maxlength="256" autocomplete="off" spellcheck="false" placeholder="Claude Code default"></label>
+        <p class="muted">A custom model also replaces Claude’s Opus, Sonnet and Haiku model aliases.</p>
+        <label for="worker-runtime-url">API endpoint<input id="worker-runtime-url" type="url" maxlength="2048" autocomplete="off" spellcheck="false" placeholder="Anthropic default"></label>
+        <label for="worker-runtime-auth">Authentication<select id="worker-runtime-auth"><option value="login">Existing Claude Code login</option><option value="api_key">API key</option><option value="auth_token">Auth token</option></select></label>
+        <p class="muted">Existing login uses credentials already available to Claude Code on the worker. API key and auth token use their corresponding Anthropic authentication method.</p>
+        <label for="worker-runtime-key">API key / auth token<input id="worker-runtime-key" type="password" maxlength="8192" autocomplete="new-password" spellcheck="false" aria-describedby="worker-runtime-key-help"></label>
+        <p id="worker-runtime-key-help" class="muted">Leave blank to keep the saved credential. The saved value is never returned.</p>
+        <label class="audio-toggle"><input id="worker-runtime-clear" type="checkbox"><span>Remove saved API key / auth token</span></label>
+        <label for="worker-runtime-permissions">Permissions<select id="worker-runtime-permissions"><option value="default">Ask before protected actions</option><option value="acceptEdits">Allow file edits</option><option value="plan">Plan only</option><option value="bypassPermissions">Bypass permission checks</option></select></label>
+        <p id="worker-runtime-bypass" class="notice" hidden>Bypass allows Claude Code to run tools and commands without permission prompts. Use it only on a worker you have isolated and trust.</p>
+      </div>
+      <div id="worker-runtime-codex" hidden>
+        <label for="worker-runtime-codex-model">Model<input id="worker-runtime-codex-model" maxlength="256" autocomplete="off" spellcheck="false" placeholder="Codex default" aria-describedby="worker-runtime-codex-model-help"></label>
+        <p id="worker-runtime-codex-model-help" class="muted">Enter a model ID available to this worker. Leave blank to use the native Codex default.</p>
+        <label for="worker-runtime-codex-reasoning">Reasoning effort<select id="worker-runtime-codex-reasoning" aria-describedby="worker-runtime-codex-reasoning-help"><option value="">Codex default</option><option value="none">None</option><option value="minimal">Minimal</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra high</option><option value="ultra">Ultra</option></select></label>
+        <p id="worker-runtime-codex-reasoning-help" class="muted">Choose an effort supported by your model. Codex default uses the native reasoning setting.</p>
+        <label for="worker-runtime-codex-permissions">Permissions<select id="worker-runtime-codex-permissions" aria-describedby="worker-runtime-codex-permissions-help"><option value="">Worker default</option><option value="ask-for-approval">Ask for approval</option><option value="read-only">Read only</option><option value="full-access">Full access</option></select></label>
+        <p id="worker-runtime-codex-permissions-help" class="muted">Worker default allows workspace changes and asks for approval when needed.</p>
+        <p id="worker-runtime-codex-full-access" class="notice" hidden>Full access permits commands outside the workspace without approval prompts.</p>
+      </div>
+      <div class="bot-dialog-actions"><button id="worker-runtime-save" type="submit">Save settings</button><button id="worker-runtime-codex-reset" type="button" class="secondary" hidden>Reset defaults</button></div>
     </fieldset>
   </form>
 </dialog>

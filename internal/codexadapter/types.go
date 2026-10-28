@@ -607,13 +607,16 @@ func decodeTurn(raw json.RawMessage) (Turn, error) {
 // ThreadOptions contains settings shared by thread/start and thread/resume.
 // Empty values are omitted so Codex may apply its configured defaults.
 type ThreadOptions struct {
-	Model          string
-	CWD            string
-	ApprovalPolicy string
-	Sandbox        string
-	Personality    string
-	ServiceName    string
-	HistoryMode    string // Optional thread/start persistence contract; never applied on resume.
+	Model             string
+	ReasoningEffort   string // Per-thread config override; only sent on thread/start.
+	CWD               string
+	ApprovalPolicy    string
+	ApprovalsReviewer string
+	PermissionProfile string // Named native preset; mutually exclusive with Sandbox.
+	Sandbox           string
+	Personality       string
+	ServiceName       string
+	HistoryMode       string // Optional thread/start persistence contract; never applied on resume.
 }
 
 func (o ThreadOptions) fields() map[string]any {
@@ -627,6 +630,12 @@ func (o ThreadOptions) fields() map[string]any {
 	if o.ApprovalPolicy != "" {
 		params["approvalPolicy"] = o.ApprovalPolicy
 	}
+	if o.ApprovalsReviewer != "" {
+		params["approvalsReviewer"] = o.ApprovalsReviewer
+	}
+	if o.PermissionProfile != "" {
+		params["permissions"] = o.PermissionProfile
+	}
 	if o.Sandbox != "" {
 		params["sandbox"] = o.Sandbox
 	}
@@ -639,18 +648,32 @@ func (o ThreadOptions) fields() map[string]any {
 	return params
 }
 
+func (o ThreadOptions) startFields() (map[string]any, error) {
+	if o.PermissionProfile != "" && o.Sandbox != "" {
+		return nil, errors.New("permissions and sandbox cannot be combined")
+	}
+	params := o.fields()
+	if o.ReasoningEffort != "" {
+		params["config"] = map[string]any{"model_reasoning_effort": o.ReasoningEffort}
+	}
+	if o.HistoryMode != "" {
+		if o.HistoryMode != "legacy" && o.HistoryMode != "paginated" {
+			return nil, errors.New("unsupported thread history mode")
+		}
+		params["historyMode"] = o.HistoryMode
+	}
+	return params, nil
+}
+
 // StartThread starts a new thread. The returned ID is always supplied by
 // app-server; this package never invents thread IDs.
 func (c *Client) StartThread(ctx context.Context, options ThreadOptions) (Thread, error) {
 	var reply struct {
 		Thread json.RawMessage `json:"thread"`
 	}
-	params := options.fields()
-	if options.HistoryMode != "" {
-		if options.HistoryMode != "legacy" && options.HistoryMode != "paginated" {
-			return Thread{}, errors.New("unsupported thread history mode")
-		}
-		params["historyMode"] = options.HistoryMode
+	params, err := options.startFields()
+	if err != nil {
+		return Thread{}, err
 	}
 	if err := c.request(ctx, "thread/start", params, &reply, false); err != nil {
 		return Thread{}, err

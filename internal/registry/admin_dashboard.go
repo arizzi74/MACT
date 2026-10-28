@@ -122,7 +122,8 @@ func (s *Store) adminWorkerSnapshot(ctx context.Context) ([]AdminWorker, error) 
         COALESCE(json_extract(heartbeat_metadata,'$.supports_webui_session_creation')=1,FALSE),
         COALESCE(json_extract(heartbeat_metadata,'$.supports_session_editing')=1,FALSE),
         COALESCE(json_extract(heartbeat_metadata,'$.supports_session_archives')=1,FALSE),
-        COALESCE(json_extract(heartbeat_metadata,'$.supports_worker_runtime_settings')=1,FALSE),
+        COALESCE(json_extract(heartbeat_metadata,'$.supports_worker_runtime_settings')=1,FALSE)
+          OR COALESCE(json_extract(heartbeat_metadata,'$.supports_codex_session_defaults')=1,FALSE),
         COALESCE(json_extract(heartbeat_metadata,'$.supports_session_deletion')=1 OR worker_version IN ('0.5.19','v0.5.19'),FALSE),
         CASE WHEN json_extract(heartbeat_metadata,'$.agent_kind')='claude' THEN 'claude' ELSE 'codex' END
         FROM workers ORDER BY name, worker_id`)

@@ -74,3 +74,70 @@ func TestWorkerRuntimeSettingsValidationAndEphemeralEnvelope(t *testing.T) {
 		t.Fatal("unbounded runtime error accepted")
 	}
 }
+
+func TestCodexRuntimeSettingsDefaultsAndProviderIsolation(t *testing.T) {
+	for _, defaults := range []CodexSessionDefaults{
+		{},
+		{Model: "gpt-example", ReasoningEffort: "xhigh", PermissionLevel: "full-access"},
+		{Model: "provider/model:tag", ReasoningEffort: "none", PermissionLevel: "read-only"},
+		{ReasoningEffort: "ultra", PermissionLevel: "ask-for-approval"},
+	} {
+		update := WorkerRuntimeSettingsUpdate{CodexDefaults: &defaults}
+		settings := WorkerRuntimeSettings{Provider: "codex", CodexDefaults: &defaults}
+		if err := update.Validate(); err != nil {
+			t.Fatalf("valid defaults rejected: %v", err)
+		}
+		if err := settings.Validate(); err != nil {
+			t.Fatalf("valid defaults projection rejected: %v", err)
+		}
+		data, err := json.Marshal(update)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var roundtrip WorkerRuntimeSettingsUpdate
+		if json.Unmarshal(data, &roundtrip) != nil || roundtrip.Validate() != nil || *roundtrip.CodexDefaults != defaults {
+			t.Fatal("defaults did not survive a wire round trip")
+		}
+		request := WorkerRuntimeSettingsRequest{RequestID: uuid.NewString(), WorkerID: uuid.NewString(), Action: "put", Settings: &update}
+		if request.Validate() != nil {
+			t.Fatal("valid Codex defaults request rejected")
+		}
+		result := WorkerRuntimeSettingsResult{RequestID: request.RequestID, Settings: &settings}
+		if result.Validate() != nil {
+			t.Fatal("valid Codex defaults result rejected")
+		}
+	}
+	for _, defaults := range []CodexSessionDefaults{
+		{Model: " leading-space"}, {Model: "model\nprivate"}, {Model: "--option"}, {Model: "-option"},
+		{Model: strings.Repeat("x", 257)}, {Model: string([]byte{0xff})},
+		{ReasoningEffort: "invented"}, {ReasoningEffort: " HIGH"}, {PermissionLevel: "bypassPermissions"},
+		{PermissionLevel: "danger-full-access"},
+	} {
+		if (WorkerRuntimeSettingsUpdate{CodexDefaults: &defaults}).Validate() == nil ||
+			(WorkerRuntimeSettings{Provider: "codex", CodexDefaults: &defaults}).Validate() == nil {
+			t.Fatalf("invalid Codex defaults accepted: %+v", defaults)
+		}
+	}
+	for _, mutate := range []func(*WorkerRuntimeSettingsUpdate){
+		func(s *WorkerRuntimeSettingsUpdate) { s.Model = "claude" },
+		func(s *WorkerRuntimeSettingsUpdate) { s.BaseURL = "https://provider.example" },
+		func(s *WorkerRuntimeSettingsUpdate) { s.AuthMode = "login" },
+		func(s *WorkerRuntimeSettingsUpdate) { s.PermissionMode = "default" },
+		func(s *WorkerRuntimeSettingsUpdate) { key := ""; s.APIKey = &key },
+	} {
+		update := WorkerRuntimeSettingsUpdate{CodexDefaults: &CodexSessionDefaults{}}
+		mutate(&update)
+		if update.Validate() == nil {
+			t.Fatal("mixed provider settings accepted")
+		}
+	}
+	for _, settings := range []WorkerRuntimeSettings{
+		{Provider: "codex"},
+		{Provider: "codex", CodexDefaults: &CodexSessionDefaults{}, APIKeyConfigured: true},
+		{Provider: "claude", CodexDefaults: &CodexSessionDefaults{}, AuthMode: "login", PermissionMode: "default"},
+	} {
+		if settings.Validate() == nil {
+			t.Fatal("inconsistent provider projection accepted")
+		}
+	}
+}

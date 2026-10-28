@@ -46,6 +46,15 @@ New Codex sessions remain in the sidebar before their first message, including
 after a worker restart. Reopening one uses the original conversation and its
 saved name and settings; it does not create a replacement session.
 
+To choose defaults for future Codex sessions, open **Settings → Open operations
+console → Workers → Codex defaults**. Save a model ID, reasoning effort and
+permissions for that worker. Empty model or reasoning fields use native Codex
+defaults; empty permissions retain the worker's workspace / on-request default.
+These defaults also apply after `/clear` creates a new session. Existing sessions
+keep their saved settings until cleared, and their per-session controls continue
+to change only that session. See [Codex worker defaults](admin.md#codex-worker-defaults)
+for the reset control and authentication requirements.
+
 The existing Go gateway serves the interface and relays its authenticated connection to the selected worker. The worker attaches to the existing Codex app-server. No additional Codex CLI, pseudo-terminal, Python service, Node.js service, CDN, or public worker port is needed. Browser JavaScript and CSS are embedded in the gateway binary.
 
 ## Session editing and archives

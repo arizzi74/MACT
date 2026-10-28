@@ -61,7 +61,13 @@ func (m *RuntimeManager) openAttachment(runtime protocol.Runtime, backend string
 			}
 		}
 	}
-	proxy, err := newAttachmentProxy(path, backend, fences)
+	var defaults func([]byte) ([]byte, error)
+	if m.cfg.AgentKind != "claude" {
+		defaults = func(payload []byte) ([]byte, error) {
+			return applySavedNativeCodexDefaults(payload, codexDefaultsPath(m.cfg))
+		}
+	}
+	proxy, err := newAttachmentProxyWithDefaults(path, backend, defaults, fences)
 	if err != nil {
 		m.mu.Unlock()
 		return nil, "", err

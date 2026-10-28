@@ -13,23 +13,52 @@ import (
 // WorkerRuntimeSettings is the public projection of a worker's local runtime
 // configuration. It must never contain credentials, even in error responses.
 type WorkerRuntimeSettings struct {
-	Provider         string `json:"provider"`
-	Model            string `json:"model"`
-	BaseURL          string `json:"base_url"`
-	AuthMode         string `json:"auth_mode"`
-	PermissionMode   string `json:"permission_mode"`
-	APIKeyConfigured bool   `json:"api_key_configured"`
+	Provider         string                `json:"provider"`
+	Model            string                `json:"model"`
+	BaseURL          string                `json:"base_url"`
+	AuthMode         string                `json:"auth_mode"`
+	PermissionMode   string                `json:"permission_mode"`
+	APIKeyConfigured bool                  `json:"api_key_configured"`
+	CodexDefaults    *CodexSessionDefaults `json:"codex_defaults,omitempty"`
+}
+
+// CodexSessionDefaults apply to a newly created thread (including /clear),
+// never to an existing thread merely because it is selected or resumed.
+// Empty model and effort inherit native Codex configuration. Empty permissions
+// retain MACT's workspace-write/on-request default for new sessions.
+type CodexSessionDefaults struct {
+	Model           string `json:"model"`
+	ReasoningEffort string `json:"reasoning_effort"`
+	PermissionLevel string `json:"permission_level"`
+}
+
+func (s CodexSessionDefaults) Validate() error {
+	if s.Model != "" && (!ModelMenuToken(s.Model) || strings.HasPrefix(s.Model, "-")) {
+		return errors.New("invalid default model")
+	}
+	switch s.ReasoningEffort {
+	case "", "none", "minimal", "low", "medium", "high", "xhigh", "ultra":
+	default:
+		return errors.New("invalid default reasoning effort")
+	}
+	switch s.PermissionLevel {
+	case "", "ask-for-approval", "read-only", "full-access":
+	default:
+		return errors.New("invalid default permission level")
+	}
+	return nil
 }
 
 // WorkerRuntimeSettingsUpdate travels only over the authenticated live worker
 // connection. A nil APIKey retains the worker's key; a pointer to "" removes it.
 // Never put this payload in a durable command, event, audit log, or response.
 type WorkerRuntimeSettingsUpdate struct {
-	Model          string  `json:"model"`
-	BaseURL        string  `json:"base_url"`
-	AuthMode       string  `json:"auth_mode"`
-	PermissionMode string  `json:"permission_mode"`
-	APIKey         *string `json:"api_key,omitempty"`
+	Model          string                `json:"model"`
+	BaseURL        string                `json:"base_url"`
+	AuthMode       string                `json:"auth_mode"`
+	PermissionMode string                `json:"permission_mode"`
+	APIKey         *string               `json:"api_key,omitempty"`
+	CodexDefaults  *CodexSessionDefaults `json:"codex_defaults,omitempty"`
 }
 
 func validRuntimeSettingText(value string, limit int) bool {
@@ -58,13 +87,28 @@ func validateWorkerRuntimeSettings(model, baseURL, authMode, permissionMode stri
 }
 
 func (s WorkerRuntimeSettings) Validate() error {
+	if s.Provider == "codex" {
+		if s.CodexDefaults == nil || s.Model != "" || s.BaseURL != "" || s.AuthMode != "" || s.PermissionMode != "" || s.APIKeyConfigured {
+			return errors.New("invalid Codex runtime settings")
+		}
+		return s.CodexDefaults.Validate()
+	}
 	if s.Provider != "claude" {
 		return errors.New("unsupported runtime settings provider")
+	}
+	if s.CodexDefaults != nil {
+		return errors.New("unexpected Codex defaults")
 	}
 	return validateWorkerRuntimeSettings(s.Model, s.BaseURL, s.AuthMode, s.PermissionMode)
 }
 
 func (s WorkerRuntimeSettingsUpdate) Validate() error {
+	if s.CodexDefaults != nil {
+		if s.Model != "" || s.BaseURL != "" || s.AuthMode != "" || s.PermissionMode != "" || s.APIKey != nil {
+			return errors.New("mixed runtime settings providers")
+		}
+		return s.CodexDefaults.Validate()
+	}
 	if err := validateWorkerRuntimeSettings(s.Model, s.BaseURL, s.AuthMode, s.PermissionMode); err != nil {
 		return err
 	}

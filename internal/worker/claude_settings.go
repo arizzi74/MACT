@@ -62,15 +62,19 @@ func readClaudeSettings(path string) (claudeSettingsFile, error) {
 }
 
 func saveClaudeSettings(path string, s claudeSettingsFile) error {
+	return savePrivateRuntimeSettings(path, s)
+}
+
+func savePrivateRuntimeSettings(path string, s any) error {
 	if !filepath.IsAbs(path) {
-		return errors.New("Claude runtime settings path must be absolute")
+		return errors.New("Runtime settings path must be absolute")
 	}
 	parent := filepath.Dir(path)
 	if err := os.MkdirAll(parent, 0o700); err != nil {
 		return err
 	}
 	if info, err := os.Lstat(path); err == nil && (!info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0) {
-		return errors.New("Claude runtime settings target must be a private regular file")
+		return errors.New("Runtime settings target must be a private regular file")
 	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
@@ -117,8 +121,15 @@ func (a *Agent) runtimeSettings(ctx context.Context, request protocol.WorkerRunt
 		response.ErrorCode = "invalid_settings"
 		return response
 	}
+	if a.cfg.AgentKind == "codex" || a.cfg.AgentKind == "" {
+		return a.codexRuntimeSettings(ctx, request)
+	}
 	if a.cfg.AgentKind != "claude" || len(a.cfg.Runtimes) != 1 {
 		response.ErrorCode = "unsupported"
+		return response
+	}
+	if request.Settings != nil && request.Settings.CodexDefaults != nil {
+		response.ErrorCode = "invalid_settings"
 		return response
 	}
 	if err := ctx.Err(); err != nil {
