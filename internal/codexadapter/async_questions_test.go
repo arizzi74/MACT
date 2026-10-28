@@ -50,6 +50,55 @@ func TestAsyncQuestionAnswerUsesNativeFramingAndBoundaries(t *testing.T) {
 	}
 }
 
+func TestAsyncQuestionAnswersRecognizeExactLegacyWebUIQuotes(t *testing.T) {
+	for _, title := range []string{
+		"Run this test:\n\n```sh\nprintf 'hello'\n```\n\nPaste its output.",
+		"Line one\r\nLine two\rFinal line",
+		strings.Repeat("界", 190) + "\nA long Unicode question",
+	} {
+		legacy := "> " + strings.ReplaceAll(title, "\n", "\n> ") + "\n\n"
+		answer := "First result\n\n> An unrelated quoted paragraph\n\nMore output\n\n" + FormatAsyncQuestionAnswer(title, "A quoted copy inside the answer")
+		input := legacy + answer
+		got, ok := AsyncQuestionAnswer(title, input)
+		if !ok || got != answer || !AsyncQuestionAnswerMatches(title, input) {
+			t.Fatalf("legacy body lost or wrong prefix selected: got=%q matched=%v", got, ok)
+		}
+		if got, ok := AsyncQuestionAnswer(title, "<environment_context>ignored</environment_context>\n"+input); !ok || got != answer {
+			t.Fatalf("context-wrapped legacy answer not recognized: %q %v", got, ok)
+		}
+		for _, unrelated := range []string{
+			legacy, legacy + "   ", "ordinary prefix " + legacy + "An answer",
+			"> A different multiline\n> question\n\nAn answer",
+		} {
+			if AsyncQuestionAnswerMatches(title, unrelated) {
+				t.Fatalf("unrelated or empty legacy input accepted: %q", unrelated)
+			}
+		}
+	}
+}
+
+func TestAsyncQuestionMixedLegacyNativeBundlesKeepAnswerBoundaries(t *testing.T) {
+	titles := []string{"First\nmultiline question", "Second\nquestion", "Final question"}
+	first := "> " + strings.ReplaceAll(titles[0], "\n", "\n> ") + "\n\n"
+	second := FormatAsyncQuestionAnswer(titles[1], "Second output")
+	third := FormatAsyncQuestionAnswer(titles[2], "Final output")
+	bundle := first + "First output\n\n" + second + "\n\n" + third
+	for i, want := range []string{"First output", "Second output", "Final output"} {
+		got, ok := AsyncQuestionAnswer(titles[i], bundle, titles...)
+		if !ok || got != want {
+			t.Fatalf("answer %d crossed marker boundaries: %q %v", i, got, ok)
+		}
+	}
+	emptyFirst := first + "\n\n" + second
+	if _, ok := AsyncQuestionAnswer(titles[0], emptyFirst, titles...); ok {
+		t.Fatal("empty legacy answer borrowed next native answer")
+	}
+	changedTitle := strings.Replace(titles[0], "multiline", "unrelated", 1)
+	if _, ok := AsyncQuestionAnswer(changedTitle, bundle, titles...); ok {
+		t.Fatal("legacy compatibility matched a different question title")
+	}
+}
+
 func TestAsyncQuestionHistoryRecordsOnlySubsequentMatchingAnswers(t *testing.T) {
 	questions := []AsyncQuestion{
 		{TurnID: "earlier", ItemID: "old", Questions: []Question{{ID: "q1", Prompt: "Hardware?"}, {ID: "q2", Prompt: "Details?"}}},

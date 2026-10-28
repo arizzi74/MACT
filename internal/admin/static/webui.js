@@ -2263,13 +2263,26 @@
         if (!request.synthetic) continue;
         if (!explicit) { state.questions.delete(id); continue; }
         request.params.questions = request.params.questions.filter(question => {
-          const prefix = '> ' + question.question.replaceAll('\n', '\n> ') + '\n\n';
-          const index = input.indexOf(prefix);
-          return index < 0 || (index > 0 && !input.slice(0, index).endsWith('\n\n')) || !input.slice(index + prefix.length).trim();
+          // Accept older browser answers while sending the native format below.
+          const prefixes = [asyncQuestionAnswerPrefix(question.question), '> ' + question.question.replaceAll('\n', '\n> ') + '\n\n'];
+          return !prefixes.some(prefix => {
+            const index = input.indexOf(prefix);
+            return index >= 0 && (index === 0 || input.slice(0, index).endsWith('\n\n')) && input.slice(index + prefix.length).trim();
+          });
         });
         if (!request.params.questions.length) state.questions.delete(id);
       }
     }
+  }
+  function asyncQuestionAnswerPrefix(title) {
+    // Codex's native marker uses at most 512 UTF-8 bytes of the title, cut at
+    // a code point boundary, with each CR/LF replaced by one space. Keep the
+    // complete title in the form; this normalization applies only on the wire.
+    const bytes = new TextEncoder().encode(title);
+    let end = Math.min(bytes.length, 512);
+    while (end < bytes.length && (bytes[end] & 0xc0) === 0x80) end--;
+    const quoted = new TextDecoder('utf-8', { ignoreBOM: true }).decode(bytes.subarray(0, end)).replace(/[\r\n]/g, ' ');
+    return '> ' + quoted + '\n\n';
   }
   function itemText(item) {
     if (item.type === 'reasoning') return Array.isArray(item.summary) ? item.summary.map(part => typeof part === 'string' ? part : typeof part?.text === 'string' ? part.text : '').filter(Boolean).join('\n') : '';
@@ -2657,7 +2670,7 @@
       request.answered = true;
       renderQuestions();
       if (request.synthetic) {
-        const text = request.params.questions.map(question => '> ' + question.question.replaceAll('\n', '\n> ') + '\n\n' + (result.answers[question.id]?.answers || []).join('\n')).join('\n\n');
+        const text = request.params.questions.map(question => asyncQuestionAnswerPrefix(question.question) + (result.answers[question.id]?.answers || []).join('\n')).join('\n\n');
         const params = { threadId: state.selected.codex_thread_id, input: [{ type: 'text', text }] };
         const reply = state.turn ? await rpc('turn/steer', { ...params, expectedTurnId: state.turn }) : await rpc('turn/start', params);
         if (generation !== state.generation) return;

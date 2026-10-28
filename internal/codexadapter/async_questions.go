@@ -70,6 +70,18 @@ func asyncQuestionAnswerPrefix(title string) string {
 	return "> " + title + "\n\n"
 }
 
+// Older Web UI clients quoted the complete display title one line at a time.
+// Those answers are already real native user messages; recognize their exact
+// known title without resubmitting input or changing native answer formatting.
+func asyncQuestionAnswerPrefixes(title string) []string {
+	native := asyncQuestionAnswerPrefix(title)
+	legacy := "> " + strings.ReplaceAll(title, "\n", "\n> ") + "\n\n"
+	if native == legacy {
+		return []string{native}
+	}
+	return []string{native, legacy}
+}
+
 // AsyncQuestionAnswerMatches recognizes the explicit native answer marker.
 // An unrelated prompt or an answer that predates a question does not resolve
 // it. Multiple quoted answers may be sent together in a Telegram response.
@@ -89,9 +101,14 @@ func AsyncQuestionAnswer(title, text string, knownTitles ...string) (string, boo
 
 func extractAsyncQuestionAnswer(title, text string, knownTitles []string, matchOnly bool) (string, bool) {
 	text = asyncQuestionPromptText(text)
-	prefix := asyncQuestionAnswerPrefix(title)
+	prefixes := asyncQuestionAnswerPrefixes(title)
 	for offset := 0; offset < len(text); {
-		index := strings.Index(text[offset:], prefix)
+		index, prefix := -1, ""
+		for _, candidate := range prefixes {
+			if found := strings.Index(text[offset:], candidate); found >= 0 && (index < 0 || found < index) {
+				index, prefix = found, candidate
+			}
+		}
 		if index < 0 {
 			return "", false
 		}
@@ -100,8 +117,10 @@ func extractAsyncQuestionAnswer(title, text string, knownTitles []string, matchO
 			answer := text[index+len(prefix):]
 			end := len(answer)
 			for _, known := range knownTitles {
-				if next := strings.Index(answer, "\n\n"+asyncQuestionAnswerPrefix(known)); next >= 0 && next < end {
-					end = next
+				for _, candidate := range asyncQuestionAnswerPrefixes(known) {
+					if next := strings.Index(answer, "\n\n"+candidate); next >= 0 && next < end {
+						end = next
+					}
 				}
 			}
 			// Keep the legacy boolean marker recognizer conservative for an

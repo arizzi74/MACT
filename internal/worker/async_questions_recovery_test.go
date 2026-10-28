@@ -2,11 +2,71 @@ package worker
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/iaia/telegramgw/internal/codexadapter"
 	"github.com/iaia/telegramgw/internal/protocol"
 )
+
+func TestAsyncQuestionRecoveryReconcilesSavedLegacyMultilineAnswersWithoutResubmission(t *testing.T) {
+	a, runtime, server, cleanup := testAgent(t)
+	defer cleanup()
+	actor := asyncRecoveryActor(t, a, runtime)
+	titles := []string{"Run this HTTP/2 test:\n\n```sh\ncloudflared tunnel --protocol http2\n```\n\nPaste the output.", "Copy this entire line:\n\nsh -c 'printf done'\n\nPaste its output.", "A different unanswered question?"}
+	items := make([]map[string]any, 0)
+	ids := []string{"first", "second", "unanswered"}
+	for i, id := range ids {
+		approval := asyncRecoveryApproval(actor, id)
+		approval.Questions[0].Prompt = titles[i]
+		actor.rememberAsyncQuestion(approval)
+		items = append(items, map[string]any{"type": "agentMessage", "delivery": "async", "id": id, "text": "A saved asynchronous question", "questions": []map[string]any{{"title": titles[i]}}})
+		if i < 2 {
+			answer := asyncRecoveryUserInput("> " + strings.ReplaceAll(titles[i], "\n", "\n> ") + "\n\nAlready delivered output " + id)
+			answer["id"] = "answer-" + id
+			items = append(items, answer)
+		}
+	}
+	if err := server.SetMethodResult("thread/turns/list", map[string]any{"data": []map[string]any{{"id": "old", "items": items}}}); err != nil {
+		t.Fatal(err)
+	}
+	actor.recoverAsyncQuestions()
+	records, err := a.store.asyncQuestionRecords(actor.session.ID)
+	if err != nil || len(records) != 3 || len(actor.asyncQuestions) != 1 || actor.asyncQuestions["async:unanswered"].RequestID == "" {
+		t.Fatalf("recovery did not preserve only the unanswered request: %#v %v", records, err)
+	}
+	for _, record := range records {
+		want := "resolved"
+		if record.Approval.ItemID == "unanswered" {
+			want = "pending"
+		}
+		if record.State != want || (want == "resolved" && (len(record.AnsweredIDs) != 1 || record.AnsweredIDs[0] != "q1")) {
+			t.Fatalf("wrong legacy answer tombstone: %#v", record)
+		}
+	}
+	events, err := a.store.OutboxAfter(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	answered, resolved := 0, 0
+	for _, event := range events {
+		switch event.Kind {
+		case "user_input_answered":
+			answered++
+		case "approval_resolved":
+			resolved++
+		}
+	}
+	if answered != 2 || resolved != 2 || hasCall(server.Calls(), "turn/start") || hasCall(server.Calls(), "turn/steer") {
+		t.Fatalf("recovery must record existing answers exactly once without model input: answered=%d resolved=%d calls=%#v", answered, resolved, server.Calls())
+	}
+	actor.asyncRecoveredGeneration = 0
+	actor.recoverAsyncQuestions()
+	again, err := a.store.OutboxAfter(0)
+	if err != nil || len(again) != len(events) {
+		t.Fatalf("legacy reconciliation replayed answer events: %d -> %d %v", len(events), len(again), err)
+	}
+}
 
 func asyncRecoveryActor(t *testing.T, a *Agent, runtime protocol.Runtime) *sessionActor {
 	t.Helper()
