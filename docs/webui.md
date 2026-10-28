@@ -42,6 +42,10 @@ acknowledgment, the browser checks the submitted operation's status rather than
 sending the creation request again. Upgrade older workers with
 **/tgupdateworkers** to enable creation from the sidebar.
 
+New Codex sessions remain in the sidebar before their first message, including
+after a worker restart. Reopening one uses the original conversation and its
+saved name and settings; it does not create a replacement session.
+
 The existing Go gateway serves the interface and relays its authenticated connection to the selected worker. The worker attaches to the existing Codex app-server. No additional Codex CLI, pseudo-terminal, Python service, Node.js service, CDN, or public worker port is needed. Browser JavaScript and CSS are embedded in the gateway binary.
 
 ## Session editing and archives

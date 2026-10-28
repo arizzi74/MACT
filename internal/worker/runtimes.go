@@ -65,6 +65,7 @@ type managedRuntime struct {
 	degraded          bool
 	capabilityRetryAt time.Time
 	hiddenLoaded      map[string]bool
+	emptyProbeNext    int
 }
 
 // runtimePersistenceError marks failures which have crossed the durable local
@@ -548,6 +549,11 @@ func (m *RuntimeManager) discover(ctx context.Context, runtime protocol.Runtime,
 			if observerSubscribed && ctx.Err() == nil {
 				m.markWebUIObserverReady(runtime, client, thread.ID, observerEpoch)
 			}
+		}
+	}
+	if complete {
+		if err := m.recoverUnlistedEmptySessions(ctx, runtime, client, existing, observed, visible); err != nil {
+			return err
 		}
 	}
 	for _, prior := range existing {
