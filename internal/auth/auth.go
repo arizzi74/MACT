@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 )
 
 const workerTokenPrefix = "cwk_"
@@ -136,8 +137,29 @@ func canonicalRoot(root string) (string, error) {
 
 // Redactor removes configured sensitive values from text before it is logged.
 type Redactor struct {
+	mu          sync.RWMutex
 	expressions []*regexp.Regexp
 	replacement string
+	literals    map[string]struct{}
+}
+
+// AddLiteral protects a newly configured credential without replacing a
+// redactor already shared by session actors. Previously protected values stay
+// protected during key rotation and delayed history delivery.
+func (r *Redactor) AddLiteral(value string) {
+	if r == nil || value == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.literals == nil {
+		r.literals = make(map[string]struct{})
+	}
+	if _, exists := r.literals[value]; exists {
+		return
+	}
+	r.literals[value] = struct{}{}
+	r.expressions = append(r.expressions, regexp.MustCompile(regexp.QuoteMeta(value)))
 }
 
 // NewRedactor compiles regular expressions once. An empty replacement becomes
@@ -162,6 +184,8 @@ func (r *Redactor) Redact(text string) string {
 	if r == nil {
 		return text
 	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	for _, expression := range r.expressions {
 		text = expression.ReplaceAllString(text, r.replacement)
 	}

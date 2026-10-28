@@ -489,6 +489,7 @@ func (s *Sender) renderEvent(ctx context.Context, row registry.Delivery) (string
 		return "", nil, errors.New("render Telegram event: delivery kind mismatch")
 	}
 	identity := "Codex"
+	provider := "Codex"
 	var session protocol.Session
 	var runtime protocol.Runtime
 	if event.SessionID != "" {
@@ -497,6 +498,7 @@ func (s *Sender) renderEvent(ctx context.Context, row registry.Delivery) (string
 			return "", nil, err
 		}
 		session, runtime, identity = ss, rt, humanIdentity(worker, rt, ss)
+		provider = runtimeProviderLabel(rt, worker)
 	} else if event.RuntimeID != "" {
 		if _, err := requiredUUID("runtime", event.RuntimeID); err != nil {
 			return "", nil, err
@@ -511,6 +513,7 @@ func (s *Sender) renderEvent(ctx context.Context, row registry.Delivery) (string
 			return "", nil, errors.New("render Telegram event: runtime is unavailable")
 		}
 		identity = workerLabel(inv.workerByID[runtime.WorkerID]) + " / " + runtimeLabel(runtime)
+		provider = runtimeProviderLabel(runtime, inv.workerByID[runtime.WorkerID])
 	}
 	switch event.Kind {
 	case "user_message":
@@ -521,7 +524,7 @@ func (s *Sender) renderEvent(ctx context.Context, row registry.Delivery) (string
 		if strings.TrimSpace(result.Text) == "" {
 			return "", nil, errors.New("render user prompt: missing message")
 		}
-		return "👤 You · Codex\n\n" + result.Text, nil, nil
+		return "👤 You · " + provider + "\n\n" + result.Text, nil, nil
 	case "approval_requested":
 		var approval protocol.Approval
 		if err := json.Unmarshal(event.Data, &approval); err != nil {
@@ -952,6 +955,27 @@ func telegramErrorText(code string) string {
 }
 func humanIdentity(worker registry.Worker, runtime protocol.Runtime, session protocol.Session) string {
 	return workerLabel(worker) + " / " + runtimeLabel(runtime) + " / " + sessionLabel(session)
+}
+
+// Provider identity comes from the selected runtime and its authenticated
+// worker, never a session name or message body. Older workers omit this field;
+// retain their established Codex labels. Only known labels enter Telegram.
+func runtimeProviderLabel(runtime protocol.Runtime, worker registry.Worker) string {
+	for _, raw := range []json.RawMessage{runtime.Metadata, worker.HeartbeatMetadata} {
+		var metadata struct {
+			AgentKind string `json:"agent_kind"`
+		}
+		if json.Unmarshal(raw, &metadata) != nil {
+			continue
+		}
+		switch metadata.AgentKind {
+		case "claude":
+			return "Claude Code"
+		case "codex":
+			return "Codex"
+		}
+	}
+	return "Codex"
 }
 func workerLabel(worker registry.Worker) string {
 	if value := strings.TrimSpace(worker.Name); value != "" {

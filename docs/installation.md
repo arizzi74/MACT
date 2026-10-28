@@ -90,6 +90,9 @@ manager against that release's SHA-256 manifest before running it. The manager
 verifies both the platform archive and its contained binary. Downloaded archives
 cannot install symlinks or paths outside the staging directory.
 
+For a dedicated Claude Code installation, see [Claude Code workers](claude-code.md).
+Use `mact setup claude-worker`; this preserves the separate Codex worker, if present.
+
 ## Install a gateway
 
 Run on the Linux gateway host:

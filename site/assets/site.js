@@ -10,7 +10,8 @@
         await navigator.clipboard.writeText(code.textContent.trim());
         button.textContent = 'Copied ✓';
         button.dataset.copied = 'true';
-        status.textContent = (button.dataset.copy === 'gateway-command' ? 'Gateway' : 'Worker') + ' install command copied.';
+        const service = { 'gateway-command': 'Gateway', 'worker-command': 'Codex worker', 'claude-worker-command': 'Claude Code worker' }[button.dataset.copy] || 'Worker';
+        status.textContent = service + ' install command copied.';
         clearTimeout(timers.get(button));
         timers.set(button, setTimeout(() => { button.textContent = 'Copy ⧉'; delete button.dataset.copied; }, 2500));
       } catch (_) {

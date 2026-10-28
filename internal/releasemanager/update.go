@@ -405,7 +405,7 @@ func (m *Manager) GatewayReady(ctx context.Context, l *Layout) error {
 
 func (m *Manager) workerRunning(ctx context.Context, l *Layout) (bool, error) {
 	if l.System == "linux" {
-		data, err := m.command(ctx, "systemctl", "--user", "show", "codex-worker.service", "-p", "MainPID", "-p", "ActiveState")
+		data, err := m.command(ctx, "systemctl", "--user", "show", componentBinary(l)+".service", "-p", "MainPID", "-p", "ActiveState")
 		if err != nil {
 			return false, err
 		}
@@ -418,7 +418,7 @@ func (m *Manager) workerRunning(ctx context.Context, l *Layout) (bool, error) {
 			return false, &BusyError{Reason: "worker service is changing state; retry the update later"}
 		}
 	} else {
-		result, err := m.Run(ctx, "launchctl", "print", "gui/"+strconv.Itoa(os.Getuid())+"/com.iaia.codex-worker")
+		result, err := m.Run(ctx, "launchctl", "print", "gui/"+strconv.Itoa(os.Getuid())+"/"+workerLabel(l))
 		if err != nil {
 			return false, err
 		}
@@ -611,7 +611,7 @@ func (m *Manager) workerPrepare(ctx context.Context, l *Layout) (_ *workerLease,
 		return nil, invalid
 	}
 	if l.System == "linux" {
-		data, err := m.command(ctx, "systemctl", "--user", "show", "codex-worker.service", "-p", "MainPID", "--value")
+		data, err := m.command(ctx, "systemctl", "--user", "show", componentBinary(l)+".service", "-p", "MainPID", "--value")
 		if err != nil {
 			return nil, invalid
 		}
@@ -620,7 +620,7 @@ func (m *Manager) workerPrepare(ctx context.Context, l *Layout) (_ *workerLease,
 			return nil, invalid
 		}
 	} else {
-		data, err := m.command(ctx, "launchctl", "print", "gui/"+strconv.Itoa(os.Getuid())+"/com.iaia.codex-worker")
+		data, err := m.command(ctx, "launchctl", "print", "gui/"+strconv.Itoa(os.Getuid())+"/"+workerLabel(l))
 		if err != nil {
 			return nil, invalid
 		}
@@ -802,7 +802,7 @@ func (m *Manager) ApplyUpdate(ctx context.Context, l *Layout, packages map[strin
 			return errors.New("voice is enabled but the gateway release has no Whisper helper")
 		}
 	}
-	if l.Component == "worker" {
+	if l.Component == "worker" && l.AgentKind != "claude" {
 		sources = append(sources, struct{ destination, source string }{filepath.Join(l.Bin, "codex-local"), filepath.Join(packages["local"], "codex-local")})
 	}
 	paths := []string{l.State, l.Command}

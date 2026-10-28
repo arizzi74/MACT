@@ -26,7 +26,7 @@ for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
   target_arch="${target#*/}"
   manager="codex-telegramgw-${target_os}-${target_arch}"
   CGO_ENABLED=0 GOOS="$target_os" GOARCH="$target_arch" go build -trimpath -ldflags "-s -w -X github.com/iaia/telegramgw/internal/buildinfo.Version=${version}" -o "dist/${manager}" ./cmd/codex-telegramgw
-  for binary in codex-gateway codex-worker codex-local; do
+  for binary in codex-gateway codex-worker claude-worker codex-local; do
     if [[ "$binary" == codex-gateway && "$target_os" != linux ]]; then continue; fi
     artifact="${binary}-${target_os}-${target_arch}"
     CGO_ENABLED=0 GOOS="$target_os" GOARCH="$target_arch" go build -trimpath -ldflags "-s -w -X github.com/iaia/telegramgw/internal/buildinfo.Version=${version}" -o "dist/${artifact}" "./cmd/${binary}"

@@ -42,7 +42,12 @@ const server = http.createServer((request, response) => {
       assert.equal(await page.locator('meta[property="og:image"]').getAttribute('content'), 'https://arizzi74.github.io/MACT/assets/screenshots/webui-desktop.png');
       assert.match(await page.locator('h1').innerText(), /Your coding agent\s+control hub/);
       assert.match(await page.locator('.hero-description').textContent(), /^Boost your development workflow with a single control hub for coding agents\./);
-      assert.match(await page.locator('.hero-description').textContent(), /Manage multiple coding agent installations across servers/);
+      assert.match(await page.locator('.hero-description').textContent(), /manage multiple coding agent installations across servers/i);
+      assert.match(await page.locator('.hero-description').textContent(), /Codex and Claude Code are supported today through dedicated workers/);
+      assert.equal(await page.locator('.release-pill').getAttribute('href'), 'https://github.com/arizzi74/MACT/releases/tag/v0.7.0');
+      assert.match(await page.locator('meta[name="description"]').getAttribute('content'), /MACT 0\.7\.0.*Codex and Claude Code/);
+      assert.match(await page.locator('#agents').textContent(), /Claude follow-ups are queued, not steered into the active turn/);
+      assert.match(await page.locator('#agents').textContent(), /terminal attachment and project archive\/restore remain Codex-only/);
       assert.equal(await page.getByRole('link', { name: 'MACT · Multi Agent Control Tower home', exact: true }).count(), 1);
       assert.equal(await page.locator('.gateway-node > strong').textContent(), 'MACT Gateway');
       assert.equal(await page.locator('.worker-node > strong').textContent(), 'MACT Worker');
@@ -62,7 +67,7 @@ const server = http.createServer((request, response) => {
     for (const link of links) {
       if (link.startsWith('#')) { if (link.length > 1) assert.equal(await page.locator('[id="' + link.slice(1) + '"]').count(), 1, 'Broken anchor ' + link); continue; }
       if (/^https:\/\//.test(link)) {
-        assert.ok(link.startsWith('https://github.com/arizzi74/MACT'), 'Unexpected outbound link: ' + link);
+        assert.ok(link.startsWith('https://github.com/arizzi74/MACT') || link === 'https://code.claude.com/docs/en/setup' || link === 'https://arizzi74.github.io/MACT/', 'Unexpected outbound link: ' + link);
         const local = link.split('/blob/main/')[1] || link.split('/tree/main/')[1];
         if (local) assert.ok(fs.existsSync(path.join(repo, local.split('#')[0])), 'Broken repository documentation link: ' + link);
         continue;
@@ -70,8 +75,8 @@ const server = http.createServer((request, response) => {
       assert.ok(!link.startsWith('/'), 'Asset URL breaks repository Pages prefix: ' + link);
       assert.ok(fs.existsSync(path.join(site, link)), 'Missing site asset: ' + link);
     }
-    for (const name of ['gateway', 'worker']) {
-      const button = page.getByRole('button', { name: `Copy ${name} install command`, exact: true });
+    for (const [name, label] of [['gateway', 'gateway'], ['worker', 'worker'], ['claude-worker', 'Claude Code worker']]) {
+      const button = page.getByRole('button', { name: `Copy ${label} install command`, exact: true });
       await button.click();
       const expected = await page.locator('#' + name + '-command').textContent();
       assert.equal(await page.evaluate(() => navigator.clipboard.readText()), expected.trim());
@@ -79,6 +84,9 @@ const server = http.createServer((request, response) => {
     }
     assert.equal(await page.locator('#gateway-command').innerText(), 'curl -fsSL https://raw.githubusercontent.com/arizzi74/MACT/main/scripts/install.sh | sudo sh');
     assert.equal(await page.locator('#worker-command').innerText(), 'curl -fsSL https://raw.githubusercontent.com/arizzi74/MACT/main/scripts/install.sh | sh');
+    assert.equal(await page.locator('#claude-worker-command').innerText(), 'curl -fsSL https://raw.githubusercontent.com/arizzi74/MACT/main/scripts/install.sh | sh -s -- setup claude-worker');
+    assert.match(await page.locator('#install').textContent(), /does not install or update the Claude CLI/);
+    assert.match(await page.locator('#install').textContent(), /checksums/);
     await page.evaluate(() => Object.defineProperty(navigator.clipboard, 'writeText', { configurable: true, value: () => Promise.reject(new Error('Clipboard unavailable')) }));
     await page.getByRole('button', { name: 'Copy worker install command', exact: true }).click();
     assert.match(await page.locator('#copy-status').innerText(), /command is selected/);

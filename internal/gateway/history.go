@@ -50,18 +50,19 @@ func (s *Sender) renderHistory(ctx context.Context, row registry.Delivery, event
 	if page == nil || page.Limit < 1 || page.Limit > protocol.MaxHistoryLimit || len(page.Prompts) > page.Limit {
 		return nil, nil, errors.New("render history: invalid page")
 	}
-	_, session, runtime, _, err := s.selectedIdentity(ctx, event.SessionID, event.RuntimeID)
+	_, session, runtime, worker, err := s.selectedIdentity(ctx, event.SessionID, event.RuntimeID)
 	if err != nil {
 		return nil, nil, err
 	}
 	header := "📜 Prompt history · " + sessionLabel(session)
+	provider := runtimeProviderLabel(runtime, worker)
 	if len(page.Prompts) == 0 {
 		if page.Next != nil {
 			return nil, nil, errors.New("render history: empty page with older cursor")
 		}
-		return []string{header + "\n\nNo saved Codex prompts to show in this older prompt-only history view. Run /tghistory again to include Telegram messages and Codex replies."}, nil, nil
+		return []string{header + "\n\nNo saved " + provider + " prompts to show in this older prompt-only history view. Run /tghistory again to include Telegram messages and " + provider + " replies."}, nil, nil
 	}
-	parts := []string{header + "\n\nSaved prompts in their original order, newest last. This is an older prompt-only history view. Run /tghistory again to include Telegram messages and Codex replies."}
+	parts := []string{header + "\n\nSaved prompts in their original order, newest last. This is an older prompt-only history view. Run /tghistory again to include Telegram messages and " + provider + " replies."}
 	for i := range page.Prompts {
 		index := i
 		if page.NewestFirst {
@@ -71,7 +72,7 @@ func (s *Sender) renderHistory(ctx context.Context, row registry.Delivery, event
 		if prompt.TurnID == "" || prompt.ItemID == "" || strings.TrimSpace(prompt.Text) == "" {
 			return nil, nil, errors.New("render history: invalid prompt")
 		}
-		text := "👤 You · Codex\n" + historyTimestamp(prompt.Timestamp) + "\n\n" + prompt.Text
+		text := "👤 You · " + provider + "\n" + historyTimestamp(prompt.Timestamp) + "\n\n" + prompt.Text
 		if prompt.Truncated {
 			text += "\n\n[Long prompt shortened in this history view.]"
 		}

@@ -437,7 +437,8 @@ itemTimes['timestamp-older-completed'] = { startedAtMs: null, completedAtMs: tim
   const assertToolColors = async context => {
     const details = page.locator('[data-item-id="tool-a"] details');
     const expanded = await details.evaluate(element => element.open);
-    if (!expanded) await details.locator('summary').click();
+    // A style probe must not scroll an older tool into view as a real click would.
+    if (!expanded) await details.evaluate(element => { element.open = true; });
     await details.locator('pre').first().waitFor({ state: 'visible' });
     for (const selector of ['.role', 'pre']) {
       const rgb = await page.evaluate(selector => getComputedStyle(document.querySelector('[data-item-id="tool-a"] ' + selector)).color.match(/\d+/g).map(Number), selector);
@@ -447,7 +448,7 @@ itemTimes['timestamp-older-completed'] = { startedAtMs: null, completedAtMs: tim
       const colors = await page.evaluate(selector => ({ command: getComputedStyle(document.querySelector('[data-item-id="tool-a"] ' + selector)).color, muted: getComputedStyle(document.querySelector('#session-location')).color }), selector);
       assert.equal(colors.command, colors.muted, 'Tool command ' + selector + ' uses muted gray text in ' + context);
     }
-    if (!expanded) await details.locator('summary').click();
+    if (!expanded) await details.evaluate(element => { element.open = false; });
   };
   const choose = async id => {
     if (await page.locator('#show-sessions').isVisible() && await page.locator('#show-sessions').getAttribute('aria-expanded') !== 'true') await page.locator('#show-sessions').click();

@@ -160,6 +160,9 @@ func (s *Store) Receive(command protocol.Command) (ReceiveResult, error) {
 			return nil
 		}
 		record := CommandRecord{Command: command, ReceivedAt: time.Now().UTC(), State: CommandReceived}
+		if session := purgedCommandSession(tx, command); session != nil {
+			scrubDeletedCommand(&record, *session)
+		}
 		value, err := json.Marshal(record)
 		if err != nil {
 			return err
@@ -189,7 +192,14 @@ func (s *Store) SetCommandState(commandID string, state CommandState, result *pr
 		if err != nil {
 			return err
 		}
+		purged := purgedCommandRecordSession(tx, record)
+		if purged == nil && result != nil {
+			purged = purgedCommandRecordSession(tx, CommandRecord{Command: record.Command, Result: result})
+		}
 		record.State, record.Result = state, result
+		if session := purged; session != nil {
+			scrubDeletedCommand(&record, *session)
+		}
 		encoded, err := json.Marshal(record)
 		if err != nil {
 			return err
@@ -306,8 +316,19 @@ func (s *Store) RecordResult(commandID string, state CommandState, result *proto
 		if err != nil {
 			return err
 		}
+		purged := purgedCommandRecordSession(tx, record)
+		if purged == nil && result != nil {
+			purged = purgedCommandRecordSession(tx, CommandRecord{Command: record.Command, Result: result})
+		}
 		record.State = state
 		record.Result = result
+		if session := purged; session != nil {
+			scrubDeletedCommand(&record, *session)
+			event.Data, err = json.Marshal(record.Result)
+			if err != nil {
+				return err
+			}
+		}
 		data, err := json.Marshal(record)
 		if err != nil {
 			return err
@@ -620,6 +641,12 @@ func recoverExecuting(tx *workerdb.Tx) error {
 		// the worker, rather than replaying an uncertain ordinary Codex RPC.
 		if record.ArchiveJob != nil {
 			return nil
+		}
+		if bucket := tx.Bucket(bucketClaudeDeletions); bucket != nil {
+			var intent claudeDeletionIntent
+			if json.Unmarshal(bucket.Get(sessionKey(record.Command.RuntimeID, record.Command.ThreadID)), &intent) == nil && containsString(intent.CommandIDs, record.Command.ID) {
+				return nil // Idempotent native deletion is reconciled by Agent.Run.
+			}
 		}
 		record.State = CommandOutcomeUnknown
 		record.Result = &protocol.Result{CommandID: record.Command.ID, State: string(CommandOutcomeUnknown), Error: &protocol.Error{Code: protocol.OutcomeUnknown, Message: "worker restarted while command execution was in progress"}}

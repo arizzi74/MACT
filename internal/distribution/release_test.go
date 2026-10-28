@@ -124,8 +124,8 @@ func TestReleasePreservesContentsAndNativeMigrationManager(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(hashes) != 27 {
-		t.Fatalf("expected twenty-seven checksummed assets plus manifest, got %d", len(hashes))
+	if len(hashes) != 31 {
+		t.Fatalf("expected thirty-one checksummed assets plus manifest, got %d", len(hashes))
 	}
 }
 

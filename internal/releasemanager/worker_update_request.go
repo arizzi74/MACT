@@ -17,8 +17,8 @@ import (
 )
 
 func (m *Manager) requestWorkerUpdate(ctx context.Context, args []string) error {
-	if len(args) == 0 || args[0] != "worker" {
-		return errors.New("request-update requires worker")
+	if len(args) == 0 || (args[0] != "worker" && args[0] != "claude-worker") {
+		return errors.New("request-update requires worker or claude-worker")
 	}
 	flags := flag.NewFlagSet("request-update", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
@@ -35,7 +35,7 @@ func (m *Manager) requestWorkerUpdate(ctx context.Context, args []string) error 
 	if err := request.Validate(); err != nil {
 		return err
 	}
-	l, err := NewLayout("worker")
+	l, err := NewLayout(args[0])
 	if err != nil {
 		return workerupdate.Complete(stateFile, protocol.WorkerUpdateResult{RequestID: id, State: "failed", ErrorCode: "update_unavailable"})
 	}
@@ -112,6 +112,16 @@ func (m *Manager) requestedWorkerStep(ctx context.Context, l *Layout, plan *requ
 		return protocol.WorkerUpdateResult{}, err
 	}
 	defer unlock()
+	if l.AgentKind == "claude" {
+		if plan.workerResult == nil {
+			result, err := m.requestedWorkerReleaseStep(ctx, l, plan)
+			if err != nil {
+				return result, err
+			}
+			plan.workerResult = &result
+		}
+		return *plan.workerResult, nil
+	}
 	m.requestedCodexDiscovery(ctx, plan)
 	if ctx.Err() != nil {
 		return protocol.WorkerUpdateResult{}, ctx.Err()
@@ -199,7 +209,11 @@ func (m *Manager) requestedWorkerReleaseStep(ctx context.Context, l *Layout, pla
 	if plan.packages == nil {
 		plan.packages = map[string]string{}
 	}
-	for _, component := range []string{"worker", "local"} {
+	components := []string{"worker"}
+	if l.AgentKind != "claude" {
+		components = append(components, "local")
+	}
+	for _, component := range components {
 		if plan.packages[component] != "" {
 			continue
 		}
@@ -207,7 +221,11 @@ func (m *Manager) requestedWorkerReleaseStep(ctx context.Context, l *Layout, pla
 		if err != nil {
 			return protocol.WorkerUpdateResult{}, err
 		}
-		packagePath, err := m.Package(ctx, plan.release, l, "codex-"+component, attemptStage)
+		binary := "codex-" + component
+		if component == "worker" {
+			binary = componentBinary(l)
+		}
+		packagePath, err := m.Package(ctx, plan.release, l, binary, attemptStage)
 		if err != nil {
 			return protocol.WorkerUpdateResult{}, err
 		}

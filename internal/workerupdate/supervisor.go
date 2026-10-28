@@ -52,15 +52,27 @@ func Supported() bool {
 // spawned directly as a child of codex-worker: stopping that service would also
 // kill the updater before it could install or start its replacement.
 func Ensure(ctx context.Context, system, manager, stateFile, id string, run Runner) error {
+	return EnsureForAgent(ctx, system, manager, stateFile, id, "codex", run)
+}
+
+// EnsureForAgent keeps update supervision and installation selection separate
+// for dedicated Claude and Codex workers, even on the same user account.
+func EnsureForAgent(ctx context.Context, system, manager, stateFile, id, agentKind string, run Runner) error {
+	component, workerName := "worker", "codex-worker"
+	if agentKind == "claude" {
+		component, workerName = "claude-worker", "claude-worker"
+	} else if agentKind != "" && agentKind != "codex" {
+		return errors.New("worker update provider is unsupported")
+	}
 	if _, err := requestPath(stateFile, id); err != nil {
 		return err
 	}
 	if !filepath.IsAbs(manager) {
 		return errors.New("worker update manager path must be absolute")
 	}
-	args := []string{manager, "request-update", "worker", "--request-id", id, "--worker-state", stateFile}
+	args := []string{manager, "request-update", component, "--request-id", id, "--worker-state", stateFile}
 	if system == "linux" {
-		unit := "codex-worker-request-update-" + id + ".service"
+		unit := workerName + "-request-update-" + id + ".service"
 		state, err := run(ctx, "systemctl", "--user", "show", unit, "--property=ActiveState", "--value")
 		if err == nil {
 			switch strings.TrimSpace(string(state)) {
@@ -75,7 +87,7 @@ func Ensure(ctx context.Context, system, manager, stateFile, id string, run Runn
 	if system != "darwin" {
 		return errors.New("worker update supervision is unsupported")
 	}
-	label := "com.iaia.codex-worker-request-update-" + id
+	label := "com.iaia." + workerName + "-request-update-" + id
 	domain := "gui/" + strconv.Itoa(os.Getuid())
 	if _, err := run(ctx, "launchctl", "print", domain+"/"+label); err == nil {
 		return nil

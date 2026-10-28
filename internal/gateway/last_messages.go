@@ -14,11 +14,12 @@ func (s *Sender) renderLastMessages(ctx context.Context, row registry.Delivery, 
 	if page == nil || !page.Conversation || page.Limit < 1 || page.Limit > protocol.MaxHistoryLimit || len(page.Prompts) != 0 || len(page.Messages) > page.Limit {
 		return nil, nil, errors.New("render messages: invalid page")
 	}
-	_, session, runtime, _, err := s.selectedIdentity(ctx, event.SessionID, event.RuntimeID)
+	_, session, runtime, worker, err := s.selectedIdentity(ctx, event.SessionID, event.RuntimeID)
 	if err != nil {
 		return nil, nil, err
 	}
 	label := sessionLabel(session)
+	provider := runtimeProviderLabel(runtime, worker)
 	if page.NewestFirst {
 		label = "History · " + label
 	}
@@ -50,7 +51,7 @@ func (s *Sender) renderLastMessages(ctx context.Context, row registry.Delivery, 
 		switch message.Role {
 		case "user":
 		case "assistant":
-			role = "🤖 Codex"
+			role = "🤖 " + provider
 		default:
 			return nil, nil, errors.New("render messages: invalid role")
 		}

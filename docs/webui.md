@@ -21,6 +21,10 @@ conversation view; it does not log you out.
 
 Workers appear in the sidebar even before they have a session. Use **＋** beside
 a worker's name to create its first session or another session on that worker.
+Click a worker's name or its arrow to collapse or expand its sessions. The worker
+heading and **＋** stay visible, and the browser remembers which workers you
+collapsed. Searching temporarily reveals matching sessions; clearing the search
+restores your collapsed groups.
 Revoked workers and their sessions are hidden; offline workers that are still
 enabled remain visible. Revocation updates the sidebar through the live feed.
 The dialog asks for the session name first and fills the working-directory path
@@ -54,6 +58,12 @@ as `/tgdeletesession`, including child conversations. Project files stay on
 disk. **Archive** instead saves a resumable native conversation and the project
 directory in one checksummed `.tar.xz` file, then hides the session. It preserves
 native archived state rather than permanently deleting it.
+
+On updated Claude Code workers, **Delete** removes the selected session's Claude
+transcript, associated session files and MACT worker conversation data. Its
+project directory, including any `~/CLAUDE_CODE/<session_name>` folder, is kept.
+Older Claude workers show deletion as unavailable until updated; Claude project
+archive and restore remain unavailable.
 
 Archives live in `~/CODEX_Archived` on the **worker**, under the account running
 its worker service. For example, a service running as `ubuntu` on iaiabox uses

@@ -89,6 +89,7 @@ The browser uses these endpoints:
 | `DELETE /tgw/api/v1/admin/workers/{id}` | Revokes a worker. |
 | `DELETE /tgw/api/v1/admin/workers/{id}/purge` | Permanently deletes a revoked worker and its related gateway database records; requires `{"confirmed":true}`. |
 | `POST /tgw/api/v1/admin/workers/{id}/rotate-token` | Returns a replacement worker authentication token. |
+| `GET, PUT /tgw/api/v1/admin/workers/{id}/runtime-settings` | Reads or changes a dedicated Claude Code worker's runtime settings over its live connection. Writes require recent authentication. |
 
 All state-changing admin requests require the exact configured `Origin`, the strict
 same-site session, and a double-submit `X-CSRF-Token`. Ceremony cookies bind
@@ -96,6 +97,41 @@ the browser to a five-minute, server-persisted WebAuthn session. Admin sessions
 are opaque hashed random tokens, normally expire after eight hours, and can be revoked.
 Worker tokens are only included in the installer redemption or legacy
 create/rotate response and are never logged or returned later.
+
+## Claude Code worker settings
+
+Expand **Workers** and select **Claude Code settings** for a connected dedicated
+Claude Code worker. Set a model, API endpoint, authentication method and permission
+mode. Empty model and endpoint fields use Claude Code's defaults. A custom model
+also replaces the Opus, Sonnet and Haiku model aliases. **Existing Claude Code
+login** uses the worker's local login; **API key** and **Auth token** select the
+corresponding Anthropic authentication method. Authentication credentials remain
+local to the worker.
+
+The password field always opens empty. Leaving it blank retains the saved
+credential; entering a value replaces it. **Remove saved API key / auth token**
+explicitly clears it. The API represents these choices as an omitted `api_key`,
+a nonempty `api_key`, or `"api_key":""`. Reads and successful writes return only
+`api_key_configured`, never the credential. Credentials cannot be embedded in
+endpoint user information, query strings or fragments.
+
+Saving requires verification within the previous five minutes and an online,
+idle worker. Settings are transferred through the authenticated worker socket
+and saved privately on that worker. They do not enter gateway command queues,
+event history or the gateway database. The browser clears entered credentials
+after submission, closing, sign-out and navigation, and never stores them in
+browser storage or history. A connection failure has an uncertain outcome:
+reload the worker settings before submitting again. Changes apply to subsequent
+turns. **Bypass permission checks** explicitly permits tools and commands without
+permission prompts; choose it only for a worker you have isolated and trust.
+
+Claude Code conversations are labeled accordingly in the Web UI. Sending while
+a turn is active queues the next prompt. Codex-specific model, reasoning,
+permission, goal and account quota controls are unavailable for these workers;
+use the worker's administrator settings for runtime configuration. Updated Claude
+workers support confirmed session deletion, removing native conversation files
+and MACT worker conversation data while preserving the project directory.
+Project archives remain unavailable for Claude Code workers.
 
 Both sign-in screens offer an unchecked **Trust this device for 30 days**
 option and an optional device name. Trust is granted only after successful

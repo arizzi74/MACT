@@ -135,6 +135,12 @@
       if (prompt.value.trim() === original.trim()) { prompt.value = ''; ctx.saveDraft(); }
     }
     function unavailable(entry) {
+      if (ctx.isClaude?.()) {
+        if (['model', 'reasoning', 'permissions', 'approvals'].includes(entry.name)) return 'Manage Claude Code model, authentication and permissions in the worker settings in the admin console.';
+        if (['delete', 'tgdeletesession'].includes(entry.name) && ctx.deletionUnavailable?.()) return ctx.deletionUnavailable();
+        if (entry.name === 'tgsteer') return 'Claude Code cannot steer an active turn. Send a normal message to queue it after the current turn.';
+        if (entry.kind === 'unavailable' || entry.kind === 'worker' && !['status', 'pwd', 'rename', 'delete', 'diff', 'stop'].includes(entry.name)) return 'This command is unavailable for Claude Code workers.';
+      }
       if (entry.kind === 'unavailable') return entry.reason;
       if (entry.kind === 'gateway' || ['help', 'tghelp', 'theme', 'title', 'tui', 'resume', 'agents', 'tgsessions'].includes(entry.name)) return state.authenticated ? '' : 'Sign in to use commands.';
       if (!state.selected) return 'Select a session first.';
@@ -150,7 +156,7 @@
         const reason = unavailable(entry);
         const item = node('button', 'command-option' + (reason ? ' unavailable' : '')); item.type = 'button'; item.id = 'slash-option-' + i;
         item.setAttribute('role', 'option'); item.setAttribute('aria-selected', String(i === index));
-        item.append(node('span', 'command-name', '/' + entry.name), node('span', 'command-description', entry.description));
+        item.append(node('span', 'command-name', '/' + entry.name), node('span', 'command-description', ctx.isClaude?.() && entry.name === 'copy' ? 'Copy the latest Claude Code response as Markdown' : entry.description));
         if (reason) { item.title = reason; item.append(node('span', 'command-badge', entry.kind === 'unavailable' ? 'CLI only' : 'Unavailable')); }
         item.addEventListener('pointerdown', event => event.preventDefault());
         item.addEventListener('click', () => { if (!pending && generation === state.generation && ticket === epoch) choose(entry); }); list.append(item);
@@ -360,7 +366,7 @@
     async function execute(name, args = '', original = '') {
       if (pending) return;
       const entry = catalog.find(name);
-      if (!entry) { show('Unknown command'); text('/' + name + ' is not a recognized command. Nothing was sent to Codex.', true); return; }
+      if (!entry) { show('Unknown command'); text('/' + name + ' is not a recognized command. Nothing was sent to ' + (ctx.agentLabel?.() || 'Codex') + '.', true); return; }
       name = entry.name;
       const reason = unavailable(entry);
       if (reason) { show('/' + name); text(reason); return; }
@@ -386,8 +392,14 @@
       if (name === 'archive' || name === 'delete' || name === 'tgdeletesession') {
         consume(original); const action = name === 'archive' ? 'archive' : 'delete';
         const selected = state.selected;
-        return confirm('/' + name, (action === 'delete' ? 'Permanently delete ' : 'Archive ') + ctx.title(selected) + '?\n' + (action === 'delete' ? 'Its conversation and child sessions will be removed. ' : '') + 'The working directory and files will be kept:\n' + selected.cwd,
-          action === 'delete' ? 'Delete conversation' : 'Archive conversation', () => worker(action, action === 'delete' ? 'confirm ' + selected.codex_thread_id : ''));
+        const description = action === 'delete' && ctx.isClaude?.()
+          ? ctx.deletionDescription(selected) : (action === 'delete' ? 'Its conversation and child sessions will be removed. ' : '') + 'The working directory and files will be kept:';
+        return confirm('/' + name, (action === 'delete' ? 'Permanently delete ' : 'Archive ') + ctx.title(selected) + '?\n' + description + '\n' + selected.cwd,
+          action === 'delete' ? 'Delete conversation' : 'Archive conversation', () => {
+            const reason = action === 'delete' && ctx.deletionUnavailable?.(selected);
+            if (reason) { show('/' + name); text(reason, true); return; }
+            return worker(action, action === 'delete' ? 'confirm ' + selected.codex_thread_id : '');
+          });
       }
       if (name === 'new' || name === 'clear') {
         consume(original);
@@ -446,8 +458,8 @@
       }
       if (name === 'copy') {
         const last = ctx.lastResponse(); show('/copy');
-        if (!last) { text('No Codex response is loaded.'); return; }
-        try { await navigator.clipboard.writeText(last); text('Latest Codex response copied.'); } catch (_) { text('Select and copy the response below.'); content.append(node('pre', 'command-raw', last)); }
+        if (!last) { text('No ' + (ctx.agentLabel?.() || 'Codex') + ' response is loaded.'); return; }
+        try { await navigator.clipboard.writeText(last); text('Latest ' + (ctx.agentLabel?.() || 'Codex') + ' response copied.'); } catch (_) { text('Select and copy the response below.'); content.append(node('pre', 'command-raw', last)); }
         return;
       }
       if (name === 'export') {

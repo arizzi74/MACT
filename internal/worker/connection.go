@@ -34,21 +34,22 @@ const (
 // Connection owns only the Worker-to-Gateway transport. It neither starts nor
 // stops local Codex runtimes; connection loss leaves runtime supervision alone.
 type Connection struct {
-	connected      atomic.Bool
-	cfg            config.WorkerConfig
-	store          *Store
-	log            *slog.Logger
-	snapshot       func() []protocol.Runtime
-	onCommand      func(context.Context, protocol.Command) (protocol.CommandAck, error)
-	observeWebUI   func(context.Context, protocol.Runtime, protocol.Session) error
-	uploadWebUI    func(context.Context, protocol.Runtime, protocol.Session, protocol.WebUIUpload) (protocol.WebUIUploadResult, error)
-	commandWebUI   func(context.Context, protocol.Runtime, protocol.Session, string, string) (protocol.Result, error)
-	historyWebUI   func(context.Context, protocol.Runtime, protocol.Session, webUIHistoryRequest) (json.RawMessage, error)
-	questionsWebUI func(context.Context, protocol.Runtime, protocol.Session, *webUIQuestionAnswer) ([]webUIQuestion, error)
-	startedAt      time.Time
-	updateWake     chan struct{}
-	updateManager  string
-	updateRun      workerupdate.Runner
+	connected       atomic.Bool
+	cfg             config.WorkerConfig
+	store           *Store
+	log             *slog.Logger
+	snapshot        func() []protocol.Runtime
+	onCommand       func(context.Context, protocol.Command) (protocol.CommandAck, error)
+	observeWebUI    func(context.Context, protocol.Runtime, protocol.Session) error
+	uploadWebUI     func(context.Context, protocol.Runtime, protocol.Session, protocol.WebUIUpload) (protocol.WebUIUploadResult, error)
+	commandWebUI    func(context.Context, protocol.Runtime, protocol.Session, string, string) (protocol.Result, error)
+	historyWebUI    func(context.Context, protocol.Runtime, protocol.Session, webUIHistoryRequest) (json.RawMessage, error)
+	questionsWebUI  func(context.Context, protocol.Runtime, protocol.Session, *webUIQuestionAnswer) ([]webUIQuestion, error)
+	runtimeSettings func(context.Context, protocol.WorkerRuntimeSettingsRequest) protocol.WorkerRuntimeSettingsResult
+	startedAt       time.Time
+	updateWake      chan struct{}
+	updateManager   string
+	updateRun       workerupdate.Runner
 
 	// dial is replaceable only by package tests, allowing an httptest TLS client
 	// without a production configuration switch for insecure TLS.
@@ -156,7 +157,7 @@ func (c *Connection) connect(ctx context.Context) error {
 		return fmt.Errorf("load local event watermark: %w", err)
 	}
 	hostname, _ := os.Hostname()
-	hello := protocol.Hello{WorkerID: c.cfg.WorkerID, WorkerName: c.cfg.Name, Hostname: hostname, OS: runtime.GOOS, Arch: runtime.GOARCH, WorkerVersion: buildinfo.Version, ProtocolMin: protocol.Version, ProtocolMax: protocol.Version, LastAckedEventSeq: lastAcked, SupportsWebUI: true, SupportsWebUIFiles: true, SupportsWebUIUploads: true, SupportsImageInput: true, SupportsFileInput: true, MaxFileBytes: protocol.MaxFileBytes, SupportsSessionWorkspaces: true, SupportsWebUISessionCreation: true, SupportsSessionDeletion: true, SupportsSessionEditing: true, SupportsSessionArchives: true, SupportsConversationHistory: true, SupportsWorkerUpdate: c.updateManager != "", Runtimes: c.snapshot()}
+	hello := protocol.Hello{WorkerID: c.cfg.WorkerID, WorkerName: c.cfg.Name, Hostname: hostname, OS: runtime.GOOS, Arch: runtime.GOARCH, WorkerVersion: buildinfo.Version, ProtocolMin: protocol.Version, ProtocolMax: protocol.Version, LastAckedEventSeq: lastAcked, SupportsWebUI: true, SupportsWebUIFiles: true, SupportsWebUIUploads: true, SupportsImageInput: true, SupportsFileInput: true, MaxFileBytes: protocol.MaxFileBytes, SupportsSessionWorkspaces: true, SupportsWebUISessionCreation: true, SupportsSessionDeletion: true, SupportsSessionEditing: true, SupportsSessionArchives: c.cfg.AgentKind != "claude", SupportsConversationHistory: true, SupportsWorkerUpdate: c.updateManager != "", SupportsWorkerRuntimeSettings: c.cfg.AgentKind == "claude", AgentKind: c.cfg.AgentKind, Runtimes: c.snapshot()}
 	handshakeCtx, stopHandshake := context.WithTimeout(connectionCtx, 10*time.Second)
 	if err := c.sendRedactedEnvelope(handshakeCtx, writes, "hello", hello); err != nil {
 		stopHandshake()
@@ -203,7 +204,7 @@ func (c *Connection) connect(ctx context.Context) error {
 		case err := <-readErr:
 			return err
 		case <-heartbeat.C:
-			if err := c.sendRedactedEnvelope(connectionCtx, writes, "heartbeat", protocol.Heartbeat{WorkerID: c.cfg.WorkerID, UptimeSeconds: int64(time.Since(c.startedAt).Seconds()), SupportsWebUI: true, SupportsWebUIFiles: true, SupportsWebUIUploads: true, SupportsImageInput: true, SupportsFileInput: true, MaxFileBytes: protocol.MaxFileBytes, SupportsSessionWorkspaces: true, SupportsWebUISessionCreation: true, SupportsSessionDeletion: true, SupportsSessionEditing: true, SupportsSessionArchives: true, SupportsConversationHistory: true, SupportsWorkerUpdate: c.updateManager != "", Runtimes: c.snapshot()}); err != nil {
+			if err := c.sendRedactedEnvelope(connectionCtx, writes, "heartbeat", protocol.Heartbeat{WorkerID: c.cfg.WorkerID, UptimeSeconds: int64(time.Since(c.startedAt).Seconds()), SupportsWebUI: true, SupportsWebUIFiles: true, SupportsWebUIUploads: true, SupportsImageInput: true, SupportsFileInput: true, MaxFileBytes: protocol.MaxFileBytes, SupportsSessionWorkspaces: true, SupportsWebUISessionCreation: true, SupportsSessionDeletion: true, SupportsSessionEditing: true, SupportsSessionArchives: c.cfg.AgentKind != "claude", SupportsConversationHistory: true, SupportsWorkerUpdate: c.updateManager != "", SupportsWorkerRuntimeSettings: c.cfg.AgentKind == "claude", AgentKind: c.cfg.AgentKind, Runtimes: c.snapshot()}); err != nil {
 				return err
 			}
 		case <-poll.C:
@@ -223,6 +224,20 @@ func (c *Connection) readLoop(ctx context.Context, conn *websocket.Conn, writes 
 			return err
 		}
 		switch e.Type {
+		case "worker_runtime_settings_request":
+			request, err := protocol.Payload[protocol.WorkerRuntimeSettingsRequest](e)
+			if err != nil || request.Validate() != nil || request.WorkerID != c.cfg.WorkerID {
+				return errors.New("worker connection: invalid runtime settings target")
+			}
+			result := protocol.WorkerRuntimeSettingsResult{RequestID: request.RequestID, ErrorCode: "unsupported"}
+			if c.runtimeSettings != nil {
+				requestCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+				result = c.runtimeSettings(requestCtx, request)
+				cancel()
+			}
+			if err := sendEnvelope(ctx, writes, "worker_runtime_settings_result", result); err != nil {
+				return err
+			}
 		case "webui":
 			frame, err := protocol.Payload[protocol.WebUIFrame](e)
 			if err != nil {

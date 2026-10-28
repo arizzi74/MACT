@@ -62,6 +62,9 @@ func run(args []string, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	if cfg.AgentKind != "codex" {
+		return errors.New("codex-worker requires agent_kind codex; use claude-worker for a dedicated Claude worker")
+	}
 	if args[0] == "config" {
 		if len(args) != 2 || args[1] != "export" {
 			return errors.New("usage: codex-worker [--config PATH] config export")

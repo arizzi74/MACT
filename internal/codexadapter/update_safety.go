@@ -245,7 +245,7 @@ func (c *Client) invalidateObservationResponse(raw []byte) {
 // mandatory after a metadata read is abandoned.
 func updateReadOnlyMethod(method string) bool {
 	switch method {
-	case "thread/list", "thread/loaded/list", "thread/read", "thread/turns/list", "thread/items/list", "thread/queue/list", "thread/goal/get", "thread/backgroundTerminals/list",
+	case "thread/list", "thread/loaded/list", "thread/read", "thread/turns/list", "thread/items/list", "thread/queue/list", "thread/goal/get", "thread/status/read", "thread/backgroundTerminals/list",
 		"config/read", "configRequirements/read", "account/usage/read", "account/rateLimits/read", "model/list", "permissionProfile/list", "experimentalFeature/list",
 		"mcpServerStatus/list", "app/installed", "skills/list", "hooks/list", "plugin/list":
 		return true

@@ -45,23 +45,25 @@ type Config struct {
 	Redactor         *auth.Redactor
 	WebUI            *gateway.Hub
 	Audio            *audio.Manager
+	RuntimeSettings  WorkerRuntimeSettingsManager
 }
 
 type Server struct {
-	store          *registry.Store
-	origin         string
-	webauthn       *wa.WebAuthn
-	mux            *http.ServeMux
-	bot            *botMonitor
-	telegramBots   TelegramBotManager
-	redactor       *auth.Redactor
-	loginBegins    *httpguard.Limiter
-	loginFinishes  *httpguard.Limiter
-	passwordLogins *httpguard.Limiter
-	passwordSlots  chan struct{}
-	enrollments    *httpguard.Limiter
-	webui          *gateway.Hub
-	audio          *audio.Manager
+	store           *registry.Store
+	origin          string
+	webauthn        *wa.WebAuthn
+	mux             *http.ServeMux
+	bot             *botMonitor
+	telegramBots    TelegramBotManager
+	redactor        *auth.Redactor
+	loginBegins     *httpguard.Limiter
+	loginFinishes   *httpguard.Limiter
+	passwordLogins  *httpguard.Limiter
+	passwordSlots   chan struct{}
+	enrollments     *httpguard.Limiter
+	webui           *gateway.Hub
+	audio           *audio.Manager
+	runtimeSettings WorkerRuntimeSettingsManager
 }
 
 // New builds an isolated admin handler. Origin must be the configured public
@@ -90,6 +92,10 @@ func New(store *registry.Store, cfg Config) (*Server, error) {
 	s.redactor = cfg.Redactor
 	s.webui = cfg.WebUI
 	s.audio = cfg.Audio
+	s.runtimeSettings = cfg.RuntimeSettings
+	if s.runtimeSettings == nil && cfg.WebUI != nil {
+		s.runtimeSettings = cfg.WebUI
+	}
 	s.routes()
 	return s, nil
 }
@@ -132,6 +138,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/tgw/api/v1/admin/telegram-bots/refresh", s.telegramBotRefresh)
 	s.mux.HandleFunc("/tgw/api/v1/admin/telegram-bots/{id}/profile-photo/reset", s.telegramBotProfilePhotoReset)
 	s.mux.HandleFunc("/tgw/api/v1/admin/telegram-bots/", s.telegramBotMember)
+	s.mux.HandleFunc("/tgw/api/v1/admin/workers/{id}/runtime-settings", s.workerRuntimeSettings)
 	s.mux.HandleFunc("/tgw/api/v1/admin/workers", s.workers)
 	s.mux.HandleFunc("/tgw/api/v1/admin/workers/", s.worker)
 	s.mux.HandleFunc("/tgw/api/v1/admin/worker-enrollments", s.workerEnrollments)

@@ -30,6 +30,9 @@ let workerEnrollment = null;
 let enrollmentBusy = false;
 let enrollmentSequence = 0;
 let enrollmentTimer = null;
+let workerRuntimeTarget = null;
+let workerRuntimeSequence = 0;
+let workerRuntimeBusy = false;
 // Telegram tokens stay in the submitted request's lifetime, never in storage.
 let telegramBots = null;
 let telegramLoadingEpoch = null;
@@ -198,6 +201,7 @@ function lockConsole(reason) {
   expandedSessionDetails.clear();
   reloadPending = false;
   closeWorkerEnrollment();
+  closeWorkerRuntimeSettings();
   resetTelegramBots();
   passwordSettings = null;
   renderPasswordSettings();
@@ -865,6 +869,7 @@ function messageCount(value, stats) {
 }
 function renderSession(session) {
   const stats = session.stats || {};
+  const provider = dashboard?.workers?.find(worker => worker.ID === session.worker_id)?.AgentKind === 'claude' ? 'Claude Code' : 'Codex';
   const card = el('details', 'session-card');
   card.dataset.sessionId = session.session_id;
   card.open = expandedSessions.has(session.session_id);
@@ -930,7 +935,7 @@ function renderSession(session) {
   fact(facts, 'Reasoning effort', stats.reasoning_effort);
   fact(facts, 'Git branch', session.git_branch);
   fact(facts, 'Worker connection', words(session.worker_connectivity));
-  fact(facts, 'Codex version', session.codex_version);
+  fact(facts, provider + ' version', session.codex_version);
   fact(facts, 'Runtime generation', number(session.runtime_generation));
   fact(facts, 'Loaded in runtime', session.loaded ? 'Yes' : 'No');
   fact(facts, 'Pending approvals', number(session.pending_approvals));
@@ -939,7 +944,7 @@ function renderSession(session) {
   fact(facts, 'Worker last seen', timestamp(session.last_seen));
   fact(facts, 'First seen by gateway', timestamp(session.discovered_at));
   fact(facts, 'Session ID', session.session_id, { wide: true, mono: true });
-  fact(facts, 'Codex thread ID', session.codex_thread_id, { wide: true, mono: true });
+  fact(facts, provider + ' thread ID', session.codex_thread_id, { wide: true, mono: true });
   fact(facts, 'Runtime ID', session.runtime_id, { wide: true, mono: true });
   fact(facts, 'Worker ID', session.worker_id, { wide: true, mono: true });
   if (session.active_turn_id) fact(facts, 'Active turn ID', session.active_turn_id, { wide: true, mono: true });
@@ -981,6 +986,7 @@ function renderWorkers(workers) {
     info.append(el('b', '', worker.Name), el('div', 'muted', [worker.Connectivity, [worker.OS, worker.Arch].filter(Boolean).join('/'), worker.Version && 'v' + worker.Version].filter(Boolean).join(' · ')), el('div', 'muted', 'Worker ID: ' + worker.ID));
     const actions = el('div', 'worker-actions');
     if (worker.Enabled !== false) {
+      if (worker.SupportsWorkerRuntimeSettings) actions.append(button('Claude Code settings', 'secondary', () => openWorkerRuntimeSettings(worker)));
       actions.append(button('Rotate token', 'secondary', async () => {
         const result = await sensitiveCall('/workers/' + encodeURIComponent(worker.ID) + '/rotate-token', { method: 'POST', body: '{}' });
         showToken(worker.ID, result.token);
@@ -995,7 +1001,7 @@ function renderWorkers(workers) {
     } else {
       actions.append(badge('revoked'));
       actions.append(button('Delete', 'danger', async () => {
-        if (confirm(`Permanently delete revoked worker "${worker.Name || worker.ID}"?\n\nThis irreversibly removes the worker and all related gateway database records, including sessions, history, and routing. Project files and native Codex sessions are untouched.\n\nThis cannot be undone.`)) {
+        if (confirm(`Permanently delete revoked worker "${worker.Name || worker.ID}"?\n\nThis irreversibly removes the worker and all related gateway database records, including sessions, history, and routing. Project files and native ${worker.AgentKind === 'claude' ? 'Claude Code' : 'Codex'} sessions are untouched.\n\nThis cannot be undone.`)) {
           await sensitiveCall('/workers/' + encodeURIComponent(worker.ID) + '/purge', { method: 'DELETE', body: JSON.stringify({ confirmed: true }) });
           await load(false);
         }
@@ -1005,6 +1011,96 @@ function renderWorkers(workers) {
     $('worker-list').append(row);
   }
   if (!workers.length) $('worker-list').append(el('p', 'muted', 'No enrolled workers.'));
+}
+function closeWorkerRuntimeSettings() {
+  workerRuntimeSequence++;
+  workerRuntimeTarget = null;
+  workerRuntimeBusy = false;
+  $('worker-runtime-form').reset();
+  $('worker-runtime-key').value = '';
+  $('worker-runtime-clear').checked = false;
+  $('worker-runtime-key-help').textContent = 'Leave blank to keep the saved credential. The saved value is never returned.';
+  $('worker-runtime-target').textContent = '';
+  $('worker-runtime-status').textContent = '';
+  $('worker-runtime-error').textContent = '';
+  $('worker-runtime-error').hidden = true;
+  $('worker-runtime-fields').disabled = true;
+  if ($('worker-runtime-dialog').open) $('worker-runtime-dialog').close();
+}
+function updateWorkerRuntimeControls() {
+  $('worker-runtime-key').disabled = $('worker-runtime-clear').checked;
+  if ($('worker-runtime-clear').checked) $('worker-runtime-key').value = '';
+  $('worker-runtime-bypass').hidden = $('worker-runtime-permissions').value !== 'bypassPermissions';
+}
+function fillWorkerRuntimeSettings(settings) {
+  $('worker-runtime-model').value = settings.model || '';
+  $('worker-runtime-url').value = settings.base_url || '';
+  $('worker-runtime-auth').value = settings.auth_mode || 'login';
+  $('worker-runtime-permissions').value = settings.permission_mode || 'default';
+  $('worker-runtime-key').value = '';
+  $('worker-runtime-clear').checked = false;
+  $('worker-runtime-key-help').textContent = settings.api_key_configured
+    ? 'A credential is saved. Leave blank to keep it, or select Remove to clear it. The saved value is never returned.'
+    : 'No credential is saved. Enter one for API key or auth token authentication.';
+  updateWorkerRuntimeControls();
+}
+function showWorkerRuntimeError(error) {
+  if (error.status === 401) { sessionAuth.expire('expired'); return; }
+  const messages = {
+    runtime_settings_busy: 'The worker is busy. Wait for its current work to finish and try again.',
+    runtime_settings_unsupported: 'Use a dedicated Claude Code worker with runtime settings support.',
+    invalid_runtime_settings: 'The worker rejected these settings. Check the credential and configuration, then try again.',
+  };
+  // Upstream errors can quote a submitted credential. Display only local text.
+  $('worker-runtime-error').textContent = messages[error.code] || 'Settings could not be confirmed. Close this dialog and reload the worker settings before trying again.';
+  $('worker-runtime-error').hidden = false;
+}
+async function openWorkerRuntimeSettings(worker) {
+  closeWorkerRuntimeSettings();
+  workerRuntimeTarget = { id: worker.ID, name: worker.Name };
+  const sequence = workerRuntimeSequence;
+  $('worker-runtime-target').textContent = worker.Name || worker.ID;
+  $('worker-runtime-status').textContent = 'Loading worker settings…';
+  $('worker-runtime-dialog').showModal();
+  workerRuntimeBusy = true;
+  try {
+    const settings = await call('/workers/' + encodeURIComponent(worker.ID) + '/runtime-settings', { cache: 'no-store' });
+    if (sequence !== workerRuntimeSequence || !authenticated) return;
+    fillWorkerRuntimeSettings(settings);
+    $('worker-runtime-fields').disabled = false;
+    $('worker-runtime-status').textContent = '';
+  } catch (error) {
+    if (sequence === workerRuntimeSequence) { $('worker-runtime-status').textContent = ''; showWorkerRuntimeError(error); }
+  } finally { if (sequence === workerRuntimeSequence) workerRuntimeBusy = false; }
+}
+async function saveWorkerRuntimeSettings(event) {
+  event.preventDefault();
+  if (workerRuntimeBusy || !workerRuntimeTarget) return;
+  const sequence = workerRuntimeSequence;
+  const id = workerRuntimeTarget.id;
+  const update = { model: $('worker-runtime-model').value.trim(), base_url: $('worker-runtime-url').value.trim(),
+    auth_mode: $('worker-runtime-auth').value, permission_mode: $('worker-runtime-permissions').value };
+  if ($('worker-runtime-clear').checked) update.api_key = '';
+  else if ($('worker-runtime-key').value) update.api_key = $('worker-runtime-key').value;
+  // Credentials are held only by this request; never retain them as a draft.
+  $('worker-runtime-key').value = '';
+  workerRuntimeBusy = true;
+  $('worker-runtime-fields').disabled = true;
+  $('worker-runtime-error').hidden = true;
+  $('worker-runtime-status').textContent = 'Saving on the worker…';
+  const current = () => sequence === workerRuntimeSequence && authenticated && workerRuntimeTarget?.id === id;
+  try {
+    const settings = await sensitiveCall('/workers/' + encodeURIComponent(id) + '/runtime-settings',
+      { method: 'PUT', body: JSON.stringify(update), cache: 'no-store' }, current);
+    if (!current()) return;
+    fillWorkerRuntimeSettings(settings);
+    $('worker-runtime-status').textContent = 'Saved. Subsequent Claude Code turns use these settings.';
+  } catch (error) {
+    if (current()) { $('worker-runtime-status').textContent = ''; showWorkerRuntimeError(error); }
+  } finally {
+    delete update.api_key;
+    if (current()) { workerRuntimeBusy = false; $('worker-runtime-fields').disabled = false; }
+  }
 }
 function renderKeys(keys) {
   $('keys').replaceChildren();
@@ -1548,6 +1644,12 @@ $('audio-discard').addEventListener('click', () => {
 });
 $('enroll').addEventListener('click', () => enroll($('bootstrap-token').value).catch(error => msg(error.message)));
 $('add-passkey').addEventListener('click', () => perform(async () => { await enroll(); await load(); }));
+$('worker-runtime-close').addEventListener('click', closeWorkerRuntimeSettings);
+$('worker-runtime-dialog').addEventListener('cancel', event => { event.preventDefault(); closeWorkerRuntimeSettings(); });
+$('worker-runtime-form').addEventListener('submit', saveWorkerRuntimeSettings);
+$('worker-runtime-clear').addEventListener('change', updateWorkerRuntimeControls);
+$('worker-runtime-permissions').addEventListener('change', updateWorkerRuntimeControls);
+window.addEventListener('pagehide', closeWorkerRuntimeSettings);
 $('new-worker').addEventListener('click', openWorkerEnrollment);
 $('enrollment-access').addEventListener('change', () => runEnrollment(createEnrollment));
 $('enrollment-new').addEventListener('click', () => runEnrollment(createEnrollment));
@@ -1603,12 +1705,12 @@ sessionAuth = window.CodexSessionAuth.create({
   onBeforeRotate: () => {
     authEpoch++; rotationPending = true;
     $('console').inert = true; $('logout').disabled = true;
-    $('worker-enrollment').inert = true;
+    $('worker-enrollment').inert = true; $('worker-runtime-dialog').inert = true;
     $('bot-token-dialog').inert = true; $('bot-create-dialog').inert = true; $('bot-remove-dialog').inert = true; $('bot-request-dialog').inert = true;
   },
   onAuthenticated: async session => {
     rotationPending = false; $('console').inert = false; $('logout').disabled = false;
-    $('worker-enrollment').inert = false;
+    $('worker-enrollment').inert = false; $('worker-runtime-dialog').inert = false;
     $('bot-token-dialog').inert = false; $('bot-create-dialog').inert = false; $('bot-remove-dialog').inert = false; $('bot-request-dialog').inert = false;
     loginTrust.reset(); currentDeviceTrust.reset(session.device_name || '');
     authEpoch++; authenticated = true; renderCurrentDevice(session); await load();
@@ -1626,7 +1728,7 @@ sessionAuth = window.CodexSessionAuth.create({
         if (value) return load();
       }).catch(showError).finally(() => {
         rotationPending = false; $('console').inert = false; $('logout').disabled = false;
-        $('worker-enrollment').inert = false;
+        $('worker-enrollment').inert = false; $('worker-runtime-dialog').inert = false;
         $('bot-token-dialog').inert = false; $('bot-create-dialog').inert = false; $('bot-remove-dialog').inert = false; $('bot-request-dialog').inert = false;
       });
     }

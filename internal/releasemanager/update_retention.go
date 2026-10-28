@@ -62,7 +62,7 @@ func pruneUpdateBackups(l *Layout, currentVersion string) (removed int, retErr e
 	}
 	var backups []updateBackup
 	for _, entry := range entries {
-		backup, err := inspectUpdateBackup(root, entry.Name(), l.Component)
+		backup, err := inspectUpdateBackup(root, entry.Name(), componentCommand(l))
 		if err != nil {
 			retErr = errors.Join(retErr, fmt.Errorf("preserved backup entry %q: %w", entry.Name(), err))
 			continue
@@ -135,15 +135,19 @@ func inspectUpdateBackup(root *os.Root, name, component string) (updateBackup, e
 	if err != nil {
 		return result, err
 	}
+	binary, metadataComponent := "codex-"+component, component
+	if component == "claude-worker" {
+		binary, metadataComponent = "claude-worker", "worker"
+	}
 	allowed := map[string]bool{
 		"00-update.json": true, "01-codex-telegramgw": true,
-		"02-codex-" + component: true, "03-codex-telegramgw": true,
+		"02-" + binary: true, "03-codex-telegramgw": true,
 	}
-	required := []string{"02-codex-" + component, "03-codex-telegramgw"}
+	required := []string{"02-" + binary, "03-codex-telegramgw"}
 	if component == "worker" {
 		allowed["04-codex-local"] = true
 		required = append(required, "04-codex-local")
-	} else {
+	} else if component == "gateway" {
 		// Whisper is optional and absent from older gateway snapshots.
 		allowed["04-codex-whisper"] = true
 		allowed["gateway.db"] = true
@@ -193,7 +197,7 @@ func inspectUpdateBackup(root *os.Root, name, component string) (updateBackup, e
 	if err := json.Unmarshal(data, &metadata); err != nil {
 		return result, errors.New("invalid snapshot metadata")
 	}
-	if metadata.Schema != 1 || metadata.Component != component || ValidateRepo(metadata.Repo) != nil {
+	if metadata.Schema != 1 || metadata.Component != metadataComponent || ValidateRepo(metadata.Repo) != nil {
 		return result, errors.New("unrecognized snapshot metadata")
 	}
 	version, err := ParseVersion(metadata.Version)

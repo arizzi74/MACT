@@ -141,7 +141,8 @@ jobs:
           verify_dir=$(mktemp -d)
           trap 'rm -rf -- "$verify_dir"' EXIT
           gh release download "$RELEASE_TAG" --dir "$verify_dir"
-          test "$(find "$verify_dir" -type f | wc -l)" -eq 29
+          expected_files=$(( $(wc -l < dist/SHA256SUMS) + 2 ))
+          test "$(find "$verify_dir" -type f | wc -l)" -eq "$expected_files"
           cmp dist/SHA256SUMS "$verify_dir/SHA256SUMS"
           cmp dist/SHA256SUMS.sigstore.json "$verify_dir/SHA256SUMS.sigstore.json"
           go run ./cmd/release-tool verify-provenance --dist "$verify_dir" --repo "$GH_REPO" --tag "$RELEASE_TAG"

@@ -60,6 +60,9 @@ type Config struct {
 	Args    []string
 	// WorkingDirectory becomes the app-server process working directory.
 	WorkingDirectory string
+	// LocalSocket is an optional private attachment endpoint provided by an
+	// in-process agent bridge. Native Codex startup discovers its own endpoint.
+	LocalSocket string
 	// Env is the complete child environment. Nil inherits the current process
 	// environment; callers can supply an isolated CODEX_HOME for preflight checks.
 	Env []string
@@ -238,7 +241,7 @@ func Start(ctx context.Context, config Config) (*Client, error) {
 func New(t Transport, config Config) *Client {
 	config = config.normalized()
 	c := &Client{
-		config: config, t: t,
+		config: config, t: t, localSocket: config.LocalSocket,
 		writeCh: make(chan outbound), eventIn: make(chan Event), events: make(chan Event, config.EventBuffer),
 		requestIn: make(chan Request), reqs: make(chan Request, config.RequestBuffer), done: make(chan struct{}),
 		pending: make(map[int64]*pendingRPC), active: make(map[string]string), methods: defaultMethods(), serverRequests: make(map[string]Request),
@@ -694,6 +697,14 @@ func (c *Client) Initialize(ctx context.Context) error {
 	c.mu.Lock()
 	c.ready = true
 	c.info = reply
+	if reply.SupportedMethods != nil {
+		// Bridges advertise an exact subset. Native Codex versions which omit
+		// this extension retain their existing optimistic capability probing.
+		c.methods = make(map[string]bool, len(*reply.SupportedMethods))
+		for _, method := range *reply.SupportedMethods {
+			c.methods[method] = true
+		}
+	}
 	c.mu.Unlock()
 	return nil
 }
@@ -716,10 +727,11 @@ func (c *Client) Notify(ctx context.Context, method string, params any) error {
 // InitializeInfo is the negotiated app-server information returned by
 // initialize.
 type InitializeInfo struct {
-	CodexHome      string `json:"codexHome"`
-	PlatformFamily string `json:"platformFamily"`
-	PlatformOS     string `json:"platformOs"`
-	UserAgent      string `json:"userAgent"`
+	CodexHome        string    `json:"codexHome"`
+	PlatformFamily   string    `json:"platformFamily"`
+	PlatformOS       string    `json:"platformOs"`
+	UserAgent        string    `json:"userAgent"`
+	SupportedMethods *[]string `json:"supportedMethods,omitempty"`
 }
 
 // MethodUnavailableError explains a required protocol method missing from the

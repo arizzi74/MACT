@@ -25,7 +25,7 @@ type workerSetupRecovery struct {
 }
 
 func workerSetupRecoveryDirectory(l *Layout) string {
-	return filepath.Join(l.Home, ".local/state/codex-worker/setup")
+	return filepath.Join(l.Home, ".local/state", componentBinary(l), "setup")
 }
 
 func workerSetupRecoveryPath(l *Layout) string {
@@ -88,6 +88,12 @@ func loadWorkerSetupRecovery(l *Layout) (*workerSetupRecovery, error) {
 	if err := decoder.Decode(&recovery); err != nil || decoder.Decode(new(any)) != io.EOF || recovery.Schema != 1 {
 		return nil, invalid
 	}
+	if recovery.Config.AgentKind == "" {
+		recovery.Config.AgentKind = "codex"
+	}
+	if recovery.Config.AgentKind != l.AgentKind {
+		return nil, invalid
+	}
 	gateway, err := url.Parse(recovery.Config.GatewayURL)
 	if err != nil || gateway.Scheme != "wss" {
 		return nil, invalid
@@ -102,7 +108,7 @@ func loadWorkerSetupRecovery(l *Layout) (*workerSetupRecovery, error) {
 	if _, err := normalizeWorkerSetupName(recovery.Config.Name); err != nil || recovery.Config.TokenFile != filepath.Join(workerSetupRecoveryDirectory(l), "worker.token") {
 		return nil, invalid
 	}
-	if recovery.Config.StateFile != filepath.Join(l.Home, ".local/state/codex-worker/worker.db") ||
+	if recovery.Config.StateFile != filepath.Join(l.Home, ".local/state", componentBinary(l), "worker.db") ||
 		len(recovery.Config.AllowedWorkspaceRoots) != 1 || len(recovery.Config.Runtimes) != 1 ||
 		recovery.Config.MaxQueuedTurns != 20 || len(recovery.Config.RedactPatterns) != 0 {
 		return nil, invalid
@@ -112,8 +118,15 @@ func loadWorkerSetupRecovery(l *Layout) (*workerSetupRecovery, error) {
 		return nil, invalid
 	}
 	runtime := recovery.Config.Runtimes[0]
-	if runtime.ID != "primary" || runtime.Name != "Primary Codex" || runtime.WorkingDirectory != home ||
-		!runtime.Autostart || runtime.RestartPolicy != "on-failure" || !filepath.IsAbs(runtime.CodexBinary) {
+	name, binary := "Primary Codex", runtime.CodexBinary
+	if l.AgentKind == "claude" {
+		name, binary = "Primary Claude Code", runtime.ClaudeBinary
+		if runtime.CodexBinary != "" || runtime.ClaudeSettingsFile != filepath.Join(filepath.Dir(recovery.Config.StateFile), "runtime-settings.json") {
+			return nil, invalid
+		}
+	}
+	if runtime.ID != "primary" || runtime.Name != name || runtime.WorkingDirectory != home ||
+		!runtime.Autostart || runtime.RestartPolicy != "on-failure" || !filepath.IsAbs(binary) {
 		return nil, invalid
 	}
 	if recovery.Version != "" {
@@ -154,7 +167,7 @@ func (m *Manager) installRecoveredWorkerSetup(ctx context.Context, l *Layout, re
 	if l.System != "linux" {
 		serviceAccess = ""
 	}
-	if err := execute(ctx, options{Action: "install", Component: "worker", Config: prepared, Version: recovery.Version, AutoUpdate: true, WorkerServiceAccess: serviceAccess, WorkerSetupRecovery: true}); err != nil {
+	if err := execute(ctx, options{Action: "install", Component: componentCommand(l), Config: prepared, Version: recovery.Version, AutoUpdate: true, WorkerServiceAccess: serviceAccess, WorkerSetupRecovery: true}); err != nil {
 		fmt.Fprintln(m.Out, "The worker credentials are saved privately. Rerun this installer to resume installation with the same worker identity.")
 		return err
 	}

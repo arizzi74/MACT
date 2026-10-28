@@ -112,7 +112,7 @@ func (m *Manager) resumeEnrolledWorkerInstall(ctx context.Context, l *Layout, so
 
 func (m *Manager) workerSetupRecoveryServiceRunning(ctx context.Context, l *Layout) (bool, error) {
 	if l.System == "darwin" {
-		result, err := m.Run(ctx, "launchctl", "print", "gui/"+strconv.Itoa(os.Getuid())+"/com.iaia.codex-worker")
+		result, err := m.Run(ctx, "launchctl", "print", "gui/"+strconv.Itoa(os.Getuid())+"/"+workerLabel(l))
 		if err != nil {
 			return false, errors.New("could not inspect the worker launchd service; preserve private recovery files and retry from the logged-in Mac desktop session")
 		}
@@ -124,7 +124,7 @@ func (m *Manager) workerSetupRecoveryServiceRunning(ctx context.Context, l *Layo
 		}
 		return false, errors.New("could not confirm that the worker launchd service is absent; inspect launchd before resuming setup")
 	}
-	data, err := m.command(ctx, "systemctl", "--user", "show", "codex-worker.service", "-p", "MainPID", "-p", "ActiveState")
+	data, err := m.command(ctx, "systemctl", "--user", "show", componentBinary(l)+".service", "-p", "MainPID", "-p", "ActiveState")
 	if err != nil {
 		return false, err
 	}

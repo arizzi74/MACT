@@ -25,7 +25,7 @@ func NewLayout(component string) (*Layout, error) {
 	// Gateway services use system paths and may run without HOME under systemd.
 	// Only the worker installation depends on the invoking user's home.
 	var home string
-	if component == "worker" {
+	if component == "worker" || component == "claude-worker" {
 		var err error
 		home, err = os.UserHomeDir()
 		if err != nil {
@@ -36,13 +36,17 @@ func NewLayout(component string) (*Layout, error) {
 }
 
 func newLayout(component, system, architecture, home string) (*Layout, error) {
+	agentKind := "codex"
+	if component == "claude-worker" {
+		component, agentKind = "worker", "claude"
+	}
 	if (component != "gateway" && component != "worker") || (system != "linux" && system != "darwin") || (architecture != "amd64" && architecture != "arm64") || (component == "gateway" && system != "linux") {
 		return nil, errors.New("unsupported component or platform")
 	}
 	if component == "worker" && (!filepath.IsAbs(home) || strings.ContainsAny(home, "%\"\\") || strings.ContainsFunc(home, unicode.IsSpace)) {
 		return nil, errors.New("service installation requires an absolute home path without spaces, quotes, percent signs or backslashes")
 	}
-	l := &Layout{Component: component, System: system, Architecture: architecture, Home: home}
+	l := &Layout{Component: component, System: system, Architecture: architecture, Home: home, AgentKind: agentKind}
 	if component == "gateway" {
 		l.Bin = "/usr/local/lib/codex-telegramgw"
 		l.Manager = filepath.Join(l.Bin, "codex-telegramgw")
@@ -66,9 +70,15 @@ func newLayout(component, system, architecture, home string) (*Layout, error) {
 		l.Backups = filepath.Join(home, ".local/state/codex-worker/updates")
 		l.UnitDir = filepath.Join(home, ".config/systemd/user")
 	}
+	if agentKind == "claude" {
+		l.Config = filepath.Join(home, ".config/claude-worker/config.json")
+		l.State = filepath.Join(home, ".config/claude-worker/update.json")
+		l.Lock = filepath.Join(home, ".local/state/claude-worker/update.lock")
+		l.Backups = filepath.Join(home, ".local/state/claude-worker/updates")
+	}
 	l.AliasCommand = filepath.Join(filepath.Dir(l.Command), "mact")
-	l.Binary = filepath.Join(l.Bin, "codex-"+component)
-	l.Unit = filepath.Join(l.UnitDir, "codex-"+component+".service")
+	l.Binary = filepath.Join(l.Bin, componentBinary(l))
+	l.Unit = filepath.Join(l.UnitDir, componentBinary(l)+".service")
 	return l, nil
 }
 
@@ -120,16 +130,16 @@ func systemctlPrefix(l *Layout) []string {
 }
 
 func workerPlist(l *Layout) string {
-	return filepath.Join(l.Home, "Library/LaunchAgents/com.iaia.codex-worker.plist")
+	return filepath.Join(l.Home, "Library/LaunchAgents/"+workerLabel(l)+".plist")
 }
 
 func (m *Manager) Service(ctx context.Context, l *Layout, action string) error {
 	if l.System == "linux" {
-		_, err := m.command(ctx, append(systemctlPrefix(l), action, "codex-"+l.Component+".service")...)
+		_, err := m.command(ctx, append(systemctlPrefix(l), action, componentBinary(l)+".service")...)
 		return err
 	}
 	domain := "gui/" + strconv.Itoa(os.Getuid())
-	label := domain + "/com.iaia.codex-worker"
+	label := domain + "/" + workerLabel(l)
 	if action == "stop" {
 		_, err := m.command(ctx, "launchctl", "bootout", label)
 		return err
@@ -492,14 +502,18 @@ func workerExecutablePaths(cfg map[string]any, home string) (string, error) {
 		if !ok {
 			return "", errors.New("invalid worker runtime configuration")
 		}
-		executable, _ := profile["codex_binary"].(string)
+		binaryField, agentName := "codex_binary", "Codex"
+		if cfg["agent_kind"] == "claude" {
+			binaryField, agentName = "claude_binary", "Claude Code"
+		}
+		executable, _ := profile[binaryField].(string)
 		if executable == "" {
-			return "", errors.New("configured Codex executable is missing")
+			return "", fmt.Errorf("configured %s executable is missing", agentName)
 		}
 		if !strings.ContainsRune(executable, '/') {
 			resolved, err := exec.LookPath(executable)
 			if err != nil {
-				return "", errors.New("Codex executable is unavailable in the installing account PATH")
+				return "", fmt.Errorf("%s executable is unavailable in the installing account PATH", agentName)
 			}
 			executable = resolved
 		}
@@ -509,9 +523,9 @@ func workerExecutablePaths(cfg map[string]any, home string) (string, error) {
 		}
 		info, err := os.Stat(executable)
 		if err != nil || !info.Mode().IsRegular() || syscall.Access(executable, 1) != nil {
-			return "", errors.New("configured Codex executable is not executable")
+			return "", fmt.Errorf("configured %s executable is not executable", agentName)
 		}
-		profile["codex_binary"] = executable
+		profile[binaryField] = executable
 		paths = append(paths, filepath.Dir(executable))
 	}
 	if node, err := exec.LookPath("node"); err == nil {
@@ -551,13 +565,16 @@ func (m *Manager) installConfiguration(ctx context.Context, l *Layout, source, e
 		}
 		return normalizeGateway(l, source, environment)
 	}
-	data, err := m.command(ctx, filepath.Join(pkg, "codex-worker"), "--config", source, "config", "export")
+	data, err := m.command(ctx, filepath.Join(pkg, componentBinary(l)), "--config", source, "config", "export")
 	if err != nil {
 		return err
 	}
 	var cfg map[string]any
 	if err := json.Unmarshal(data, &cfg); err != nil || cfg == nil {
 		return errors.New("worker config export did not return a JSON object")
+	}
+	if kind, _ := cfg["agent_kind"].(string); (kind == "claude") != (l.AgentKind == "claude") {
+		return errors.New("worker configuration provider does not match the requested component")
 	}
 	if _, err := workerExecutablePaths(cfg, l.Home); err != nil {
 		return err
@@ -584,7 +601,7 @@ func (m *Manager) installConfiguration(ctx context.Context, l *Layout, source, e
 
 func (m *Manager) installService(ctx context.Context, l *Layout, pkg string) error {
 	if l.System == "linux" {
-		data, err := os.ReadFile(filepath.Join(pkg, "deploy/systemd", filepath.Base(l.Unit)))
+		data, err := os.ReadFile(filepath.Join(pkg, "deploy/systemd", componentBinary(l)+".service"))
 		if err != nil {
 			return err
 		}
@@ -621,11 +638,11 @@ func (m *Manager) installService(ctx context.Context, l *Layout, pkg string) err
 		return err
 	}
 	value := map[string]any{
-		"Label": "com.iaia.codex-worker", "ProgramArguments": []string{l.Binary, "--config", l.Config, "run"},
+		"Label": workerLabel(l), "ProgramArguments": []string{l.Binary, "--config", l.Config, "run"},
 		"EnvironmentVariables": map[string]any{"HOME": l.Home, "PATH": path},
 		"WorkingDirectory":     l.Home, "RunAtLoad": true, "KeepAlive": true,
-		"StandardOutPath":   filepath.Join(l.Home, "Library/Logs/codex-worker.log"),
-		"StandardErrorPath": filepath.Join(l.Home, "Library/Logs/codex-worker.log"),
+		"StandardOutPath":   filepath.Join(l.Home, "Library/Logs/"+componentBinary(l)+".log"),
+		"StandardErrorPath": filepath.Join(l.Home, "Library/Logs/"+componentBinary(l)+".log"),
 	}
 	return writePlist(workerPlist(l), value)
 }
@@ -703,11 +720,11 @@ func (m *Manager) FreshInstall(ctx context.Context, l *Layout, source, environme
 }
 
 func (m *Manager) AutoUpdate(ctx context.Context, l *Layout, enabled bool) error {
-	label := "codex-" + l.Component + "-update"
+	label := componentBinary(l) + "-update"
 	if l.System == "linux" {
 		prefix := systemctlPrefix(l)
 		if enabled {
-			service := "[Unit]\nDescription=Update MACT " + l.Component + " from GitHub Releases\nWants=network-online.target\nAfter=network-online.target\n\n[Service]\nType=oneshot\nExecStart=" + l.Command + " update " + l.Component + "\nSuccessExitStatus=75\nUMask=0077\nTimeoutStartSec=15min\n"
+			service := "[Unit]\nDescription=Update MACT " + l.Component + " from GitHub Releases\nWants=network-online.target\nAfter=network-online.target\n\n[Service]\nType=oneshot\nExecStart=" + l.Command + " update " + componentCommand(l) + "\nSuccessExitStatus=75\nUMask=0077\nTimeoutStartSec=15min\n"
 			timer := "[Unit]\nDescription=Check daily for MACT " + l.Component + " releases\n\n[Timer]\nOnCalendar=daily\nRandomizedDelaySec=30min\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n"
 			if err := AtomicWrite(filepath.Join(l.UnitDir, label+".service"), []byte(service), 0644, nil); err != nil {
 				return err
@@ -725,13 +742,13 @@ func (m *Manager) AutoUpdate(ctx context.Context, l *Layout, enabled bool) error
 			return err
 		}
 	} else {
-		label = "com.iaia.codex-worker-update"
+		label = workerLabel(l) + "-update"
 		plist := filepath.Join(l.Home, "Library/LaunchAgents", label+".plist")
 		domain := "gui/" + strconv.Itoa(os.Getuid())
 		_, _ = m.Run(ctx, "launchctl", "bootout", domain+"/"+label)
 		if enabled {
 			value := map[string]any{
-				"Label": label, "ProgramArguments": []string{l.Command, "update", "worker"},
+				"Label": label, "ProgramArguments": []string{l.Command, "update", componentCommand(l)},
 				"StartCalendarInterval": map[string]any{"Hour": 4, "Minute": 15},
 				"EnvironmentVariables":  map[string]any{"HOME": l.Home, "PATH": l.Bin + ":/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"},
 			}

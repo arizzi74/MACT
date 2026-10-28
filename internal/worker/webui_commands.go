@@ -212,6 +212,15 @@ func (s *sessionActor) webUICommand(request webUIActorCommand) (protocol.Result,
 	if request.runtime.ID != s.runtime.ID || request.runtime.Generation != s.runtime.Generation || request.session.ID != s.session.ID || request.session.ThreadID != s.session.ThreadID || request.session.WorkerID != s.agent.cfg.WorkerID || request.session.RuntimeID != s.runtime.ID || s.session.Archived || s.session.Deleted {
 		return protocol.Result{}, validationError("The session or runtime changed. Refresh the session list.")
 	}
+	if s.agent.cfg.AgentKind == "claude" && name != "delete" {
+		pending, err := s.agent.store.claudeDeletionPending(s.runtime.ID, s.session.ThreadID)
+		if err != nil {
+			return protocol.Result{}, err
+		}
+		if pending {
+			return protocol.Result{}, validationError("Session deletion is awaiting native cleanup. Retry deletion before using this session.")
+		}
+	}
 	client, runtime, ok := s.agent.manager.Client(s.runtime.ID)
 	if !ok || runtime.Generation != request.runtime.Generation || runtime.State != "running" {
 		return protocol.Result{}, validationError("The runtime changed or is unavailable. Reconnect to the session.")
@@ -226,6 +235,12 @@ func (s *sessionActor) webUICommand(request webUIActorCommand) (protocol.Result,
 	}
 	if needsIdle && busy() {
 		return protocol.Result{}, validationError("This session has an active turn or pending work. Wait for it to finish before running /%s.", name)
+	}
+	if name == "delete" {
+		if args != "confirm "+s.session.ThreadID {
+			return protocol.Result{}, validationError("Deleting a session requires confirmation for this exact session. Its working directory and files will be kept.")
+		}
+		return s.deleteSession(ctx, client, protocol.Command{SessionID: s.session.ID, ThreadID: s.session.ThreadID, RuntimeID: s.runtime.ID, RuntimeGeneration: s.runtime.Generation, Arguments: protocol.Arguments{CWD: s.session.CWD}})
 	}
 	// Inventory and actor snapshots may trail an attached terminal. Validate
 	// current native metadata again, and use a bounded one-turn state read for
@@ -250,11 +265,6 @@ func (s *sessionActor) webUICommand(request webUIActorCommand) (protocol.Result,
 	switch name {
 	case "new":
 		result, err = s.webUINewSession(ctx, client, args)
-	case "delete":
-		if args != "confirm "+s.session.ThreadID {
-			return protocol.Result{}, validationError("Deleting a session requires confirmation for this exact session. Its working directory and files will be kept.")
-		}
-		result, err = s.deleteSession(ctx, client, protocol.Command{SessionID: s.session.ID, ThreadID: s.session.ThreadID, RuntimeID: s.runtime.ID, RuntimeGeneration: s.runtime.Generation, Arguments: protocol.Arguments{CWD: s.session.CWD}})
 	case "pwd", "cwd":
 		if args != "" {
 			return protocol.Result{}, usageError(name)
@@ -309,7 +319,7 @@ func (s *sessionActor) webUINewSession(ctx context.Context, client *codexadapter
 	// Official 0.156 cannot rejoin an empty paginated thread until its first
 	// prompt materializes the source rollout. Its supported legacy contract
 	// permits immediate browser attachment and still supports bounded reads.
-	thread, err := client.StartThread(ctx, codexadapter.ThreadOptions{CWD: cwd, ApprovalPolicy: "on-request", Sandbox: "workspace-write", HistoryMode: "legacy"})
+	thread, err := client.StartThread(ctx, s.agent.newThreadOptions(cwd, "legacy"))
 	if err != nil {
 		return protocol.Result{}, err
 	}

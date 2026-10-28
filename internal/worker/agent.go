@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"reflect"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -44,6 +45,15 @@ type Agent struct {
 }
 
 func NewAgent(cfg config.WorkerConfig, store *Store, logger *slog.Logger) (*Agent, error) {
+	if cfg.AgentKind == "claude" {
+		settings, err := readClaudeSettings(claudeSettingsPath(cfg))
+		if err != nil {
+			return nil, err
+		}
+		if settings.Credential != "" {
+			cfg.RedactPatterns = append(append([]string{}, cfg.RedactPatterns...), regexp.QuoteMeta(settings.Credential))
+		}
+	}
 	if cfg.MaxQueuedTurns == 0 {
 		cfg.MaxQueuedTurns = 20
 	}
@@ -83,6 +93,9 @@ func (a *Agent) Run(ctx context.Context) error {
 	if err := a.recoverArchiveJobs(); err != nil {
 		return err
 	}
+	if err := a.recoverClaudeDeletions(); err != nil {
+		return err
+	}
 	// A worker restart changes every live runtime generation; recovered commands
 	// are routed through the same stale-generation validation as new delivery.
 	for _, record := range pending {
@@ -107,6 +120,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	conn.uploadWebUI = a.saveWebUIUpload
 	conn.questionsWebUI = a.webUIQuestions
 	conn.historyWebUI = a.webUIHistory
+	conn.runtimeSettings = a.runtimeSettings
 	stopUpdateControl, err := a.startUpdateControl(ctx)
 	if err != nil {
 		return err
@@ -184,6 +198,9 @@ func (a *Agent) dispatch(ctx context.Context, c protocol.Command) (protocol.Comm
 		return a.browseWorkspace(c)
 	}
 	if c.Operation == protocol.ArchiveSession || c.Operation == protocol.RestoreSession || c.Operation == protocol.ListSessionArchives {
+		if a.cfg.AgentKind == "claude" {
+			return a.reject(c, protocol.UnsupportedOperation, "Project archive and restore are not supported by the Claude Code worker yet.")
+		}
 		return a.dispatchSessionArchive(c)
 	}
 	if c.Operation == protocol.NewSession {
@@ -201,6 +218,15 @@ func (a *Agent) dispatch(ctx context.Context, c protocol.Command) (protocol.Comm
 			return protocol.CommandAck{CommandID: c.ID, Status: "accepted"}, nil
 		default:
 			return a.reject(c, protocol.SessionQueueFull, "Runtime creation queue is full.")
+		}
+	}
+	if a.cfg.AgentKind == "claude" && c.Operation != protocol.DeleteSession {
+		pending, err := a.store.claudeDeletionPending(c.RuntimeID, c.ThreadID)
+		if err != nil {
+			return protocol.CommandAck{}, err
+		}
+		if pending {
+			return a.reject(c, protocol.SessionBusy, "Session deletion is awaiting native cleanup. Retry deletion before using this session.")
 		}
 	}
 	a.mu.RLock()
@@ -453,7 +479,7 @@ func (a *Agent) createLoop(runtimeID string, queue <-chan protocol.Command) {
 					continue
 				}
 			}
-			thread, err := client.StartThread(a.ctx, codexadapter.ThreadOptions{CWD: cwd, ApprovalPolicy: "on-request", Sandbox: "workspace-write", HistoryMode: c.Arguments.HistoryMode})
+			thread, err := client.StartThread(a.ctx, a.newThreadOptions(cwd, c.Arguments.HistoryMode))
 			if err != nil {
 				a.report(a.executionError(c, err))
 				continue
@@ -773,6 +799,19 @@ func (s *sessionActor) command(req actorCommand) {
 		reject(protocol.CommandExpired, "Command has expired.")
 		return
 	}
+	if s.agent.cfg.AgentKind == "claude" && c.Operation != protocol.DeleteSession {
+		// Dispatch can precede the destructive command's early ACK and
+		// intent commit. Recheck at the actor before any file or queue write.
+		pending, err := s.agent.store.claudeDeletionPending(s.runtime.ID, s.session.ThreadID)
+		if err != nil {
+			req.reply <- commandReply{err: err}
+			return
+		}
+		if pending {
+			reject(protocol.SessionBusy, "Session deletion is awaiting native cleanup. Retry deletion before using this session.")
+			return
+		}
+	}
 	if _, err := s.fileWorkspace(c); err != nil {
 		reject(protocol.InvalidWorkspace, err.Error())
 		return
@@ -792,7 +831,11 @@ func (s *sessionActor) command(req actorCommand) {
 		s.agent.report(err)
 		return
 	}
-	if c.Operation == protocol.StartTurn {
+	if c.Operation == protocol.StartTurn || (c.Operation == protocol.Steer && s.agent.cfg.AgentKind == "claude") {
+		if c.Operation == protocol.Steer && c.ExpectedTurnID != "" && s.session.ActiveTurnID != c.ExpectedTurnID {
+			reject(protocol.StaleTurn, "The active turn has changed. Send your message again.")
+			return
+		}
 		if len(s.queue) >= s.agent.cfg.MaxQueuedTurns {
 			reject(protocol.SessionQueueFull, "Session queue is full.")
 			return
@@ -860,7 +903,9 @@ func (s *sessionActor) command(req actorCommand) {
 			return
 		}
 		result.CommandID, result.State = c.ID, "completed"
-		_, err = s.agent.record(c, CommandCompleted, &result, "command_completed")
+		if s.agent.cfg.AgentKind != "claude" {
+			_, err = s.agent.record(c, CommandCompleted, &result, "command_completed")
+		}
 		s.agent.report(err)
 		return
 	}

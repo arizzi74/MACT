@@ -101,6 +101,35 @@ func TestAdminDashboardVisibleSessionsAndAllowedDetailsIntegration(t *testing.T)
 	}
 }
 
+func TestAdminWorkerRuntimeSettingsCapabilityAndProviderProjection(t *testing.T) {
+	env := newEventTestEnv(t)
+	for _, tc := range []struct {
+		metadata  string
+		kind      string
+		supported bool
+	}{
+		{`{"agent_kind":"claude","supports_worker_runtime_settings":true,"api_key":"PRIVATE_SENTINEL"}`, "claude", true},
+		{`{"agent_kind":"PRIVATE_SENTINEL","supports_worker_runtime_settings":false}`, "codex", false},
+		{`{}`, "codex", false},
+	} {
+		if _, err := env.store.pool.Exec(t.Context(), `UPDATE workers SET heartbeat_metadata=$1 WHERE worker_id=$2`, tc.metadata, env.worker); err != nil {
+			t.Fatal(err)
+		}
+		dashboard, err := env.store.AdminDashboardSnapshot(t.Context())
+		if err != nil || len(dashboard.Workers) != 1 {
+			t.Fatal("worker projection failed", err)
+		}
+		worker := dashboard.Workers[0]
+		if worker.AgentKind != tc.kind || worker.SupportsWorkerRuntimeSettings != tc.supported {
+			t.Fatal("worker provider or runtime-settings capability was lost")
+		}
+		encoded, _ := json.Marshal(worker)
+		if strings.Contains(string(encoded), "PRIVATE_SENTINEL") || strings.Contains(string(encoded), "api_key") {
+			t.Fatal("provider projection disclosed private worker metadata")
+		}
+	}
+}
+
 func TestSessionStatisticsSurviveReplayAndLegacySnapshotsIntegration(t *testing.T) {
 	env := newEventTestEnv(t)
 	ctx := context.Background()

@@ -71,17 +71,17 @@ type options struct {
 const usage = `Install and update MACT from verified GitHub Releases.
 
 Usage:
-  mact setup [gateway|worker]
+  mact setup [gateway|worker|claude-worker]
   mact setup voice [--model base|small] [--threads 1..32]
   mact finish gateway
   mact https refresh
   mact install gateway --config PATH --secrets-env PATH [--auto-update]
-  mact install worker --config PATH [--service-access restricted|full] [--auto-update]
-  mact adopt gateway|worker [--auto-update]
-  mact update gateway|worker [--check]
+  mact install worker|claude-worker --config PATH [--service-access restricted|full] [--auto-update]
+  mact adopt gateway|worker|claude-worker [--auto-update]
+  mact update gateway|worker|claude-worker [--check]
   mact update codex [--check]
   mact request-update worker --request-id UUID --worker-state PATH
-  mact auto-update enable|disable gateway|worker
+  mact auto-update enable|disable gateway|worker|claude-worker
   mact version
 
 The codex-telegramgw command remains supported for compatibility.
@@ -95,12 +95,17 @@ omitted voice options preserve supported installed settings.
 Gateway updates keep its helper at the same version.
 It guides HTTPS, Telegram activation, and administrator enrollment.
 Worker setup installs Codex and starts device sign-in when needed.
+Claude worker setup uses an existing Claude Code CLI and its local login;
+configure model, endpoint and account credentials in the gateway admin console.
+Claude workers use separate configuration, state and services.
+Claude CLI installations remain managed by their owning account.
 Worker setup reuses ./worker.json or asks for a name and one-use enrollment URL.
+Claude setup reuses ./claude-worker.json or enrolls a separate worker identity.
 Fresh workers start in the user's home and can use all its subfolders.
 Linux service access comes from the enrollment profile chosen in gateway administration.
 Existing worker services keep their access settings during adoption and updates.
 Setup enables daily updates and adopts existing services without restarting them.
-Worker updates also check the stable Codex runtime once per day and apply it when idle.
+Codex worker updates also check the stable Codex runtime once per day and apply it when idle.
 Runtime updates support the official standalone installation and preserve active turns.
 `
 
@@ -111,10 +116,10 @@ func setupComponent(args []string, uid int) (string, error) {
 		}
 		return "worker", nil
 	}
-	if len(args) == 1 && (args[0] == "gateway" || args[0] == "worker") {
+	if len(args) == 1 && (args[0] == "gateway" || args[0] == "worker" || args[0] == "claude-worker") {
 		return args[0], nil
 	}
-	return "", errors.New("usage: mact setup [gateway|worker]")
+	return "", errors.New("usage: mact setup [gateway|worker|claude-worker]")
 }
 
 func parseOptions(args []string) (options, error) {
@@ -125,7 +130,7 @@ func parseOptions(args []string) (options, error) {
 	result.Action = args[0]
 	if result.Action == "auto-update" {
 		if len(args) != 3 || (args[1] != "enable" && args[1] != "disable") {
-			return result, errors.New("usage: mact auto-update enable|disable gateway|worker")
+			return result, errors.New("usage: mact auto-update enable|disable gateway|worker|claude-worker")
 		}
 		result.Setting = args[1]
 		result.Component = args[2]
@@ -143,7 +148,7 @@ func parseOptions(args []string) (options, error) {
 		if result.Action == "install" {
 			flags.StringVar(&result.Config, "config", "", "configuration file")
 			flags.StringVar(&result.Environment, "secrets-env", "", "gateway environment file")
-			if result.Component == "worker" {
+			if result.Component == "worker" || result.Component == "claude-worker" {
 				flags.StringVar(&result.WorkerServiceAccess, "service-access", "", "Linux worker service access: restricted or full")
 			}
 		}
@@ -168,8 +173,8 @@ func parseOptions(args []string) (options, error) {
 		}
 		return result, nil
 	}
-	if result.Component != "gateway" && result.Component != "worker" {
-		return result, errors.New("component must be gateway or worker")
+	if result.Component != "gateway" && result.Component != "worker" && result.Component != "claude-worker" {
+		return result, errors.New("component must be gateway, worker, or claude-worker")
 	}
 	if err := validateWorkerServiceAccess(result.WorkerServiceAccess); err != nil {
 		return result, err
@@ -216,6 +221,8 @@ func Execute(ctx context.Context, args []string, out, errOut io.Writer) int {
 			if err == nil {
 				if component == "gateway" {
 					err = New(out).SetupGateway(ctx)
+				} else if component == "claude-worker" {
+					err = New(out).SetupClaudeWorker(ctx)
 				} else {
 					err = New(out).SetupWorker(ctx)
 				}
@@ -376,7 +383,7 @@ func (m *Manager) execute(ctx context.Context, opts options) (retErr error) {
 				}
 			}()
 		}
-		if l.Component == "worker" {
+		if l.Component == "worker" && l.AgentKind != "claude" {
 			// A failed or busy gateway-project update must not starve the daily
 			// Codex check. Both maintenance paths remain under the worker lock.
 			defer func() {
@@ -473,12 +480,12 @@ func (m *Manager) execute(ctx context.Context, opts options) (retErr error) {
 		return err
 	}
 	defer os.RemoveAll(stage)
-	componentPackage, err := m.Package(ctx, release, l, "codex-"+l.Component, stage)
+	componentPackage, err := m.Package(ctx, release, l, componentBinary(l), stage)
 	if err != nil {
 		return err
 	}
 	packages := map[string]string{l.Component: componentPackage}
-	if l.Component == "worker" {
+	if l.Component == "worker" && l.AgentKind != "claude" {
 		packages["local"], err = m.Package(ctx, release, l, "codex-local", stage)
 		if err != nil {
 			return err

@@ -242,6 +242,28 @@
   <div class="enrollment-actions"><button id="enrollment-new" class="secondary">Create new URL</button><button id="enrollment-cancel" class="danger">Cancel and revoke</button></div>
   <p class="muted enrollment-note">Changing access or creating a new URL revokes the previous unused URL first. Closing this dialog keeps the URL valid until it is used or expires; choose Cancel and revoke to disable it.</p>
 </dialog>
+<dialog id="worker-runtime-dialog" class="bot-dialog" aria-labelledby="worker-runtime-heading">
+  <div class="row bot-dialog-heading"><h2 id="worker-runtime-heading">Claude Code settings</h2><button id="worker-runtime-close" type="button" class="secondary">Close</button></div>
+  <p id="worker-runtime-target"></p>
+  <p class="muted">Settings are saved on this worker. The worker must be online and idle. Changes apply to subsequent Claude Code turns.</p>
+  <p id="worker-runtime-status" class="muted" role="status" aria-live="polite"></p>
+  <p id="worker-runtime-error" class="notice error" role="alert" hidden></p>
+  <form id="worker-runtime-form" autocomplete="off">
+    <fieldset id="worker-runtime-fields" disabled>
+      <label for="worker-runtime-model">Model<input id="worker-runtime-model" maxlength="256" autocomplete="off" spellcheck="false" placeholder="Claude Code default"></label>
+      <p class="muted">A custom model also replaces Claude’s Opus, Sonnet and Haiku model aliases.</p>
+      <label for="worker-runtime-url">API endpoint<input id="worker-runtime-url" type="url" maxlength="2048" autocomplete="off" spellcheck="false" placeholder="Anthropic default"></label>
+      <label for="worker-runtime-auth">Authentication<select id="worker-runtime-auth"><option value="login">Existing Claude Code login</option><option value="api_key">API key</option><option value="auth_token">Auth token</option></select></label>
+      <p class="muted">Existing login uses credentials already available to Claude Code on the worker. API key and auth token use their corresponding Anthropic authentication method.</p>
+      <label for="worker-runtime-key">API key / auth token<input id="worker-runtime-key" type="password" maxlength="8192" autocomplete="new-password" spellcheck="false" aria-describedby="worker-runtime-key-help"></label>
+      <p id="worker-runtime-key-help" class="muted">Leave blank to keep the saved credential. The saved value is never returned.</p>
+      <label class="audio-toggle"><input id="worker-runtime-clear" type="checkbox"><span>Remove saved API key / auth token</span></label>
+      <label for="worker-runtime-permissions">Permissions<select id="worker-runtime-permissions"><option value="default">Ask before protected actions</option><option value="acceptEdits">Allow file edits</option><option value="plan">Plan only</option><option value="bypassPermissions">Bypass permission checks</option></select></label>
+      <p id="worker-runtime-bypass" class="notice" hidden>Bypass allows Claude Code to run tools and commands without permission prompts. Use it only on a worker you have isolated and trust.</p>
+      <div class="bot-dialog-actions"><button id="worker-runtime-save" type="submit">Save settings</button></div>
+    </fieldset>
+  </form>
+</dialog>
 <script src="/tgw/admin/static/session-auth.js"></script>
 <script src="/tgw/admin/static/app.js"></script>
 </body>

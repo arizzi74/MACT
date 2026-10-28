@@ -92,3 +92,40 @@ func TestMacUpdaterUsesLaunchdArgumentArray(t *testing.T) {
 		t.Fatalf("plist lost literal path: %s", data)
 	}
 }
+
+func TestClaudeUpdaterUsesDedicatedComponentAndService(t *testing.T) {
+	for _, system := range []string{"linux", "darwin"} {
+		t.Run(system, func(t *testing.T) {
+			var calls [][]string
+			run := func(_ context.Context, args ...string) ([]byte, error) {
+				calls = append(calls, append([]string{}, args...))
+				if args[0] == "systemctl" {
+					return []byte("inactive"), nil
+				}
+				if args[1] == "print" {
+					return nil, errors.New("not loaded")
+				}
+				return nil, nil
+			}
+			id := uuid.NewString()
+			state := filepath.Join(t.TempDir(), "claude.db")
+			if err := EnsureForAgent(t.Context(), system, "/example/manager", state, id, "claude", run); err != nil {
+				t.Fatal(err)
+			}
+			if system == "linux" {
+				command := strings.Join(calls[len(calls)-1], " ")
+				if !strings.Contains(command, "--unit=claude-worker-request-update-") || !strings.Contains(command, "request-update claude-worker") || strings.Contains(command, "codex-worker") {
+					t.Fatalf("wrong update service: %v", calls)
+				}
+			} else {
+				data, err := os.ReadFile(calls[len(calls)-1][3])
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !strings.Contains(string(data), "com.iaia.claude-worker-request-update-") || !strings.Contains(string(data), "<string>claude-worker</string>") || strings.Contains(string(data), "codex-worker") {
+					t.Fatalf("wrong update launch agent: %s", data)
+				}
+			}
+		})
+	}
+}

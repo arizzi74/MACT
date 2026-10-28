@@ -23,7 +23,15 @@ type workerSetupPrompt interface {
 // A fresh interactive setup reads the controlling terminal, since the bootstrap
 // script may occupy standard input when installed with curl | sh.
 func (m *Manager) SetupWorker(ctx context.Context) error {
-	l, err := NewLayout("worker")
+	return m.setupWorkerComponent(ctx, "worker")
+}
+
+func (m *Manager) SetupClaudeWorker(ctx context.Context) error {
+	return m.setupWorkerComponent(ctx, "claude-worker")
+}
+
+func (m *Manager) setupWorkerComponent(ctx context.Context, component string) error {
+	l, err := NewLayout(component)
 	if err != nil {
 		return err
 	}
@@ -58,19 +66,23 @@ func (m *Manager) setupWorker(ctx context.Context, l *Layout, cwd string, openPr
 		return m.resumeWorkerSetup(ctx, l, recovery, execute)
 	}
 	if _, err := os.Lstat(l.Config); err == nil {
-		return execute(ctx, options{Action: "adopt", Component: "worker", AutoUpdate: true})
+		return execute(ctx, options{Action: "adopt", Component: componentCommand(l), AutoUpdate: true})
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	prepared := filepath.Join(cwd, "worker.json")
+	preparedName := "worker.json"
+	if l.AgentKind == "claude" {
+		preparedName = "claude-worker.json"
+	}
+	prepared := filepath.Join(cwd, preparedName)
 	if info, err := os.Lstat(prepared); err == nil {
 		if !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
-			return errors.New("worker.json must be a regular private file; set its permissions to 0600")
+			return fmt.Errorf("%s must be a regular private file; set its permissions to 0600", preparedName)
 		}
 		if _, err := config.LoadWorker(prepared); err != nil {
-			return errors.New("worker.json is not a valid private worker configuration; check its settings and token file")
+			return fmt.Errorf("%s is not a valid private worker configuration; check its settings and token file", preparedName)
 		}
-		return execute(ctx, options{Action: "install", Component: "worker", Config: prepared, Version: version, AutoUpdate: true})
+		return execute(ctx, options{Action: "install", Component: componentCommand(l), Config: prepared, Version: version, AutoUpdate: true})
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
@@ -84,12 +96,12 @@ func (m *Manager) setupWorker(ctx context.Context, l *Layout, cwd string, openPr
 	if _, err := os.Lstat(servicePath); !errors.Is(err, os.ErrNotExist) {
 		return errors.New("existing worker service has no standard configuration; inspect the installation before enrolling a new worker")
 	}
-	if FileExists(filepath.Join(l.Home, ".local/state/codex-worker/worker.db.status.json")) {
+	if FileExists(filepath.Join(l.Home, ".local/state", componentBinary(l), "worker.db.status.json")) {
 		return errors.New("existing worker state may belong to a running worker; inspect the installation before enrolling a new worker")
 	}
 	prompt, err := openPrompt()
 	if err != nil {
-		return errors.New("worker setup needs a terminal or a private worker.json in the current directory; run this command in an interactive terminal")
+		return fmt.Errorf("worker setup needs a terminal or a private %s in the current directory; run this command in an interactive terminal", preparedName)
 	}
 	defer prompt.Close()
 	fmt.Fprintln(m.Out, "Set up this machine as a worker. Enter its name and the one-use enrollment URL from your gateway admin console. Daily automatic updates will be enabled.")
@@ -111,7 +123,12 @@ func (m *Manager) setupWorker(ctx context.Context, l *Layout, cwd string, openPr
 	if err != nil {
 		return err
 	}
-	codex, err := m.setupWorkerCodex(ctx, prompt, l)
+	var binary string
+	if l.AgentKind == "claude" {
+		binary, err = m.setupWorkerClaude(ctx, l)
+	} else {
+		binary, err = m.setupWorkerCodex(ctx, prompt, l)
+	}
 	if err != nil {
 		return err
 	}
@@ -153,15 +170,21 @@ func (m *Manager) setupWorker(ctx context.Context, l *Layout, cwd string, openPr
 	recovery := &workerSetupRecovery{
 		Schema: 1, Token: enrollmentResponse.Token, ServiceAccess: serviceAccess, Version: version,
 		Config: config.WorkerConfig{
-			WorkerID: enrollmentResponse.WorkerID, Name: name,
-			StateFile:  filepath.Join(l.Home, ".local/state/codex-worker/worker.db"),
+			AgentKind: l.AgentKind,
+			WorkerID:  enrollmentResponse.WorkerID, Name: name,
+			StateFile:  filepath.Join(l.Home, ".local/state", componentBinary(l), "worker.db"),
 			GatewayURL: enrollmentResponse.GatewayURL, TokenFile: filepath.Join(workerSetupRecoveryDirectory(l), "worker.token"),
 			AllowedWorkspaceRoots: roots, MaxQueuedTurns: 20,
 			Runtimes: []config.RuntimeProfile{{
-				ID: "primary", Name: "Primary Codex", CodexBinary: codex,
+				ID: "primary", Name: "Primary Codex", CodexBinary: binary,
 				WorkingDirectory: roots[0], Autostart: true, RestartPolicy: "on-failure",
 			}},
 		},
+	}
+	if l.AgentKind == "claude" {
+		runtime := &recovery.Config.Runtimes[0]
+		runtime.Name, runtime.ClaudeBinary, runtime.CodexBinary = "Primary Claude Code", binary, ""
+		runtime.ClaudeSettingsFile = filepath.Join(filepath.Dir(recovery.Config.StateFile), "runtime-settings.json")
 	}
 	if err := WriteJSON(workerSetupRecoveryPath(l), recovery); err != nil {
 		return errors.New("could not save the enrolled worker credentials; check the gateway admin worker list before creating a fresh URL and rerunning setup")

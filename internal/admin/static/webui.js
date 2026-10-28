@@ -11,6 +11,18 @@
   let sessionInventoryAbort = null, sessionInventoryEpoch = 0, authRotationPending = false;
   let authRenewing = false, logoutPending = null;
   const sessionUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const workerGroupPreferenceKey = 'mact-webui-worker-collapsed';
+  const workerGroupCollapsed = new Map(), workerGroupReveals = new Set(), workerGroupSearchCollapsed = new Map();
+  let workerGroupSearchQuery = '';
+  try {
+    const raw = localStorage.getItem(workerGroupPreferenceKey);
+    const saved = raw && raw.length <= 131072 ? JSON.parse(raw) : null;
+    if (saved && typeof saved === 'object' && !Array.isArray(saved)) {
+      for (const [id, collapsed] of Object.entries(saved).slice(0, 1000)) {
+        if (/^[a-zA-Z0-9_-]{1,128}$/.test(id) && typeof collapsed === 'boolean') workerGroupCollapsed.set(id, collapsed);
+      }
+    }
+  } catch (_) { /* Worker grouping is an optional local preference. */ }
   const requestedSession = new URL(location.href).searchParams.get('session_id') || '';
   let notificationSessionID = sessionUUID.test(requestedSession) ? requestedSession.toLowerCase() : '';
   const activity = { socket: null, timer: null, generation: 0, revision: -1, sequence: -1, inventoryRevision: '', sessions: new Map(), attempts: 0, watchdog: null, ready: false };
@@ -18,6 +30,7 @@
   const sessionSettings = new Map(), activitySettingsRevisions = new Map();
   let settingsSerial = 0;
   let permissionSettings = null, permissionRevision = 0;
+  let claudeStatus = null, claudeStatusRevision = 0;
   let loadingOlder = false, suppressHistoryScroll = false;
   let questionRevision = 0, questionSnapshotSequence = 0;
   let questionRefresh = null;
@@ -64,6 +77,81 @@
     rateLimitSnapshot = null; rateLimitRevision++; rateLimitEpoch++;
     $('rate-limits').replaceChildren(document.createTextNode(text));
     $('rate-limits').removeAttribute('title');
+  }
+  function isClaude(session = state.selected) {
+    return state.workers.find(worker => worker.ID === session?.worker_id)?.AgentKind === 'claude' || state.runtimes.find(runtime => runtime.runtime_id === session?.runtime_id)?.agent_kind === 'claude';
+  }
+  function agentLabel(session = state.selected) { return isClaude(session) ? 'Claude Code' : 'Codex'; }
+  function sessionDeletionUnavailable(session = state.selected) {
+    if (!session || !isClaude(session)) return '';
+    const worker = state.workers.find(value => value.ID === session.worker_id);
+    return worker?.SupportsSessionDeletion === true ? '' : 'Update this Claude Code worker to delete conversations.';
+  }
+  function sessionDeletionDescription(session) {
+    return isClaude(session)
+      ? 'This permanently removes this Claude conversation’s files and its MACT session data. The project directory and all project files will be kept.'
+      : 'This permanently removes the conversation and any child sessions it created. The working directory and all files on disk will be kept.';
+  }
+  function statusNumber(value) { return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER ? value : null; }
+  function statusText(value) { return typeof value === 'string' && value.length <= 512 ? clean(value).trim() : ''; }
+  function usd(value) {
+    if (value === 0) return '$0.00';
+    if (value < 0.0001) return '<$0.0001';
+    return '$' + value.toLocaleString('en-US', { minimumFractionDigits: value < 0.01 ? 4 : 2, maximumFractionDigits: value < 0.01 ? 4 : 2 });
+  }
+  function exactUSD(value) { return value > 0 && value < 1e-8 ? '$' + value.toExponential(4) : value.toLocaleString('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 8 }); }
+  function statusField(id, value, description) {
+    const field = $(id);
+    field.textContent = value; field.title = description; field.setAttribute('aria-label', description);
+  }
+  function clearClaudeStatus() {
+    claudeStatus = null; claudeStatusRevision++;
+    statusField('claude-cost', 'Session —', 'Claude Code has not reported this session’s consumption in USD.');
+    statusField('claude-balance', 'Credits —', 'The API provider has not reported a remaining account credit balance.');
+    if (isClaude()) renderClaudeStatus();
+  }
+  function applyClaudeStatus(raw, threadId) {
+    if (!isClaude() || !state.authenticated || !state.connected || threadId !== state.selected?.codex_thread_id) return;
+    const value = raw && typeof raw === 'object' && (!raw.provider || raw.provider === 'claude') ? raw : {};
+    const balance = value.balance;
+    claudeStatus = {
+      model: statusText(value.model), permissionMode: statusText(value.permissionMode),
+      context: { usedTokens: statusNumber(value.context?.usedTokens), maxTokens: statusNumber(value.context?.maxTokens) },
+      cost: { sessionUSD: statusNumber(value.cost?.sessionUSD), lastTurnUSD: statusNumber(value.cost?.lastTurnUSD) },
+      balance: balance && ['USD', 'credits'].includes(balance.unit) && statusNumber(balance.remaining) !== null
+        ? { remaining: balance.remaining, unit: balance.unit, observedAt: statusNumber(balance.observedAt) } : null,
+    };
+    claudeStatusRevision++;
+    renderClaudeStatus();
+  }
+  function handleClaudeStatusEvent(message) {
+    if (message.method !== 'thread/claudeStatus/updated') return false;
+    if (message.id === undefined) applyClaudeStatus(message.params?.claudeStatus, message.params?.threadId);
+    return true;
+  }
+  function renderClaudeStatus() {
+    if (!isClaude()) return;
+    const status = claudeStatus;
+    statusField('model', status?.model || 'Model —', status?.model ? 'Claude Code reported model: ' + status.model : 'The current Claude Code model has not been reported.');
+    const permissions = { default: 'Ask', acceptEdits: 'Allow edits', plan: 'Plan only', bypassPermissions: 'Bypass', dontAsk: 'Don’t ask', auto: 'Auto' };
+    const permission = permissions[status?.permissionMode];
+    statusField('permissions', permission || 'Permissions —', permission ? 'Claude Code reported permission mode: ' + status.permissionMode : 'The current Claude Code permission mode has not been reported.');
+    $('permissions').dataset.mode = permission ? status.permissionMode : 'unknown';
+    const used = status?.context.usedTokens ?? null, maximum = status?.context.maxTokens ?? null;
+    const context = used !== null && maximum > 0 ? Math.round(used / maximum * 100) + '% context'
+      : used !== null ? 'Context ' + used.toLocaleString('en-US', { notation: 'compact', maximumFractionDigits: 1 }) : 'Context —';
+    const contextDescription = used !== null ? 'Reported context: ' + used.toLocaleString('en-US') + ' tokens' + (maximum > 0 ? ' of ' + maximum.toLocaleString('en-US') + '.' : '; context window size unavailable.') : 'Claude Code has not reported the current context usage.';
+    statusField('usage', context, contextDescription);
+    const cost = status?.cost.sessionUSD ?? null, last = status?.cost.lastTurnUSD ?? null;
+    statusField('claude-cost', cost !== null ? 'Session ' + usd(cost) : 'Session —', cost !== null
+      ? 'Claude Code reported cumulative session consumption: ' + exactUSD(cost) + ' USD. Provider billing can differ.' + (last !== null ? ' Last reported turn: ' + exactUSD(last) + ' USD.' : '')
+      : 'Claude Code has not reported this session’s consumption in USD.');
+    const balance = status?.balance;
+    const observed = balance?.observedAt > 0 ? timestamp(balance.observedAt) : null;
+    statusField('claude-balance', balance ? balance.unit === 'USD' ? 'Balance ' + usd(balance.remaining) : balance.remaining.toLocaleString('en-US', { maximumFractionDigits: 4 }) + ' credits left' : 'Credits —', balance
+      ? 'API provider remaining account credit: ' + (balance.unit === 'USD' ? exactUSD(balance.remaining) + ' USD' : balance.remaining.toLocaleString('en-US', { maximumFractionDigits: 8 }) + ' credits') + '. Based on the latest provider totals; finalized usage can lag activity.' + (observed ? ' Updated ' + observed.toLocaleString() + '.' : '')
+      : 'The API provider has not reported a remaining account credit balance. Session consumption does not establish an account balance.');
+    settleBottom();
   }
   function title(session) { return session.name || session.title || session.codex_thread_id || 'Untitled session'; }
   function notificationLocation(id = '') {
@@ -303,7 +391,7 @@
   }
   function goalContextAvailable() {
     const session = state.selected;
-    return state.authenticated && state.connected && !!session && !session.archived && !session.deleted &&
+    return !isClaude(session) && state.authenticated && state.connected && !!session && !session.archived && !session.deleted &&
       state.sessions.some(value => value.session_id === session.session_id && !value.archived && !value.deleted);
   }
   function renderGoal() {
@@ -615,7 +703,16 @@
     const fileOnly = attachment?.kind === 'file' && !$('prompt').value.trim();
     const sendAvailable = available || (gatewayAllowed && !state.submitting && !commandUI.pending);
     $('send').disabled = !sendAvailable || (!attachment && !$('prompt').value.trim()) || !!attachment?.loading;
-    $('send').textContent = state.submitting ? 'Sending…' : fileOnly ? 'Upload ↑' : state.turn && !gatewayAllowed ? 'Steer ↑' : 'Send ↑';
+    $('send').textContent = state.submitting ? 'Sending…' : fileOnly ? 'Upload ↑' : state.turn && !gatewayAllowed ? (isClaude() ? 'Queue ↑' : 'Steer ↑') : 'Send ↑';
+    $('prompt').placeholder = 'Ask ' + agentLabel() + ' to do anything';
+    document.querySelector('label[for="prompt"]').textContent = 'Message ' + agentLabel();
+    const claude = isClaude();
+    document.querySelector('.model-controls').hidden = false;
+    for (const field of document.querySelectorAll('.codex-status-detail')) field.hidden = claude;
+    $('session-status').classList.toggle('claude-status', claude);
+    $('claude-spend').hidden = !claude;
+    $('rate-limits').hidden = claude;
+    if (claude) renderClaudeStatus();
     $('stop').hidden = !state.turn;
     $('stop').disabled = !available;
     $('attach-image').disabled = !state.selected || state.submitting || !!attachment;
@@ -629,7 +726,9 @@
     commandUI?.update();
   }
   function renderPermissions() {
+    if (isClaude()) { renderClaudeStatus(); return; }
     const target = $('permissions'), settings = permissionSettings;
+    target.setAttribute('aria-label', 'Session permissions');
     if (!settings) {
       target.textContent = 'Permissions ?';
       target.title = 'Permissions unavailable until confirmed by the connected session. Use /permissions to view choices.';
@@ -752,12 +851,13 @@
     state.submitting = false;
     clearPermissions();
     clearRateLimits();
+    clearClaudeStatus();
   }
   function rpc(method, params = {}, timeout = 30000) {
     if (!state.socket || state.socket.readyState !== WebSocket.OPEN) return Promise.reject(new Error('Reconnect before sending. Your draft has been kept.'));
     const id = 'web-' + (++state.sequence);
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { state.pending.delete(id); reject(new Error('The request timed out. Check the conversation before retrying; it may have reached Codex.')); }, timeout);
+      const timer = setTimeout(() => { state.pending.delete(id); reject(new Error('The request timed out. Check the conversation before retrying; it may have reached ' + agentLabel() + '.')); }, timeout);
       state.pending.set(id, { resolve, reject, timer });
       try { state.socket.send(JSON.stringify({ id, method, params })); }
       catch (error) { clearTimeout(timer); state.pending.delete(id); reject(error); }
@@ -868,24 +968,68 @@
       ? password ? 'Your running work continues. Sign in to return to the same conversation.' : 'Your running work continues. Use your passkey to return to the same conversation.'
       : password ? 'Use your MACT Gateway passkey or password to open your sessions.' : 'Use your MACT Gateway passkey to open your sessions.';
   }
+  function sessionMatchesSearch(session, query) {
+    return !query || [title(session), session.cwd, session.worker_name, session.runtime_name].some(value => String(value || '').toLocaleLowerCase().includes(query));
+  }
+  function revealWorkerSessions(session) {
+    const query = $('session-search').value.toLocaleLowerCase().trim();
+    const clearSearch = query && !sessionMatchesSearch(session, query);
+    if (clearSearch) $('session-search').value = '';
+    const changed = clearSearch || workerGroupSearchCollapsed.get(session.worker_id) === true || (workerGroupCollapsed.get(session.worker_id) === true && !workerGroupReveals.has(session.worker_id));
+    workerGroupReveals.add(session.worker_id);
+    workerGroupSearchCollapsed.delete(session.worker_id);
+    return changed;
+  }
   function renderSessions() {
     const query = $('session-search').value.toLocaleLowerCase().trim();
-    const list = $('session-list'); list.replaceChildren();
-    const sessions = state.sessions.filter(session => !session.archived && (!query || [title(session), session.cwd, session.worker_name, session.runtime_name].some(value => String(value || '').toLocaleLowerCase().includes(query))));
+    if (query !== workerGroupSearchQuery) { workerGroupSearchQuery = query; workerGroupSearchCollapsed.clear(); }
+    const list = $('session-list');
+    const focusedWorker = list.contains(document.activeElement) ? document.activeElement.dataset.toggleWorkerId : '';
+    list.replaceChildren();
+    const sessions = state.sessions.filter(session => !session.archived && sessionMatchesSearch(session, query));
     // Workers are independent of session inventory: a fresh worker remains
     // visible and can create its first conversation.
     const workers = new Map(state.workers.map(worker => [worker.ID, worker]));
     for (const session of state.sessions) if (!workers.has(session.worker_id)) workers.set(session.worker_id, { ID: session.worker_id, Name: session.worker_name || session.worker_id, Connectivity: session.worker_connectivity || 'unknown' });
     for (const worker of workers.values()) {
       const values = sessions.filter(session => session.worker_id === worker.ID);
+      const group = node('section', 'session-worker'); group.dataset.workerId = worker.ID;
       const heading = node('h2', 'session-group');
       heading.dataset.workerId = worker.ID;
+      const body = node('div', 'session-group-sessions'); body.id = 'worker-sessions-' + encodeURIComponent(worker.ID);
+      const toggle = node('button', 'session-group-toggle'); toggle.type = 'button'; toggle.dataset.toggleWorkerId = worker.ID;
+      toggle.setAttribute('aria-controls', body.id);
+      const arrow = node('span', 'session-group-arrow', '›'); arrow.setAttribute('aria-hidden', 'true');
       const label = node('span', 'session-group-label');
       label.append(node('span', 'worker-name', worker.Name || worker.ID));
       const runtimes = state.runtimes.filter(runtime => runtime.worker_id === worker.ID);
-      if (runtimes.length === 1 || (!runtimes.length && values[0]?.runtime_name)) label.append(node('span', 'runtime-name', runtimes[0]?.name || values[0].runtime_name));
+      if (runtimes.length === 1 || (!runtimes.length && values[0]?.runtime_name)) label.append(node('span', 'runtime-name', runtimes[0]?.name || values[0]?.runtime_name || (worker.AgentKind === 'claude' ? 'Claude Code' : 'Codex') + ' runtime'));
+      else if (runtimes.length > 1) label.append(node('span', 'runtime-name', (worker.AgentKind === 'claude' ? 'Claude Code' : 'Codex') + ' · ' + runtimes.length + ' runtimes'));
       const unavailable = workerCreationUnavailable(worker);
       if (unavailable) label.append(node('span', 'session-group-status', unavailable));
+      const count = node('span', 'session-group-count', String(values.length)); count.setAttribute('aria-hidden', 'true');
+      toggle.append(arrow, label, count);
+      const searching = !!query && values.length > 0;
+      let expanded;
+      const updateGroup = () => {
+        expanded = query && workerGroupSearchCollapsed.has(worker.ID) ? workerGroupSearchCollapsed.get(worker.ID) !== true : searching || workerGroupCollapsed.get(worker.ID) !== true || workerGroupReveals.has(worker.ID);
+        body.hidden = !expanded;
+        toggle.setAttribute('aria-expanded', String(expanded));
+        const action = expanded ? 'Collapse' : 'Expand';
+        const description = values.length + (searching ? ' matching' : '') + (values.length === 1 ? ' session' : ' sessions');
+        toggle.setAttribute('aria-label', action + ' sessions for ' + (worker.Name || worker.ID) + ' · ' + description);
+        toggle.title = action + ' sessions' + (searching ? ' in these search results' : '');
+        count.title = description;
+      };
+      updateGroup();
+      toggle.addEventListener('click', () => {
+        if (query) workerGroupSearchCollapsed.set(worker.ID, expanded);
+        else {
+          workerGroupCollapsed.set(worker.ID, expanded); workerGroupReveals.delete(worker.ID);
+          try { localStorage.setItem(workerGroupPreferenceKey, JSON.stringify(Object.fromEntries(workerGroupCollapsed))); } catch (_) { /* Optional preference only. */ }
+        }
+        updateGroup();
+      });
       const create = node('button', 'session-create'); create.type = 'button'; create.dataset.createWorkerId = worker.ID;
       create.setAttribute('aria-label', 'New session on ' + (worker.Name || worker.ID)); create.setAttribute('aria-haspopup', 'dialog'); create.setAttribute('aria-controls', 'new-session-dialog');
       create.title = unavailable || 'New session'; create.disabled = !!unavailable && !!sessionFeatureUnavailable(worker, 'SupportsSessionArchives', 'restore archived projects') && !sessionCreations.has(worker.ID) && !operationLocked(sessionOperationFor('restore', worker.ID));
@@ -893,14 +1037,14 @@
       icon.setAttribute('viewBox', '0 0 24 24'); icon.setAttribute('fill', 'none'); icon.setAttribute('stroke', 'currentColor'); icon.setAttribute('stroke-width', '1.6'); icon.setAttribute('aria-hidden', 'true');
       const path = document.createElementNS('http://www.w3.org/2000/svg', 'path'); path.setAttribute('d', 'M12 4v16M4 12h16'); icon.append(path); create.append(icon);
       create.addEventListener('click', () => openSessionCreation(worker.ID));
-      heading.append(label, create);
-      list.append(heading);
-      if (!values.length) list.append(node('p', 'session-group-empty', query ? 'No matching sessions.' : 'No sessions yet.'));
+      heading.append(toggle, create);
+      group.append(heading, body); list.append(group);
+      if (!values.length) body.append(node('p', 'session-group-empty', query ? 'No matching sessions.' : 'No sessions yet.'));
       let previousRuntime = '';
       values.sort((a, b) => String(a.runtime_id || a.runtime_name || '').localeCompare(String(b.runtime_id || b.runtime_name || '')));
       for (const session of values) {
         const runtimeKey = session.runtime_id || session.runtime_name || '';
-        if (runtimes.length > 1 && runtimeKey !== previousRuntime) { list.append(node('h3', 'session-runtime-heading', session.runtime_name || runtimes.find(runtime => runtime.runtime_id === session.runtime_id)?.name || 'Codex runtime')); previousRuntime = runtimeKey; }
+        if (runtimes.length > 1 && runtimeKey !== previousRuntime) { body.append(node('h3', 'session-runtime-heading', session.runtime_name || runtimes.find(runtime => runtime.runtime_id === session.runtime_id)?.name || agentLabel(session) + ' runtime')); previousRuntime = runtimeKey; }
         const row = node('div', 'session-row');
         const button = node('button', 'session-button'); button.type = 'button'; button.dataset.sessionId = session.session_id;
         button.setAttribute('aria-current', String(state.selected?.session_id === session.session_id));
@@ -918,14 +1062,16 @@
         icon.setAttribute('viewBox', '0 0 24 24'); icon.setAttribute('fill', 'none'); icon.setAttribute('stroke', 'currentColor'); icon.setAttribute('stroke-width', '1.6'); icon.setAttribute('aria-hidden', 'true');
         const path = document.createElementNS('http://www.w3.org/2000/svg', 'path'); path.setAttribute('d', 'm15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15l-1 6z'); icon.append(path); remove.append(icon);
         remove.addEventListener('click', () => openSessionEditor(session));
-        row.append(button, remove); list.append(row);
+        row.append(button, remove); body.append(row);
       }
     }
+    if (focusedWorker) [...list.querySelectorAll('[data-toggle-worker-id]')].find(button => button.dataset.toggleWorkerId === focusedWorker)?.focus({ preventScroll: true });
     $('sessions-status').textContent = sessions.length ? sessions.length + (sessions.length === 1 ? ' session' : ' sessions') : query ? 'No matching sessions.' : workers.size ? 'Use + beside a worker to create a session.' : 'No workers enrolled.';
     updateSessionIndicators();
     renderTelegramBots();
     if ($('new-session-dialog').open) renderSessionCreation();
     if ($('edit-session-dialog').open) renderSessionEditor();
+    if ($('delete-session-dialog').open) renderSessionDeletion();
   }
   function workerCreationUnavailable(worker) {
     if (!worker || !state.authenticated) return 'Sign in to create a session.';
@@ -933,7 +1079,7 @@
     if (worker.Enabled === false) return 'Worker disabled';
     if (!['connected', 'online'].includes(worker.Connectivity)) return 'Worker ' + (worker.Connectivity || 'unavailable');
     if (!worker.SupportsWebUISessionCreation) return 'Update this worker to create sessions.';
-    if (!state.runtimes.some(runtime => runtime.worker_id === worker.ID && runtime.state === 'running')) return 'No running Codex runtime';
+    if (!state.runtimes.some(runtime => runtime.worker_id === worker.ID && runtime.state === 'running')) return 'No running ' + (worker.AgentKind === 'claude' ? 'Claude Code' : 'Codex') + ' runtime';
     return '';
   }
   function creationRuntime() {
@@ -945,8 +1091,11 @@
     if (/[\/\\\p{Cc}]/u.test(name)) return 'Session name cannot contain slashes or control characters.';
     return '';
   }
+  function newSessionProjectRoot() {
+    return isClaude({ worker_id: newSessionWorkerID, runtime_id: $('new-session-runtime').value }) ? '~/CLAUDE_CODE/' : '~/CODEX/';
+  }
   function updateNewSessionPath() {
-    if (!newSessionPathEdited) $('new-session-cwd').value = '~/CODEX/' + $('new-session-name').value.trim().replace(/\p{White_Space}/gu, '_');
+    if (!newSessionPathEdited) $('new-session-cwd').value = newSessionProjectRoot() + $('new-session-name').value.trim().replace(/\p{White_Space}/gu, '_');
     $('new-session-preview').textContent = $('new-session-cwd').value.trim() ? 'Session folder: ' + $('new-session-cwd').value.trim() : '';
     $('new-session-name').setCustomValidity(sessionNameError($('new-session-name').value));
   }
@@ -965,9 +1114,10 @@
     const creation = sessionCreations.get(workerID);
     const restoration = sessionOperationFor('restore', workerID);
     $('new-session-runtime').value = creation?.runtimeID || (operationLocked(restoration) ? restoration.runtimeID : '') || runtimes.find(runtime => runtime.state === 'running')?.runtime_id || '';
-    $('new-session-name').value = creation?.name || ''; $('new-session-cwd').value = creation?.cwd || '~/CODEX/';
+    $('new-session-name').value = creation?.name || ''; $('new-session-cwd').value = creation?.cwd || newSessionProjectRoot();
     newSessionPathEdited = !!creation;
     $('new-session-runtime-field').hidden = runtimes.length < 2;
+    document.querySelector('label[for="new-session-runtime"]').textContent = (worker?.AgentKind === 'claude' ? 'Claude Code' : 'Codex') + ' runtime';
     $('new-session-browser').hidden = true; $('new-session-directories').replaceChildren();
     newSessionMode = operationLocked(restoration) || (workerCreationUnavailable(worker) && !sessionFeatureUnavailable(worker, 'SupportsSessionArchives', 'restore archived projects')) ? 'restore' : 'create'; selectedArchiveID = restoration?.archiveID || '';
     creationMessage(); updateNewSessionPath(); renderSessionCreation();
@@ -987,7 +1137,7 @@
     $('new-session-mode-create').disabled = operationLocked(restoration); $('new-session-mode-restore').disabled = !!creation && creation.phase !== 'failed';
     if (restoring) { renderSessionRestore(worker, runtime, restoration); return; }
     $('new-session-name').setCustomValidity(sessionNameError($('new-session-name').value));
-    const unavailable = workerCreationUnavailable(worker) || (!runtime || runtime.state !== 'running' ? 'This Codex runtime is unavailable. Refresh the workers and try again.' : '');
+    const unavailable = workerCreationUnavailable(worker) || (!runtime || runtime.state !== 'running' ? 'This runtime is unavailable. Refresh the workers and try again.' : '');
     const locked = creation && creation.phase !== 'failed';
     $('new-session-worker').textContent = (worker?.Name || newSessionWorkerID) + (runtime ? ' · ' + (runtime.name || runtime.runtime_id) : '');
     for (const id of ['new-session-name', 'new-session-cwd', 'new-session-runtime']) $(id).disabled = !!locked;
@@ -1139,7 +1289,7 @@
     if (authRotationPending) return 'Sign-in renewal in progress.';
     if (!worker || worker.Enabled === false) return 'This worker is unavailable.';
     if (!['connected', 'online'].includes(worker.Connectivity)) return 'Reconnect this worker to ' + action + '.';
-    if (!worker[capability]) return 'Update this worker to ' + action + '.';
+    if (!worker[capability]) return worker.AgentKind === 'claude' ? 'Claude Code workers do not support this action.' : 'Update this worker to ' + action + '.';
     return '';
   }
   function sessionOperationMessage(result, fallback) {
@@ -1331,12 +1481,15 @@
   function renderSessionEditor() {
     if (!editSessionTarget) return;
     const session = editSessionTarget, worker = state.workers.find(row => row.ID === session.worker_id);
+    $('edit-session-description').textContent = isClaude(session)
+      ? 'Manage this Claude session. Deleting its conversation preserves the project directory and all project files.'
+      : 'Change the session name, delete its conversation, or archive the project and conversation on its worker.';
     const editing = sessionOperationFor('edit', session.session_id), archiving = sessionOperationFor('archive', session.session_id);
     const deletion = sessionDeletions.get(session.session_id), deleting = !!deletion && !['failed', 'complete', 'retry'].includes(deletion.phase);
     const locked = operationLocked(editing) || operationLocked(archiving) || deleting;
     const removed = archiving?.phase === 'complete' || deletion?.deleted || !state.sessions.some(row => row.session_id === session.session_id && !row.archived && !row.deleted);
     const runtime = state.runtimes.find(row => row.worker_id === session.worker_id && row.runtime_id === session.runtime_id);
-    const runtimeUnavailable = !runtime || runtime.state !== 'running' ? 'This Codex runtime is unavailable. Refresh workers and try again.' : '';
+    const runtimeUnavailable = !runtime || runtime.state !== 'running' ? 'This runtime is unavailable. Refresh workers and try again.' : '';
     const editUnavailable = sessionFeatureUnavailable(worker, 'SupportsSessionEditing', 'edit session names') || runtimeUnavailable;
     const archiveUnavailable = sessionFeatureUnavailable(worker, 'SupportsSessionArchives', 'archive and restore projects') || runtimeUnavailable;
     $('edit-session-worker').textContent = worker?.Name || session.worker_name || session.worker_id;
@@ -1353,7 +1506,9 @@
       button.disabled = (removed && !operationLocked(operation)) || deleting || !!operation?.checking || (locked && !operationLocked(operation)) || (!!unavailable && !operationLocked(operation));
       button.textContent = operation?.checking ? operation.phase === 'submitting' ? kind === 'edit' ? 'Saving…' : 'Archiving…' : 'Checking…' : operationLocked(operation) ? 'Check status' : kind === 'edit' ? 'Save' : 'Archive';
     }
-    $('edit-session-delete').disabled = locked || removed || !!authRotationPending;
+    const deletionUnavailable = sessionDeletionUnavailable(session);
+    $('edit-session-delete').disabled = locked || removed || !!authRotationPending || !!deletionUnavailable;
+    $('edit-session-delete').title = deletionUnavailable;
     const latest = [editing, archiving].filter(Boolean).sort((a, b) => (b.serial || 0) - (a.serial || 0))[0];
     $('edit-session-message').textContent = latest?.message || ''; $('edit-session-message').hidden = !latest?.message;
     $('edit-session-message').dataset.error = String(['failed', 'unknown'].includes(latest?.phase) || !!latest?.warningCode);
@@ -1443,9 +1598,11 @@
   function openSessionDeletion(session) {
     const current = state.sessions.find(value => value.session_id === session.session_id);
     if (!current || !state.authenticated) return;
+    if (sessionDeletionUnavailable(current)) return;
     blurEditable();
     deleteSessionTarget = { ...current };
     $('delete-session-name').textContent = title(current);
+    $('delete-session-description').textContent = sessionDeletionDescription(current);
     $('delete-session-cwd').textContent = current.cwd || 'Working directory unavailable';
     renderSessionDeletion();
     $('delete-session-dialog').showModal();
@@ -1454,12 +1611,14 @@
   function renderSessionDeletion() {
     if (!deleteSessionTarget) return;
     const deletion = sessionDeletions.get(deleteSessionTarget.session_id);
+    const unavailable = sessionDeletionUnavailable(deleteSessionTarget);
+    const checkingPrevious = deletion?.pending || deletion?.phase === 'unknown';
     const message = $('delete-session-message'), confirm = $('delete-session-confirm');
-    message.textContent = deletion?.message || '';
+    message.textContent = deletion?.message || unavailable;
     message.hidden = !message.textContent;
     message.dataset.error = String(['failed', 'unknown', 'retry'].includes(deletion?.phase));
     confirm.hidden = !!deletion?.deleted;
-    confirm.disabled = deletion?.phase === 'submitting' || !!deletion?.checking;
+    confirm.disabled = deletion?.phase === 'submitting' || !!deletion?.checking || !!unavailable && !checkingPrevious;
     confirm.textContent = deletion?.phase === 'submitting' ? 'Deleting…' : deletion?.checking ? 'Checking…' : deletion?.pending || deletion?.phase === 'unknown' ? 'Check status' : deletion ? 'Retry deletion' : 'Delete session';
     $('delete-session-cancel').textContent = deletion ? 'Close' : 'Cancel';
     if (confirm.hidden && document.activeElement === confirm) $('delete-session-cancel').focus({ preventScroll: true });
@@ -1556,6 +1715,7 @@
     let deletion = sessionDeletions.get(deleteSessionTarget.session_id);
     if (deletion?.checking || deletion?.phase === 'submitting' || deletion?.deleted) return;
     if (deletion?.pending || deletion?.phase === 'unknown') { deletion.deadline = Date.now() + 120000; await checkSessionDeletion(deletion); return; }
+    if (sessionDeletionUnavailable(deleteSessionTarget)) { renderSessionDeletion(); return; }
     // Only this explicit confirmation submits a destructive request. If its
     // response was lost, subsequent requests read status; they never replay it.
     deletion = { session: { ...deleteSessionTarget }, requestId: deletion?.phase === 'retry' ? deletion.requestId : crypto.randomUUID(), authGeneration: state.authGeneration,
@@ -1642,7 +1802,8 @@
     showSessions(false);
     telegramBotStatus();
     if (sessionUUID.test(session.session_id)) notificationLocation(session.session_id);
-    if (state.selected?.session_id === session.session_id && state.connected) return;
+    const revealed = revealWorkerSessions(session);
+    if (state.selected?.session_id === session.session_id && state.connected) { if (revealed) renderSessions(); return; }
     window.CodexDiagrams?.clear();
     commandUI?.sessionChanged();
     if (state.selected) { saveDraft(); state.positions.set(state.selected.session_id, { top: $('transcript').scrollTop, bottom: atBottom() }); }
@@ -1713,7 +1874,7 @@
       if (message.type === 'error') { notice(message.message || 'Worker connection failed.', 'connection'); return; }
       if (message.id !== undefined && !message.method) {
         const request = state.pending.get(String(message.id));
-        if (request) { clearTimeout(request.timer); state.pending.delete(String(message.id)); message.error ? request.reject(new Error(message.error.message || 'Codex rejected this request.')) : request.resolve(message.result); }
+        if (request) { clearTimeout(request.timer); state.pending.delete(String(message.id)); message.error ? request.reject(new Error(message.error.message || agentLabel() + ' rejected this request.')) : request.resolve(message.result); }
         else if (message.error && state.questions.has(String(message.id))) {
           state.questions.get(String(message.id)).answered = false;
           renderQuestions(); notice(message.error.message || 'The answer was rejected. Check whether this question is still pending.');
@@ -1723,6 +1884,7 @@
       // Goals are independent of transcript loading and turn activity. Apply
       // them immediately so a delayed snapshot cannot replace a live change.
       if (handleGoalEvent(message)) return;
+      if (handleClaudeStatusEvent(message)) return;
       if (state.loading) {
         // Permissions are authoritative even while history is still loading.
         // A newer notification must win over a delayed resume snapshot.
@@ -1739,6 +1901,7 @@
       clearGoal();
       clearPermissions();
       clearRateLimits();
+      clearClaudeStatus();
       rejectPending('Connection interrupted. No input was resent. Check the conversation before retrying.');
       updateControls();
       disableQuestions();
@@ -1773,7 +1936,7 @@
         scroller.scrollTop = anchor ? scroller.scrollTop + anchor.getBoundingClientRect().top - scroller.getBoundingClientRect().top - position.offset : position.top;
         $('jump-latest').hidden = atBottom();
       }
-      if (uncertainSend) { notice('A previous send may have reached Codex. Check the conversation before sending it again. Nothing was resent.'); uncertainSend = false; }
+      if (uncertainSend) { notice('A previous send may have reached ' + agentLabel() + '. Check the conversation before sending it again. Nothing was resent.'); uncertainSend = false; }
       window.dispatchEvent(new CustomEvent('codex-auth-restored', { detail: { sessionId: state.selected.session_id } }));
     } finally { restoringPosition = false; }
   }
@@ -1787,9 +1950,11 @@
     const current = () => generation === state.generation && state.socket === socket && state.connected;
     const settingsBeforeResume = settingsCheckpoint();
     const permissionsBeforeResume = permissionRevision;
+    const statusBeforeResume = claudeStatusRevision;
     const resume = await rpc('thread/resume', { threadId });
     if (!current()) return;
     const thread = resume?.thread || {};
+    if (isClaude() && claudeStatusRevision === statusBeforeResume) applyClaudeStatus(thread.claudeStatus, threadId);
     resumedThread = { id: thread.id || threadId, cwd: typeof resume.cwd === 'string' ? resume.cwd : typeof thread.cwd === 'string' ? thread.cwd : state.selected.cwd };
     if (permissionRevision === permissionsBeforeResume) applyPermissions(resume, 'sandbox');
     if (resume?.model && settingsCheckpoint() === settingsBeforeResume && sessionSettings.get(state.selected.session_id)?.source !== 'activity') {
@@ -1873,6 +2038,7 @@
       state.questionsStatus = 'error';
       sessionConnectionReady();
     });
+    if (isClaude()) return;
     refreshRateLimits(read);
     refreshGoal(read);
     read('model/list', {}).then(result => {
@@ -1882,6 +2048,7 @@
     }).catch(() => { /* Session defaults remain usable if this runtime has no model listing. */ });
   }
   function refreshRateLimits(read = rpc) {
+    if (isClaude()) return;
     // A newer explicit refresh also supersedes an older bootstrap read. Live
     // quota events still take precedence over either in-flight snapshot.
     const generation = state.generation, limitRevision = rateLimitRevision, limitEpoch = ++rateLimitEpoch;
@@ -2119,7 +2286,7 @@
     article.dataset.itemId = item.id || '';
     article.dataset.fileSessionId = state.selected?.session_id || '';
     article.dataset.workerName = state.selected?.worker_name || state.selected?.worker_id || 'Worker';
-    const header = node('div', 'message-header'); header.append(node('span', 'role', isUser ? '› You' : isTool ? '• ' + (isReasoning ? reasoningLabel : 'Tool') : '• Codex'));
+    const header = node('div', 'message-header'); header.append(node('span', 'role', isUser ? '› You' : isTool ? '• ' + (isReasoning ? reasoningLabel : 'Tool') : '• ' + agentLabel()));
     renderItemTime(header, item);
     article.append(header);
     if (isUser) article.append(node('div', 'plain', clean(itemText(item))));
@@ -2235,6 +2402,7 @@
     state.renderTimer = setTimeout(() => { state.renderTimer = null; if (state.selected) renderMessages(); }, 80);
   }
   function updateUsage(stats) {
+    if (isClaude()) { renderClaudeStatus(); return; }
     if (!stats) return;
     const context = stats.context_tokens ?? stats.last?.totalTokens;
     const maximum = stats.context_window ?? stats.modelContextWindow;
@@ -2277,6 +2445,7 @@
     const { method, params: p = {} } = message;
     if (!method) return; // Transport heartbeats must not repaint an idle transcript.
     if (p.threadId && p.threadId !== state.selected?.codex_thread_id) return;
+    if (handleClaudeStatusEvent(message)) return;
     if (method === 'gateway/history/timestamps') { applyHistoryTimestamps(p); return; }
     if (handleGoalEvent(message)) return;
     // Workers withhold raw deltas so secrets split across frames cannot leak.
@@ -2439,7 +2608,7 @@
       const card = node('form', 'question-card' + (request.answered ? ' answered' : ''));
       card.dataset.requestId = String(request.id);
       card.append(node('h2', '', request.method.includes('requestUserInput') ? 'Input requested · ' + title(state.selected) : 'Approval requested · ' + title(state.selected)));
-      if (request.answered) { card.append(node('p', '', 'Response sent. Waiting for Codex to resolve this request.')); $('questions').append(card); continue; }
+      if (request.answered) { card.append(node('p', '', 'Response sent. Waiting for ' + agentLabel() + ' to resolve this request.')); $('questions').append(card); continue; }
       if (request.method.includes('requestUserInput')) {
         const fields = [];
         for (const question of p.questions || []) {
@@ -2466,7 +2635,7 @@
           notice(); sendAnswer(request, { answers });
         });
       } else if (['item/commandExecution/requestApproval', 'item/fileChange/requestApproval'].includes(request.method)) {
-        card.append(node('p', '', clean(p.reason || 'Codex needs your permission to continue.')));
+        card.append(node('p', '', clean(p.reason || agentLabel() + ' needs your permission to continue.')));
         if (p.command) card.append(code(p.command));
         if (p.cwd) card.append(node('p', 'muted small', p.cwd));
         const actions = node('div', 'actions');
@@ -2478,7 +2647,7 @@
         }
         card.append(actions);
       } else if (request.method === 'item/permissions/requestApproval') {
-        card.append(node('p', '', clean(p.reason || 'Codex requests additional permissions for this turn.')));
+        card.append(node('p', '', clean(p.reason || agentLabel() + ' requests additional permissions for this turn.')));
         card.append(code(JSON.stringify(p.permissions || {}, null, 2), 'json'));
         const actions = node('div', 'actions');
         for (const [label, permissions] of [['Allow for this turn', p.permissions || {}], ['Decline', {}]]) {
@@ -2487,7 +2656,7 @@
         }
         card.append(actions);
       } else {
-        card.append(node('p', '', 'This request needs a control this web interface does not yet support. Open the session in Codex or Telegram to respond.'));
+        card.append(node('p', '', 'This request needs a control this web interface does not yet support. Open the session in ' + agentLabel() + ' or Telegram to respond.'));
       }
       $('questions').append(card);
     }
@@ -2508,7 +2677,12 @@
       return { value, label: value, description: typeof option === 'object' ? option.description : '' };
     }).filter(option => option.value);
   }
-  function renderModels() { $('model').textContent = currentModel() || 'Session model'; renderEfforts(); }
+  function renderModels() {
+    if (isClaude()) { renderClaudeStatus(); return; }
+    $('model').textContent = currentModel() || 'Session model'; $('model').title = 'Use /model to change the model'; $('model').setAttribute('aria-label', 'Model');
+    $('usage').removeAttribute('title'); $('usage').removeAttribute('aria-label');
+    renderPermissions(); renderEfforts();
+  }
   function renderEfforts() { const settings = sessionSettings.get(state.selected?.session_id); $('effort').textContent = currentEffort() || (settings && settings.source !== 'unconfirmed' ? 'Default' : 'Session effort'); settleBottom(); }
   function attachmentTarget() {
     const session = state.selected || {};
@@ -2732,7 +2906,7 @@
           const previous = state.items.get(item.id);
           const timing = itemTiming(item, turn, {}, previous?._turn === turn.id ? previous : undefined);
           const date = itemDate(timing), label = itemTimeLabel(timing);
-          found.push({ role: item.type === 'userMessage' ? 'You' : 'Codex', text: value, time: date ? (label ? label + ': ' : '') + date.toLocaleString() : 'Date/time unavailable' });
+          found.push({ role: item.type === 'userMessage' ? 'You' : agentLabel(), text: value, time: date ? (label ? label + ': ' : '') + date.toLocaleString() : 'Date/time unavailable' });
           if (found.length === count) break;
         }
         if (found.length === count) break;
@@ -2743,13 +2917,14 @@
     return found.reverse();
   }
   commandUI = window.CodexCommandUI.create({
+    isClaude, agentLabel, deletionUnavailable: sessionDeletionUnavailable, deletionDescription: sessionDeletionDescription,
     state, rpc, title, notice, queuedSteer, saveDraft, updateControls, showSessions, renderSessions, renderQuestions, selectSession, refreshSessions,
     currentModel, currentEffort, reasoningOptions, settingsCheckpoint,
     cancelGatewayCommand: () => gatewayCommandAbort?.abort(),
     composerHidden: () => $('composer').hidden, gatewayCommand, applyResult: applyCommandResult, disconnect,
     readHistory: commandHistory, setRaw: value => { rawView = value; renderMessages(false); },
     lastResponse: () => itemText([...state.items.values()].reverse().find(item => item.type === 'agentMessage' && item.phase !== 'commentary') || {}),
-    exportText: () => '# ' + title(state.selected) + '\n\n' + [...state.items.values()].filter(item => ['userMessage', 'agentMessage'].includes(item.type)).map(item => '## ' + (item.type === 'userMessage' ? 'You' : 'Codex') + (itemDate(item) ? ' · ' + (itemTimeLabel(item) ? itemTimeLabel(item) + ': ' : '') + itemDate(item).toISOString() : '') + '\n\n' + clean(item.type === 'userMessage' ? promptText(itemText(item)) : itemText(item))).join('\n\n'),
+    exportText: () => '# ' + title(state.selected) + '\n\n' + [...state.items.values()].filter(item => ['userMessage', 'agentMessage'].includes(item.type)).map(item => '## ' + (item.type === 'userMessage' ? 'You' : agentLabel()) + (itemDate(item) ? ' · ' + (itemTimeLabel(item) ? itemTimeLabel(item) + ': ' : '') + itemDate(item).toISOString() : '') + '\n\n' + clean(item.type === 'userMessage' ? promptText(itemText(item)) : itemText(item))).join('\n\n'),
   });
   $('show-sessions').addEventListener('click', () => showSessions(true));
   $('empty-sessions').addEventListener('click', () => showSessions(true));
@@ -2809,7 +2984,7 @@
   $('new-session-runtime').addEventListener('change', () => {
     cancelWorkspaceBrowse(); workspacePage = null; $('new-session-browser').hidden = true;
     if (sessionCreations.get(newSessionWorkerID)?.phase === 'failed') sessionCreations.delete(newSessionWorkerID);
-    selectedArchiveID = ''; creationMessage(); renderSessionCreation();
+    selectedArchiveID = ''; creationMessage(); updateNewSessionPath(); renderSessionCreation();
     if (newSessionMode === 'restore') loadSessionArchives();
   });
   for (const mode of ['create', 'restore']) $('new-session-mode-' + mode).addEventListener('click', () => {

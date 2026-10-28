@@ -60,6 +60,33 @@ Commit & Pull Request Guidelines
 
 func (s *sessionActor) executeCodexCommand(ctx context.Context, client *codexadapter.Client, name, args string) (protocol.Result, error) {
 	name, args = strings.ToLower(strings.TrimSpace(name)), strings.TrimSpace(args)
+	if s.agent.cfg.AgentKind == "claude" {
+		switch name {
+		case "status":
+			settings, err := readClaudeSettings(claudeSettingsPath(s.agent.cfg))
+			if err != nil {
+				return protocol.Result{}, validationError("Claude Code runtime configuration is unavailable.")
+			}
+			version := "unavailable"
+			var metadata struct {
+				Version string `json:"agent_version"`
+			}
+			if json.Unmarshal(s.runtime.Metadata, &metadata) == nil && metadata.Version != "" {
+				version = metadata.Version
+			}
+			lines := []string{"Claude Code session", "Claude Code runtime: " + version, "Workspace: " + s.session.CWD, "Authentication: " + settings.AuthMode}
+			status, statusErr := client.ReadClaudeStatus(ctx, s.session.ThreadID)
+			if statusErr != nil {
+				status.Model, status.PermissionMode = &settings.Model, &settings.PermissionMode
+			}
+			lines = append(lines, claudeStatusLines(status)...)
+			return protocol.Result{Text: strings.Join(lines, "\n")}, nil
+		case "rename", "pwd", "cwd", "copy", "new", "delete", "diff", "stop":
+			// Shared session and workspace operations use the same actor fences.
+		default:
+			return protocol.Result{}, validationError("/%s is not supported by the Claude Code worker. Configure its model, account and permissions in the admin console.", name)
+		}
+	}
 	switch name {
 	case "status":
 		text, err := s.codexStatus(ctx, client)

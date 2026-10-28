@@ -1,0 +1,18 @@
+{
+  "agent_kind": "claude",
+  "worker_id": "00000000-0000-4000-8000-000000000002",
+  "name": "my-claude-worker",
+  "state_file": "state/worker.db",
+  "gateway_url": "wss://gateway.example.com/tgw/api/v1/workers/connect",
+  "token_file": "worker.token",
+  "allowed_workspace_roots": ["/home/USERNAME/CLAUDE_CODE"],
+  "max_queued_turns": 20,
+  "runtimes": [{
+    "id": "primary",
+    "name": "Primary Claude Code",
+    "claude_binary": "claude",
+    "working_directory": "/home/USERNAME/CLAUDE_CODE",
+    "autostart": true,
+    "restart_policy": "on-failure"
+  }]
+}

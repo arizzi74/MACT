@@ -46,29 +46,31 @@ type Session struct {
 }
 
 type Hello struct {
-	SupportsWebUI                bool      `json:"supports_webui,omitempty"`
-	SupportsWebUIFiles           bool      `json:"supports_webui_files,omitempty"`
-	SupportsWebUIUploads         bool      `json:"supports_webui_uploads,omitempty"`
-	SupportsWorkerUpdate         bool      `json:"supports_worker_update,omitempty"`
-	WorkerID                     string    `json:"worker_id"`
-	WorkerName                   string    `json:"worker_name"`
-	Hostname                     string    `json:"hostname"`
-	OS                           string    `json:"os"`
-	Arch                         string    `json:"arch"`
-	WorkerVersion                string    `json:"worker_version"`
-	SupportsImageInput           bool      `json:"supports_image_input,omitempty"`
-	SupportsFileInput            bool      `json:"supports_file_input,omitempty"`
-	MaxFileBytes                 int       `json:"max_file_bytes,omitempty"`
-	SupportsSessionWorkspaces    bool      `json:"supports_session_workspaces,omitempty"`
-	SupportsWebUISessionCreation bool      `json:"supports_webui_session_creation,omitempty"`
-	SupportsSessionDeletion      bool      `json:"supports_session_deletion,omitempty"`
-	SupportsSessionEditing       bool      `json:"supports_session_editing,omitempty"`
-	SupportsSessionArchives      bool      `json:"supports_session_archives,omitempty"`
-	SupportsConversationHistory  bool      `json:"supports_conversation_history,omitempty"`
-	ProtocolMin                  int       `json:"protocol_min"`
-	ProtocolMax                  int       `json:"protocol_max"`
-	LastAckedEventSeq            uint64    `json:"last_acked_event_seq"`
-	Runtimes                     []Runtime `json:"runtimes"`
+	AgentKind                     string    `json:"agent_kind,omitempty"`
+	SupportsWebUI                 bool      `json:"supports_webui,omitempty"`
+	SupportsWebUIFiles            bool      `json:"supports_webui_files,omitempty"`
+	SupportsWebUIUploads          bool      `json:"supports_webui_uploads,omitempty"`
+	SupportsWorkerUpdate          bool      `json:"supports_worker_update,omitempty"`
+	SupportsWorkerRuntimeSettings bool      `json:"supports_worker_runtime_settings,omitempty"`
+	WorkerID                      string    `json:"worker_id"`
+	WorkerName                    string    `json:"worker_name"`
+	Hostname                      string    `json:"hostname"`
+	OS                            string    `json:"os"`
+	Arch                          string    `json:"arch"`
+	WorkerVersion                 string    `json:"worker_version"`
+	SupportsImageInput            bool      `json:"supports_image_input,omitempty"`
+	SupportsFileInput             bool      `json:"supports_file_input,omitempty"`
+	MaxFileBytes                  int       `json:"max_file_bytes,omitempty"`
+	SupportsSessionWorkspaces     bool      `json:"supports_session_workspaces,omitempty"`
+	SupportsWebUISessionCreation  bool      `json:"supports_webui_session_creation,omitempty"`
+	SupportsSessionDeletion       bool      `json:"supports_session_deletion,omitempty"`
+	SupportsSessionEditing        bool      `json:"supports_session_editing,omitempty"`
+	SupportsSessionArchives       bool      `json:"supports_session_archives,omitempty"`
+	SupportsConversationHistory   bool      `json:"supports_conversation_history,omitempty"`
+	ProtocolMin                   int       `json:"protocol_min"`
+	ProtocolMax                   int       `json:"protocol_max"`
+	LastAckedEventSeq             uint64    `json:"last_acked_event_seq"`
+	Runtimes                      []Runtime `json:"runtimes"`
 }
 
 type HelloAck struct {
@@ -78,22 +80,24 @@ type HelloAck struct {
 }
 
 type Heartbeat struct {
-	SupportsWebUI                bool      `json:"supports_webui,omitempty"`
-	SupportsWebUIFiles           bool      `json:"supports_webui_files,omitempty"`
-	SupportsWebUIUploads         bool      `json:"supports_webui_uploads,omitempty"`
-	SupportsWorkerUpdate         bool      `json:"supports_worker_update,omitempty"`
-	WorkerID                     string    `json:"worker_id"`
-	SupportsImageInput           bool      `json:"supports_image_input,omitempty"`
-	SupportsFileInput            bool      `json:"supports_file_input,omitempty"`
-	MaxFileBytes                 int       `json:"max_file_bytes,omitempty"`
-	SupportsSessionWorkspaces    bool      `json:"supports_session_workspaces,omitempty"`
-	SupportsWebUISessionCreation bool      `json:"supports_webui_session_creation,omitempty"`
-	SupportsSessionDeletion      bool      `json:"supports_session_deletion,omitempty"`
-	SupportsSessionEditing       bool      `json:"supports_session_editing,omitempty"`
-	SupportsSessionArchives      bool      `json:"supports_session_archives,omitempty"`
-	SupportsConversationHistory  bool      `json:"supports_conversation_history,omitempty"`
-	UptimeSeconds                int64     `json:"uptime_seconds"`
-	Runtimes                     []Runtime `json:"runtimes"`
+	AgentKind                     string    `json:"agent_kind,omitempty"`
+	SupportsWebUI                 bool      `json:"supports_webui,omitempty"`
+	SupportsWebUIFiles            bool      `json:"supports_webui_files,omitempty"`
+	SupportsWebUIUploads          bool      `json:"supports_webui_uploads,omitempty"`
+	SupportsWorkerUpdate          bool      `json:"supports_worker_update,omitempty"`
+	SupportsWorkerRuntimeSettings bool      `json:"supports_worker_runtime_settings,omitempty"`
+	WorkerID                      string    `json:"worker_id"`
+	SupportsImageInput            bool      `json:"supports_image_input,omitempty"`
+	SupportsFileInput             bool      `json:"supports_file_input,omitempty"`
+	MaxFileBytes                  int       `json:"max_file_bytes,omitempty"`
+	SupportsSessionWorkspaces     bool      `json:"supports_session_workspaces,omitempty"`
+	SupportsWebUISessionCreation  bool      `json:"supports_webui_session_creation,omitempty"`
+	SupportsSessionDeletion       bool      `json:"supports_session_deletion,omitempty"`
+	SupportsSessionEditing        bool      `json:"supports_session_editing,omitempty"`
+	SupportsSessionArchives       bool      `json:"supports_session_archives,omitempty"`
+	SupportsConversationHistory   bool      `json:"supports_conversation_history,omitempty"`
+	UptimeSeconds                 int64     `json:"uptime_seconds"`
+	Runtimes                      []Runtime `json:"runtimes"`
 }
 
 type Operation string

@@ -35,6 +35,7 @@ type Hub struct {
 	mu                     sync.RWMutex
 	peers                  map[string]*peer
 	webuis                 map[string]*WebUIStream
+	runtimeSettings        map[string]workerRuntimeSettingsPending
 	webuiQueuedBytes       int
 	webuiInputBytes        int
 	limiter                *httpguard.Limiter
@@ -45,26 +46,27 @@ type Hub struct {
 }
 
 type peer struct {
-	workerID, connectionID       uuid.UUID
-	supportsWorkerUpdate         bool
-	supportsImageInput           bool
-	supportsFileInput            bool // guarded by Hub.mu after publication
-	maxFileBytes                 int  // guarded by Hub.mu after publication
-	supportsSessionWorkspaces    bool
-	supportsWebUISessionCreation bool
-	supportsSessionEditing       bool
-	supportsSessionArchives      bool
-	supportsSessionDeletion      bool
-	supportsConversationHistory  bool
-	supportsWebUI                bool
-	supportsWebUIFiles           bool
-	supportsWebUIUploads         bool
-	conn                         *websocket.Conn
-	ctx                          context.Context
-	cancel                       context.CancelFunc
-	writes                       chan writeRequest
-	writeMu                      sync.Mutex // fences admission against final writer shutdown
-	writeStopped                 bool
+	workerID, connectionID        uuid.UUID
+	supportsWorkerUpdate          bool
+	supportsWorkerRuntimeSettings bool
+	supportsImageInput            bool
+	supportsFileInput             bool // guarded by Hub.mu after publication
+	maxFileBytes                  int  // guarded by Hub.mu after publication
+	supportsSessionWorkspaces     bool
+	supportsWebUISessionCreation  bool
+	supportsSessionEditing        bool
+	supportsSessionArchives       bool
+	supportsSessionDeletion       bool
+	supportsConversationHistory   bool
+	supportsWebUI                 bool
+	supportsWebUIFiles            bool
+	supportsWebUIUploads          bool
+	conn                          *websocket.Conn
+	ctx                           context.Context
+	cancel                        context.CancelFunc
+	writes                        chan writeRequest
+	writeMu                       sync.Mutex // fences admission against final writer shutdown
+	writeStopped                  bool
 }
 
 type writeRequest struct {
@@ -136,19 +138,20 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// builds advertise their actual capabilities, including development builds.
 	legacySessionSupport := strings.TrimPrefix(hello.WorkerVersion, "v") == "0.5.19"
 	p := &peer{workerID: worker.ID, connectionID: connectionID, supportsImageInput: hello.SupportsImageInput,
-		supportsFileInput:            hello.SupportsFileInput,
-		maxFileBytes:                 hello.MaxFileBytes,
-		supportsWorkerUpdate:         hello.SupportsWorkerUpdate,
-		supportsSessionWorkspaces:    hello.SupportsSessionWorkspaces || legacySessionSupport,
-		supportsWebUISessionCreation: hello.SupportsWebUISessionCreation,
-		supportsSessionEditing:       hello.SupportsSessionEditing,
-		supportsSessionArchives:      hello.SupportsSessionArchives,
-		supportsSessionDeletion:      hello.SupportsSessionDeletion || legacySessionSupport,
-		supportsConversationHistory:  hello.SupportsConversationHistory,
-		supportsWebUI:                hello.SupportsWebUI,
-		supportsWebUIFiles:           hello.SupportsWebUIFiles,
-		supportsWebUIUploads:         hello.SupportsWebUIUploads,
-		conn:                         conn, ctx: ctx, cancel: cancel, writes: make(chan writeRequest, 128)}
+		supportsFileInput:             hello.SupportsFileInput,
+		maxFileBytes:                  hello.MaxFileBytes,
+		supportsWorkerUpdate:          hello.SupportsWorkerUpdate,
+		supportsWorkerRuntimeSettings: hello.SupportsWorkerRuntimeSettings,
+		supportsSessionWorkspaces:     hello.SupportsSessionWorkspaces || legacySessionSupport,
+		supportsWebUISessionCreation:  hello.SupportsWebUISessionCreation,
+		supportsSessionEditing:        hello.SupportsSessionEditing,
+		supportsSessionArchives:       hello.SupportsSessionArchives,
+		supportsSessionDeletion:       hello.SupportsSessionDeletion || legacySessionSupport,
+		supportsConversationHistory:   hello.SupportsConversationHistory,
+		supportsWebUI:                 hello.SupportsWebUI,
+		supportsWebUIFiles:            hello.SupportsWebUIFiles,
+		supportsWebUIUploads:          hello.SupportsWebUIUploads,
+		conn:                          conn, ctx: ctx, cancel: cancel, writes: make(chan writeRequest, 128)}
 	h.mu.Lock()
 	old := h.peers[hello.WorkerID]
 	h.peers[hello.WorkerID] = p
@@ -247,6 +250,8 @@ func (h *Hub) handle(ctx context.Context, p *peer, e protocol.Envelope) error {
 		return h.AckHandler(ctx, p.workerID, p.connectionID, ack)
 	case "webui":
 		return h.handleWebUI(p, e)
+	case "worker_runtime_settings_result":
+		return h.handleWorkerRuntimeSettings(p, e)
 	default:
 		return errors.New("unexpected worker message")
 	}

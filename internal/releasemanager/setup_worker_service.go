@@ -78,7 +78,10 @@ func (m *Manager) workerSetupLingerEnabled(ctx context.Context, uid string) bool
 }
 
 func (m *Manager) printWorkerSetupCommands(l *Layout) {
-	fmt.Fprintf(m.Out, "\nWorker commands (available immediately):\n  %s status\n  %s doctor\n  %s attach --latest\n", setupCommandQuote(l.Binary), setupCommandQuote(l.Binary), setupCommandQuote(l.Binary))
+	fmt.Fprintf(m.Out, "\nWorker commands (available immediately):\n  %s status\n  %s doctor\n", setupCommandQuote(l.Binary), setupCommandQuote(l.Binary))
+	if l.AgentKind != "claude" {
+		fmt.Fprintf(m.Out, "  %s attach --latest\n", setupCommandQuote(l.Binary))
+	}
 	inPath := false
 	for _, directory := range filepath.SplitList(os.Getenv("PATH")) {
 		if directory != "" && filepath.Clean(directory) == filepath.Clean(l.Bin) {
@@ -87,7 +90,7 @@ func (m *Manager) printWorkerSetupCommands(l *Layout) {
 		}
 	}
 	if !inPath {
-		fmt.Fprintln(m.Out, "To use codex-worker, codex-local, mact, and codex-telegramgw by name in this terminal:")
+		fmt.Fprintln(m.Out, "To use worker and MACT commands by name in this terminal:")
 		fmt.Fprintln(m.Out, `  export PATH="$HOME/.local/bin:$PATH"`)
 		fmt.Fprintln(m.Out, "Add that line to your shell startup file to keep it in future terminals.")
 	}

@@ -26,7 +26,7 @@ func (s *sessionActor) deleteSession(ctx context.Context, client *codexadapter.C
 		return protocol.Result{}, &protocol.Error{Code: protocol.UnknownSession, Message: "Session is no longer available."}
 	}
 	busy := func() bool {
-		return !updateSessionIdle(s.session) || s.activeCommand != nil || s.awaitingTurnStart || len(s.queue) != 0 || len(s.pending) != 0 || len(s.eventQueue) != 0 || len(s.requestQueue) != 0
+		return !updateSessionIdle(s.session) || s.activeCommand != nil || s.awaitingTurnStart || len(s.queue) != 0 || len(s.pending) != 0 || len(s.asyncQuestions) != 0 || len(s.eventQueue) != 0 || len(s.requestQueue) != 0
 	}
 	if busy() {
 		return protocol.Result{}, deleteSessionBusy()
@@ -34,6 +34,24 @@ func (s *sessionActor) deleteSession(ctx context.Context, client *codexadapter.C
 	cwd, err := auth.CanonicalWorkspace(s.session.CWD, s.agent.cfg.AllowedWorkspaceRoots)
 	if err != nil {
 		return protocol.Result{}, &protocol.Error{Code: protocol.InvalidWorkspace, Message: "Session workspace is not allowed."}
+	}
+	if c.Arguments.CWD != "" && c.Arguments.CWD != s.session.CWD {
+		return protocol.Result{}, &protocol.Error{Code: protocol.InvalidWorkspace, Message: "The session working directory changed. Select the session again before deleting it."}
+	}
+	if s.agent.cfg.AgentKind == "claude" {
+		pending, err := s.agent.store.claudeDeletionPending(s.runtime.ID, s.session.ThreadID)
+		if err != nil {
+			return protocol.Result{}, err
+		}
+		if pending {
+			// A prior admitted deletion may already have removed native
+			// metadata. Its exact identity is authorized by the durable intent;
+			// the native deletion journal supplies the idempotent boundary.
+			if err := s.agent.store.beginClaudeDeletion(s.runtime, s.session, c); err != nil {
+				return protocol.Result{}, err
+			}
+			return s.completeSessionDeletion(ctx, client, c, true)
+		}
 	}
 	thread, err := client.ReadThreadForDeletion(ctx, s.session.ThreadID)
 	if err != nil {
@@ -43,7 +61,7 @@ func (s *sessionActor) deleteSession(ctx context.Context, client *codexadapter.C
 		return protocol.Result{}, &protocol.Error{Code: protocol.UnknownSession, Message: "The selected thread is not a user session."}
 	}
 	remoteCWD, err := auth.CanonicalWorkspace(thread.CWD, s.agent.cfg.AllowedWorkspaceRoots)
-	if err != nil || remoteCWD != cwd || (c.Arguments.CWD != "" && c.Arguments.CWD != s.session.CWD) {
+	if err != nil || remoteCWD != cwd {
 		return protocol.Result{}, &protocol.Error{Code: protocol.InvalidWorkspace, Message: "The session working directory changed. Select the session again before deleting it."}
 	}
 	switch thread.Status {
@@ -60,14 +78,39 @@ func (s *sessionActor) deleteSession(ctx context.Context, client *codexadapter.C
 	if busy() {
 		return protocol.Result{}, deleteSessionBusy()
 	}
+	if s.agent.cfg.AgentKind == "claude" {
+		if err := client.VerifyThreadQueueIdle(ctx, s.session.ThreadID); err != nil {
+			return protocol.Result{}, deleteSessionBusy()
+		}
+		if err := s.agent.store.beginClaudeDeletion(s.runtime, s.session, c); err != nil {
+			return protocol.Result{}, err
+		}
+	}
+	return s.completeSessionDeletion(ctx, client, c, false)
+}
+
+func (s *sessionActor) completeSessionDeletion(ctx context.Context, client *codexadapter.Client, c protocol.Command, priorIntent bool) (protocol.Result, error) {
 	if err := client.DeleteThread(ctx, s.session.ThreadID); err != nil {
+		var rpcError *codexadapter.RPCError
+		if s.agent.cfg.AgentKind == "claude" && errors.As(err, &rpcError) && rpcError.Code != -32010 {
+			// An explicit native refusal did not delete anything. A lost RPC
+			// response remains journaled for idempotent startup recovery.
+			if clearErr := s.agent.store.refuseClaudeDeletionAttempt(s.runtime.ID, s.session.ThreadID, c.ID, priorIntent); clearErr != nil {
+				return protocol.Result{}, clearErr
+			}
+		}
 		return protocol.Result{}, err
 	}
-	saved, err := s.agent.store.DeleteSession(s.runtime, s.session)
+	saved, err := s.agent.deleteStoredSession(s.runtime, s.session)
 	if err != nil {
 		return protocol.Result{}, err
 	}
 	s.session = saved
+	if s.agent.cfg.AgentKind == "claude" {
+		if err := s.agent.completeClaudeDeletionReceipts(s.runtime, saved); err != nil {
+			return protocol.Result{}, err
+		}
+	}
 	return protocol.Result{State: "completed", Session: &saved, Text: "Session deleted. The working directory and its files were kept."}, nil
 }
 
@@ -144,7 +187,7 @@ func (a *Agent) observeDeletedThread(runtime protocol.Runtime, threadID string) 
 	}
 	for _, session := range sessions {
 		if session.ThreadID == threadID {
-			_, err := a.store.DeleteSession(runtime, session)
+			_, err := a.deleteStoredSession(runtime, session)
 			a.report(err)
 			return
 		}
@@ -154,19 +197,13 @@ func (a *Agent) observeDeletedThread(runtime protocol.Runtime, threadID string) 
 // deleted handles thread/deleted notifications from any app-server client,
 // including notifications for descendants removed with their parent thread.
 func (s *sessionActor) deleted() {
-	saved, err := s.agent.store.DeleteSession(s.runtime, s.session)
-	if err != nil {
-		s.agent.report(err)
-		return
-	}
-	s.session = saved
 	for _, command := range s.queue {
-		_, err := s.agent.reject(command, protocol.UnknownSession, "The Codex session was deleted before this command could run.")
+		_, err := s.agent.reject(command, protocol.UnknownSession, "The session was deleted before this command could run.")
 		s.agent.report(err)
 	}
 	s.queue = nil
 	if s.activeCommand != nil {
-		s.agent.report(s.agent.executionError(*s.activeCommand, &protocol.Error{Code: protocol.UnknownSession, Message: "The Codex session was deleted."}))
+		s.agent.report(s.agent.executionError(*s.activeCommand, &protocol.Error{Code: protocol.UnknownSession, Message: "The session was deleted."}))
 	}
 	s.activeCommand = nil
 	s.awaitingTurnStart = false
@@ -174,12 +211,23 @@ func (s *sessionActor) deleted() {
 	for key := range s.pending {
 		s.resolve(key, "cleared")
 	}
+	s.asyncQuestions = nil
+	saved, err := s.agent.deleteStoredSession(s.runtime, s.session)
+	if err != nil {
+		s.agent.report(err)
+		return
+	}
+	s.session = saved
 }
 
 // DeleteSession durably records an app-server-confirmed permanent deletion and
 // its gateway event in one transaction. Unlike discovery archival, this marker
 // cannot be undone by a stale scan and does not touch any filesystem directory.
 func (s *Store) DeleteSession(runtime protocol.Runtime, expected protocol.Session) (protocol.Session, error) {
+	return s.deleteSession(runtime, expected, false)
+}
+
+func (s *Store) deleteSession(runtime protocol.Runtime, expected protocol.Session, purge bool) (protocol.Session, error) {
 	if runtime.WorkerID != s.workerID || expected.WorkerID != s.workerID || expected.RuntimeID != runtime.ID || expected.ThreadID == "" || expected.ID == "" || runtime.Generation == 0 {
 		return protocol.Session{}, errors.New("worker store: invalid permanent session deletion target")
 	}
@@ -200,7 +248,7 @@ func (s *Store) DeleteSession(runtime protocol.Runtime, expected protocol.Sessio
 		if err := purgeAsyncHistoryCache(tx, runtime.ID, expected.ThreadID); err != nil {
 			return err
 		}
-		if saved.Deleted {
+		if saved.Deleted && (!purge || tx.Bucket(bucketMeta).Get(purgedSessionKey(runtime.ID, expected.ThreadID)) != nil) {
 			return nil
 		}
 		saved.State, saved.Archived, saved.Deleted, saved.Loaded, saved.ActiveTurnID = "not_loaded", true, true, false, ""
@@ -208,6 +256,12 @@ func (s *Store) DeleteSession(runtime protocol.Runtime, expected protocol.Sessio
 			saved.Stats.ActiveSince = nil
 		}
 		saved.UpdatedAt = time.Now().UTC()
+		if purge {
+			saved = protocol.Session{ID: saved.ID, WorkerID: saved.WorkerID, RuntimeID: saved.RuntimeID, ThreadID: saved.ThreadID, State: "not_loaded", Archived: true, Deleted: true, UpdatedAt: saved.UpdatedAt}
+			if err := purgeClaudeSessionData(tx, saved); err != nil {
+				return err
+			}
+		}
 		encoded, err := json.Marshal(saved)
 		if err != nil {
 			return err

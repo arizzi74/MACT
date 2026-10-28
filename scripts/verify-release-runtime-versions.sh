@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Execute the host gateway package's version commands before publishing it.
+# Execute the host packages' version commands before publishing them.
 set -euo pipefail
 
 if [[ $# -lt 1 || $# -gt 2 ]]; then
@@ -18,40 +18,45 @@ case "$(uname -s)/$(uname -m)" in
   Linux/aarch64|Linux/arm64) target=linux-arm64 ;;
   *) echo 'Runtime version verification requires a supported native Linux gateway host.' >&2; exit 1 ;;
 esac
-archive="$dist_dir/codex-gateway-$target.tar.gz"
 umask 077
 stage_dir=$(mktemp -d "${TMPDIR:-/tmp}/telegramgw-runtime-versions.XXXXXX")
 trap 'rm -rf -- "$stage_dir"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# Copy only the four expected regular executables. Do not let archive links,
+# Copy only expected regular executables. Do not let archive links,
 # duplicate members or traversal paths escape the private extraction directory.
-python3 - "$archive" "$stage_dir" <<'PY'
+python3 - "$dist_dir" "$target" "$stage_dir" <<'PY'
 import os, pathlib, shutil, sys, tarfile
 
-required = ('codex-gateway', 'codex-telegramgw', 'scripts/release-manager.py', 'codex-whisper')
-with tarfile.open(sys.argv[1], 'r:gz') as archive:
-    members = {}
-    for member in archive:
-        name = member.name.rstrip('/')
-        if (not name or '\\' in name or name.startswith('/')
-                or any(part in ('', '.', '..') for part in name.split('/'))
-                or name in members or not (member.isfile() or member.isdir())):
-            raise SystemExit(f'Unsafe or duplicate package member: {member.name!r}')
-        members[name] = member
-    for name in required:
-        member = members.get(name)
-        if member is None or not member.isfile() or not member.mode & 0o111:
-            raise SystemExit(f'Missing regular executable in gateway package: {name}')
-        destination = pathlib.Path(sys.argv[2]) / name
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        with archive.extractfile(member) as source, destination.open('xb') as output:
-            shutil.copyfileobj(source, output)
-        os.chmod(destination, 0o700)
+packages = {
+    'codex-gateway': ('codex-gateway', 'codex-telegramgw', 'scripts/release-manager.py', 'codex-whisper'),
+    'codex-worker': ('codex-worker',),
+    'claude-worker': ('claude-worker',),
+}
+for component, required in packages.items():
+    filename = pathlib.Path(sys.argv[1]) / f'{component}-{sys.argv[2]}.tar.gz'
+    with tarfile.open(filename, 'r:gz') as archive:
+        members = {}
+        for member in archive:
+            name = member.name.rstrip('/')
+            if (not name or '\\' in name or name.startswith('/')
+                    or any(part in ('', '.', '..') for part in name.split('/'))
+                    or name in members or not (member.isfile() or member.isdir())):
+                raise SystemExit(f'Unsafe or duplicate package member: {member.name!r}')
+            members[name] = member
+        for name in required:
+            member = members.get(name)
+            if member is None or not member.isfile() or not member.mode & 0o111:
+                raise SystemExit(f'Missing regular executable in package: {name}')
+            destination = pathlib.Path(sys.argv[3]) / name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with archive.extractfile(member) as source, destination.open('xb') as output:
+                shutil.copyfileobj(source, output)
+            os.chmod(destination, 0o700)
 PY
 
-for binary in codex-gateway codex-telegramgw scripts/release-manager.py codex-whisper; do
+for binary in codex-gateway codex-telegramgw scripts/release-manager.py codex-whisper codex-worker claude-worker; do
   if ! actual_version=$("$stage_dir/$binary" version); then
     printf 'Cannot read packaged %s runtime version.\n' "$binary" >&2
     exit 1
@@ -61,4 +66,4 @@ for binary in codex-gateway codex-telegramgw scripts/release-manager.py codex-wh
     exit 1
   fi
 done
-printf 'Packaged %s gateway, manager aliases and Whisper all report %s.\n' "$target" "$expected_version"
+printf 'Packaged %s gateway, workers, manager aliases and Whisper all report %s.\n' "$target" "$expected_version"

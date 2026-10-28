@@ -110,6 +110,22 @@ type webUIHistoryCache struct {
 	bytes     int
 }
 
+func (c *webUIHistoryCache) forgetSession(runtimeID, threadID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for id, snapshot := range c.snapshots {
+		if snapshot.scope.Runtime == runtimeID && snapshot.scope.Thread == threadID {
+			c.bytes -= snapshot.bytes
+			delete(c.snapshots, id)
+		}
+	}
+	for id, cursor := range c.cursors {
+		if cursor.scope.Runtime == runtimeID && cursor.scope.Thread == threadID {
+			delete(c.cursors, id)
+		}
+	}
+}
+
 type webUIHistoryTimestampTarget struct {
 	snapshot *webUIHistorySnapshot
 	index    int

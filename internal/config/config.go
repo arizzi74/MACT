@@ -78,9 +78,10 @@ func (v VoiceConfig) withDefaults() (VoiceConfig, error) {
 	return v, nil
 }
 
-// WorkerConfig is the JSON configuration for codex-worker. WorkerID is the
+// WorkerConfig is the JSON configuration for a dedicated coding-agent worker. WorkerID is the
 // stable identity assigned at enrollment; Name is descriptive and may change.
 type WorkerConfig struct {
+	AgentKind             string           `json:"agent_kind,omitempty"`
 	WorkerID              string           `json:"worker_id"`
 	Name                  string           `json:"name"`
 	StateFile             string           `json:"state_file"`
@@ -92,14 +93,16 @@ type WorkerConfig struct {
 	RedactPatterns        []string         `json:"redact_patterns"`
 }
 
-// RuntimeProfile defines one local, supervised Codex app-server.
+// RuntimeProfile defines one local, supervised coding-agent runtime.
 type RuntimeProfile struct {
-	ID               string `json:"id"`
-	Name             string `json:"name"`
-	CodexBinary      string `json:"codex_binary"`
-	WorkingDirectory string `json:"working_directory"`
-	Autostart        bool   `json:"autostart"`
-	RestartPolicy    string `json:"restart_policy"`
+	ID                 string `json:"id"`
+	Name               string `json:"name"`
+	CodexBinary        string `json:"codex_binary,omitempty"`
+	ClaudeBinary       string `json:"claude_binary,omitempty"`
+	ClaudeSettingsFile string `json:"claude_settings_file,omitempty"`
+	WorkingDirectory   string `json:"working_directory"`
+	Autostart          bool   `json:"autostart"`
+	RestartPolicy      string `json:"restart_policy"`
 }
 
 // BotSecrets are local Telegram identity and token settings. Values are kept
@@ -170,6 +173,15 @@ func LoadWorker(path string) (WorkerConfig, error) {
 	if err := decodeConfig(data, &cfg); err != nil {
 		return WorkerConfig{}, fmt.Errorf("parse worker config: %w", err)
 	}
+	if cfg.AgentKind == "" {
+		cfg.AgentKind = "codex"
+	}
+	if cfg.AgentKind != "codex" && cfg.AgentKind != "claude" {
+		return WorkerConfig{}, errors.New("worker config: agent_kind must be codex or claude")
+	}
+	if cfg.AgentKind == "claude" && len(cfg.Runtimes) != 1 {
+		return WorkerConfig{}, errors.New("worker config: a Claude worker requires exactly one runtime")
+	}
 	if _, err := uuid.Parse(cfg.WorkerID); err != nil {
 		return WorkerConfig{}, errors.New("worker config: worker_id is required")
 	}
@@ -221,8 +233,32 @@ func LoadWorker(path string) (WorkerConfig, error) {
 	seen := map[string]bool{}
 	for i := range cfg.Runtimes {
 		r := &cfg.Runtimes[i]
-		if strings.TrimSpace(r.ID) == "" || strings.TrimSpace(r.CodexBinary) == "" || strings.TrimSpace(r.WorkingDirectory) == "" {
-			return WorkerConfig{}, errors.New("worker config: runtime id, codex_binary, and working_directory are required")
+		binary := &r.CodexBinary
+		if cfg.AgentKind == "claude" {
+			binary = &r.ClaudeBinary
+			if r.CodexBinary != "" {
+				return WorkerConfig{}, errors.New("worker config: Claude runtimes cannot configure codex_binary")
+			}
+			if r.ClaudeSettingsFile == "" {
+				r.ClaudeSettingsFile = filepath.Join(filepath.Dir(cfg.StateFile), "runtime-settings.json")
+			} else {
+				r.ClaudeSettingsFile = resolve(r.ClaudeSettingsFile)
+			}
+			if info, err := os.Lstat(r.ClaudeSettingsFile); err == nil {
+				if !info.Mode().IsRegular() {
+					return WorkerConfig{}, errors.New("worker config: claude_settings_file must be a private regular file")
+				}
+				if err := CheckSecretFilePermissions(r.ClaudeSettingsFile); err != nil {
+					return WorkerConfig{}, errors.New("worker config: claude_settings_file must be a private regular file")
+				}
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return WorkerConfig{}, errors.New("worker config: cannot inspect claude_settings_file")
+			}
+		} else if r.ClaudeBinary != "" || r.ClaudeSettingsFile != "" {
+			return WorkerConfig{}, errors.New("worker config: Claude settings require agent_kind claude")
+		}
+		if strings.TrimSpace(r.ID) == "" || strings.TrimSpace(*binary) == "" || strings.TrimSpace(r.WorkingDirectory) == "" {
+			return WorkerConfig{}, fmt.Errorf("worker config: runtime id, %s_binary, and working_directory are required", cfg.AgentKind)
 		}
 		if seen[r.ID] {
 			return WorkerConfig{}, errors.New("worker config: duplicate runtime profile")
@@ -241,8 +277,8 @@ func LoadWorker(path string) (WorkerConfig, error) {
 		if err != nil {
 			return WorkerConfig{}, err
 		}
-		if strings.ContainsRune(r.CodexBinary, filepath.Separator) {
-			r.CodexBinary = resolve(r.CodexBinary)
+		if strings.ContainsRune(*binary, filepath.Separator) {
+			*binary = resolve(*binary)
 		}
 	}
 	return cfg, nil

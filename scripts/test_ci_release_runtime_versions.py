@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the packaged gateway version guard with executable archive fixtures."""
+"""Exercise the packaged runtime version guard with executable archive fixtures."""
 
 import io
 import os
@@ -14,7 +14,12 @@ import unittest
 
 REPO = Path(__file__).resolve().parents[1]
 SCRIPT = REPO / "scripts/verify-release-runtime-versions.sh"
-PROGRAMS = ("codex-gateway", "codex-telegramgw", "scripts/release-manager.py", "codex-whisper")
+PACKAGES = {
+    "codex-gateway": ("codex-gateway", "codex-telegramgw", "scripts/release-manager.py", "codex-whisper"),
+    "codex-worker": ("codex-worker",),
+    "claude-worker": ("claude-worker",),
+}
+PROGRAMS = tuple(name for programs in PACKAGES.values() for name in programs)
 ARCHITECTURES = {"x86_64": "amd64", "aarch64": "arm64", "arm64": "arm64"}
 
 
@@ -33,24 +38,26 @@ class ReleaseRuntimeVersionsTest(unittest.TestCase):
     def package(self, overrides=None, missing=None, nonexecutable=None, symlink=None):
         versions = dict.fromkeys(PROGRAMS, "1.2.3")
         versions.update(overrides or {})
-        path = self.dist / f"codex-gateway-linux-{ARCHITECTURES[platform.machine()]}.tar.gz"
-        with tarfile.open(path, "w:gz", format=tarfile.USTAR_FORMAT) as archive:
-            for name, version in versions.items():
-                if name == missing:
-                    continue
-                header = tarfile.TarInfo(name)
-                header.mode = 0o600 if name == nonexecutable else 0o700
-                if name == symlink:
-                    header.type = tarfile.SYMTYPE
-                    header.linkname = "codex-gateway"
-                    archive.addfile(header)
-                    continue
-                payload = ("#!/bin/sh\n"
-                           '[ "$#" -eq 1 ] && [ "$1" = version ] || exit 2\n'
-                           f"printf '%s\\n' {shlex.quote(name)} >> \"$MACT_RELEASE_VERSION_PROBES\"\n"
-                           f"printf '%s\\n' {shlex.quote(version)}\n").encode()
-                header.size = len(payload)
-                archive.addfile(header, io.BytesIO(payload))
+        for component, programs in PACKAGES.items():
+            path = self.dist / f"{component}-linux-{ARCHITECTURES[platform.machine()]}.tar.gz"
+            with tarfile.open(path, "w:gz", format=tarfile.USTAR_FORMAT) as archive:
+                for name in programs:
+                    version = versions[name]
+                    if name == missing:
+                        continue
+                    header = tarfile.TarInfo(name)
+                    header.mode = 0o600 if name == nonexecutable else 0o700
+                    if name == symlink:
+                        header.type = tarfile.SYMTYPE
+                        header.linkname = "codex-gateway"
+                        archive.addfile(header)
+                        continue
+                    payload = ("#!/bin/sh\n"
+                               '[ "$#" -eq 1 ] && [ "$1" = version ] || exit 2\n'
+                               f"printf '%s\\n' {shlex.quote(name)} >> \"$MACT_RELEASE_VERSION_PROBES\"\n"
+                               f"printf '%s\\n' {shlex.quote(version)}\n").encode()
+                    header.size = len(payload)
+                    archive.addfile(header, io.BytesIO(payload))
 
     def run_guard(self, expected="v1.2.3", dist=None, script=SCRIPT):
         return subprocess.run(["bash", str(script), expected, str(dist or self.dist)],
@@ -82,10 +89,11 @@ class ReleaseRuntimeVersionsTest(unittest.TestCase):
 
     def test_rejects_missing_nonexecutable_or_symlinked_required_programs(self):
         for problem in ("missing", "nonexecutable", "symlink"):
-            with self.subTest(problem=problem):
-                self.package(**{problem: "codex-whisper"})
-                result = self.run_guard()
-                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            for program in ("codex-whisper", "claude-worker"):
+                with self.subTest(problem=problem, program=program):
+                    self.package(**{problem: program})
+                    result = self.run_guard()
+                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_expected_version_cannot_execute_shell_syntax(self):
         marker = self.root / "injected-command-ran"

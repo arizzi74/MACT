@@ -12,23 +12,26 @@ import (
 // AdminWorker deliberately omits raw heartbeat metadata. Keep the established
 // capitalized field names used by the console's worker controls.
 type AdminWorker struct {
-	ID                           uuid.UUID
-	Name                         string
-	Hostname                     string
-	OS                           string
-	Arch                         string
-	Version                      string
-	Enabled                      bool
-	Connectivity                 string
-	SupportsSessionWorkspaces    bool
-	SupportsWebUISessionCreation bool
-	SupportsSessionEditing       bool
-	SupportsSessionArchives      bool
-	ConnectionID                 *uuid.UUID
-	ConnectedAt                  *time.Time
-	LastSeenAt                   *time.Time
-	CreatedAt                    time.Time
-	UpdatedAt                    time.Time
+	AgentKind                     string
+	ID                            uuid.UUID
+	Name                          string
+	Hostname                      string
+	OS                            string
+	Arch                          string
+	Version                       string
+	Enabled                       bool
+	Connectivity                  string
+	SupportsSessionWorkspaces     bool
+	SupportsWebUISessionCreation  bool
+	SupportsSessionEditing        bool
+	SupportsSessionArchives       bool
+	SupportsSessionDeletion       bool
+	SupportsWorkerRuntimeSettings bool
+	ConnectionID                  *uuid.UUID
+	ConnectedAt                   *time.Time
+	LastSeenAt                    *time.Time
+	CreatedAt                     time.Time
+	UpdatedAt                     time.Time
 }
 
 // AdminSession joins the visible session inventory to operational information.
@@ -118,7 +121,10 @@ func (s *Store) adminWorkerSnapshot(ctx context.Context) ([]AdminWorker, error) 
         COALESCE(json_extract(heartbeat_metadata,'$.supports_session_workspaces')=1 OR worker_version IN ('0.5.19','v0.5.19'),FALSE),
         COALESCE(json_extract(heartbeat_metadata,'$.supports_webui_session_creation')=1,FALSE),
         COALESCE(json_extract(heartbeat_metadata,'$.supports_session_editing')=1,FALSE),
-        COALESCE(json_extract(heartbeat_metadata,'$.supports_session_archives')=1,FALSE)
+        COALESCE(json_extract(heartbeat_metadata,'$.supports_session_archives')=1,FALSE),
+        COALESCE(json_extract(heartbeat_metadata,'$.supports_worker_runtime_settings')=1,FALSE),
+        COALESCE(json_extract(heartbeat_metadata,'$.supports_session_deletion')=1 OR worker_version IN ('0.5.19','v0.5.19'),FALSE),
+        CASE WHEN json_extract(heartbeat_metadata,'$.agent_kind')='claude' THEN 'claude' ELSE 'codex' END
         FROM workers ORDER BY name, worker_id`)
 	if err != nil {
 		return nil, fmt.Errorf("registry: list admin workers: %w", err)
@@ -129,7 +135,7 @@ func (s *Store) adminWorkerSnapshot(ctx context.Context) ([]AdminWorker, error) 
 		var w AdminWorker
 		if err := rows.Scan(&w.ID, &w.Name, &w.Hostname, &w.OS, &w.Arch, &w.Version,
 			&w.Enabled, &w.Connectivity, &w.ConnectionID, &w.ConnectedAt, &w.LastSeenAt,
-			&w.CreatedAt, &w.UpdatedAt, &w.SupportsSessionWorkspaces, &w.SupportsWebUISessionCreation, &w.SupportsSessionEditing, &w.SupportsSessionArchives); err != nil {
+			&w.CreatedAt, &w.UpdatedAt, &w.SupportsSessionWorkspaces, &w.SupportsWebUISessionCreation, &w.SupportsSessionEditing, &w.SupportsSessionArchives, &w.SupportsWorkerRuntimeSettings, &w.SupportsSessionDeletion, &w.AgentKind); err != nil {
 			return nil, fmt.Errorf("registry: scan admin worker: %w", err)
 		}
 		result = append(result, w)

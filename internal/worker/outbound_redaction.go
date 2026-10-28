@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/iaia/telegramgw/internal/auth"
@@ -57,7 +58,34 @@ func (s *Store) configureRedactor(redactor *auth.Redactor) error {
 }
 
 func (s *Store) appendEvent(tx *workerdb.Tx, event protocol.Event) (protocol.Event, error) {
+	if !event.Durable() {
+		return protocol.Event{}, errors.New("worker store: transient events cannot consume durable sequences")
+	}
 	var err error
+	if key := tx.Bucket(bucketMeta).Get(purgedSessionIDKey(event.SessionID)); key != nil {
+		var session protocol.Session
+		if err := json.Unmarshal(tx.Bucket(bucketSessions).Get(key), &session); err != nil {
+			return protocol.Event{}, err
+		}
+		// Late native notifications cannot repopulate deleted conversation
+		// data. Existing outbox entries are never rewritten.
+		switch event.Kind {
+		case "command_completed", "command_failed", "command_result_unknown":
+			var result protocol.Result
+			if err := json.Unmarshal(event.Data, &result); err != nil {
+				return protocol.Event{}, err
+			}
+			record := CommandRecord{Command: protocol.Command{ID: result.CommandID}, Result: &result}
+			scrubDeletedCommand(&record, session)
+			event.Data, err = json.Marshal(record.Result)
+		default:
+			event.Kind = "session_state_changed"
+			event.Data, err = json.Marshal(session)
+		}
+		if err != nil {
+			return protocol.Event{}, err
+		}
+	}
 	event.Data, err = redactOutboundJSON(s.redactor.Load(), event.Data)
 	if err != nil {
 		return protocol.Event{}, err

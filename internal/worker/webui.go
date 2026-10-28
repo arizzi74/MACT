@@ -458,7 +458,7 @@ func (r *webUIRelay) clientMessage(data []byte) ([]byte, error) {
 		return nil, err
 	}
 	switch rpc.Method {
-	case "gateway/upload", "gateway/command", "gateway/questions", "gateway/answer", "turn/start", "turn/steer", "turn/interrupt", "thread/turns/list", "thread/items/list", "thread/goal/get", "account/rateLimits/read":
+	case "gateway/upload", "gateway/command", "gateway/questions", "gateway/answer", "turn/start", "turn/steer", "turn/interrupt", "thread/turns/list", "thread/items/list", "thread/goal/get", "thread/status/read", "account/rateLimits/read":
 		// Stored inventory is a discovery snapshot. An existing terminal can
 		// have moved the thread since then, so never admit browser mutations
 		// until this connection has checked the actual resume response.
@@ -511,7 +511,7 @@ func webUIParams(method string, params map[string]json.RawMessage, thread string
 	}
 	allowed := map[string]bool{"threadId": true}
 	switch method {
-	case "thread/resume", "thread/goal/get":
+	case "thread/resume", "thread/goal/get", "thread/status/read":
 	case "thread/read":
 		allowed["includeTurns"] = true
 	case "thread/turns/list":

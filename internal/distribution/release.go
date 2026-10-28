@@ -40,9 +40,9 @@ func (t Target) Suffix() string       { return t.OS + "-" + t.Arch }
 func (t Target) ManagerAsset() string { return ManagerName + "-" + t.Suffix() }
 func (t Target) Components() []string {
 	if t.OS == "linux" {
-		return []string{"codex-gateway", "codex-worker", "codex-local", "codex-whisper"}
+		return []string{"codex-gateway", "codex-worker", "claude-worker", "codex-local", "codex-whisper"}
 	}
-	return []string{"codex-worker", "codex-local", "codex-whisper"}
+	return []string{"codex-worker", "claude-worker", "codex-local", "codex-whisper"}
 }
 
 // Speech helpers are optional downloads, never installed on workers or bundled
@@ -364,7 +364,7 @@ func Verify(root, dist string) error {
 	}
 	assets := Assets()
 	if len(hashes) != len(assets) {
-		return errors.New("release manifest must contain exactly twenty-two archives, four managers and installer")
+		return errors.New("release manifest must contain exactly the supported platform archives, managers and installer")
 	}
 	for _, name := range assets {
 		expected, ok := hashes[name]
@@ -383,7 +383,13 @@ func Verify(root, dist string) error {
 	if err != nil {
 		return err
 	}
-	if len(archives) != 22 {
+	expectedArchives := 0
+	for _, name := range assets {
+		if strings.HasSuffix(name, ".tar.gz") {
+			expectedArchives++
+		}
+	}
+	if len(archives) != expectedArchives {
 		return errors.New("unexpected or missing platform archive")
 	}
 	sources, err := packagedSources(root)

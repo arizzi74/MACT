@@ -68,7 +68,7 @@ func (c *Connection) reconcileWorkerUpdates(ctx context.Context) error {
 					return err
 				}
 			} else {
-				if err := workerupdate.Ensure(ctx, runtime.GOOS, c.updateManager, c.cfg.StateFile, request.RequestID, c.updateRun); err != nil {
+				if err := workerupdate.EnsureForAgent(ctx, runtime.GOOS, c.updateManager, c.cfg.StateFile, request.RequestID, c.cfg.AgentKind, c.updateRun); err != nil {
 					// Supervisor failures may be temporary during login or restart.
 					// Leave this request queued and try again without changing timers.
 					return err

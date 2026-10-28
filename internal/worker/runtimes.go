@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/iaia/telegramgw/internal/auth"
+	"github.com/iaia/telegramgw/internal/claudeadapter"
 	"github.com/iaia/telegramgw/internal/codexadapter"
 	"github.com/iaia/telegramgw/internal/config"
 	"github.com/iaia/telegramgw/internal/protocol"
@@ -50,6 +51,7 @@ type RuntimeManager struct {
 
 	mu       sync.RWMutex
 	runtimes map[string]*managedRuntime
+	claude   map[string]*claudeadapter.Runtime // configured profile ID -> dedicated bridge
 	start    func(context.Context, codexadapter.Config) (*codexadapter.Client, error)
 	ready    chan struct{}
 }
@@ -99,7 +101,7 @@ func NewRuntimeManager(cfg config.WorkerConfig, store *Store, logger *slog.Logge
 			return nil, errors.New("runtime manager: runtime working_directory is outside allowed workspace roots")
 		}
 	}
-	m := &RuntimeManager{cfg: cfg, store: store, log: logger, hooks: hooks, runtimes: make(map[string]*managedRuntime), attachments: make(map[string]*attachmentProxy), ready: make(chan struct{})}
+	m := &RuntimeManager{cfg: cfg, store: store, log: logger, hooks: hooks, runtimes: make(map[string]*managedRuntime), claude: make(map[string]*claudeadapter.Runtime), attachments: make(map[string]*attachmentProxy), ready: make(chan struct{})}
 	redactor, err := newWorkerRedactor(cfg.RedactPatterns)
 	if err != nil {
 		return nil, err
@@ -258,7 +260,12 @@ func (m *RuntimeManager) startProfile(ctx context.Context, profile config.Runtim
 	if err != nil {
 		return protocol.Runtime{}, nil, err
 	}
-	client, err := m.start(ctx, codexadapter.Config{Command: profile.CodexBinary, WorkingDirectory: profile.WorkingDirectory, Stderr: io.Discard})
+	var client *codexadapter.Client
+	if m.cfg.AgentKind == "claude" {
+		client, err = m.startClaudeProfile(ctx, profile)
+	} else {
+		client, err = m.start(ctx, codexadapter.Config{Command: profile.CodexBinary, WorkingDirectory: profile.WorkingDirectory, Stderr: io.Discard})
+	}
 	if err != nil {
 		runtime.State = "failed"
 		m.setRuntime(runtime, nil)
@@ -277,11 +284,20 @@ func (m *RuntimeManager) startProfile(ctx context.Context, profile config.Runtim
 		go func() { <-client.Done(); proxy.close() }()
 	}
 	versionCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	version, versionErr := codexadapter.ExecutableVersion(versionCtx, profile.CodexBinary)
+	var version string
+	var versionErr error
+	if m.cfg.AgentKind == "claude" {
+		version, versionErr = claudeExecutableVersion(versionCtx, profile.ClaudeBinary)
+		runtime.Metadata, _ = json.Marshal(map[string]string{"agent_kind": "claude", "agent_version": version})
+	} else {
+		version, versionErr = codexadapter.ExecutableVersion(versionCtx, profile.CodexBinary)
+	}
 	cancel()
 	if versionErr == nil {
-		runtime.CodexVersion = version
-		m.log.Info("runtime started", "profile_id", profile.ID, "codex_version", version)
+		if m.cfg.AgentKind != "claude" {
+			runtime.CodexVersion = version
+		}
+		m.log.Info("runtime started", "profile_id", profile.ID, "agent_kind", m.cfg.AgentKind, "agent_version", version)
 	}
 	return runtime, client, nil
 }
@@ -537,6 +553,21 @@ func (m *RuntimeManager) discover(ctx context.Context, runtime protocol.Runtime,
 	for _, prior := range existing {
 		if visible[prior.ThreadID] || (!complete && !observed[prior.ThreadID]) {
 			continue
+		}
+		if m.cfg.AgentKind == "claude" && !prior.Deleted {
+			pending, err := m.store.claudeDeletionPending(runtime.ID, prior.ThreadID)
+			if err != nil {
+				return persistenceError(err)
+			}
+			if pending {
+				// The bridge hides an incompletely deleted native identity.
+				// Keep its local target visible for an explicit cleanup retry;
+				// the intent fences ordinary commands until deletion completes.
+				if m.hooks.OnSession != nil {
+					m.hooks.OnSession(runtime, prior)
+				}
+				continue
+			}
 		}
 		// Hide obsolete inventory only after all discovery RPCs succeeded.
 		// The store compares the original snapshot to protect concurrent work,
