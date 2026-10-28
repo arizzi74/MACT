@@ -112,12 +112,25 @@ async function setup(browser, mobile) {
     return dataURL;
   });
   const sent = () => page.waitForFunction(() => document.querySelector('#file-preview').hidden && !document.querySelector('#send').textContent.includes('Sending'));
+  const rejectedNativePrompt = async () => {
+    const before = await count('native');
+    await page.evaluate(() => { window.turnBehavior = 'reject'; });
+    await page.locator('#send').click();
+    // An earlier native rejection intentionally remains visible while this
+    // file uploads. Wait for THIS prompt's dispatch and settled rejection.
+    await page.waitForFunction(before =>
+      window.uploadFrames.filter(row => ['turn/start', 'turn/steer'].includes(row.method)).length > before &&
+      !document.querySelector('#send').textContent.includes('Sending') &&
+      document.querySelector('#notice').textContent.includes('Native prompt rejected'), before);
+    assert.equal(await count('native'), before + 1, 'A rejected prompt is dispatched exactly once');
+    assert.equal(await page.evaluate(() => window.turnBehavior), '', 'This prompt consumed its configured rejection');
+  };
   const active = value => page.evaluate(({ value, sessionId }) => {
     const socket = window.uploadSockets.findLast(row => !row.activity && row.readyState === 1);
     window.activeTurns[sessionId] = value;
     socket.emit({ method: value ? 'turn/started' : 'turn/completed', params: { threadId: 'thread-0', turn: { id: value || 'active-turn', status: value ? 'inProgress' : 'completed' } } });
   }, { value, sessionId: sessions[0].session_id });
-  return { context, page, errors, recoveryRows, targetOverrides, ready, choose, count, last, attach, transfer, pasteImage, sent, active };
+  return { context, page, errors, recoveryRows, targetOverrides, ready, choose, count, last, attach, transfer, pasteImage, sent, rejectedNativePrompt, active };
 }
 
 (async () => {
@@ -125,7 +138,7 @@ async function setup(browser, mobile) {
   try {
     for (const mobile of [false, true]) {
       const test = await setup(browser, mobile);
-      const { page, attach, transfer, sent, count, last, active, choose, ready, pasteImage } = test;
+      const { page, attach, transfer, sent, rejectedNativePrompt, count, last, active, choose, ready, pasteImage } = test;
       try {
         await page.locator('#prompt').fill('A plain text prompt'); await page.locator('#send').click();
         await page.waitForFunction(() => document.querySelector('#prompt').value === '');
@@ -227,8 +240,7 @@ async function setup(browser, mobile) {
           await page.locator('#remove-file').click(); await page.locator('#prompt').fill('');
 
           await attach('retry.txt'); await page.locator('#prompt').fill('Retain the acknowledged path.');
-          await page.evaluate(() => { window.turnBehavior = 'reject'; }); await page.locator('#send').click();
-          await page.waitForFunction(() => document.querySelector('#notice').textContent.includes('Native prompt rejected'));
+          await rejectedNativePrompt();
           assert.match(await page.locator('#file-description').textContent(), /Uploaded/);
           assert.match(await page.locator('#notice').textContent(), /already uploaded.*reuse it/);
           const beforeCaptionRetry = await count('gateway/upload');
@@ -237,8 +249,7 @@ async function setup(browser, mobile) {
           // An acknowledged path belongs to the original upload destination,
           // including native thread context, across reconnects and retries.
           await attach('bound-target.txt'); await page.locator('#prompt').fill('Keep the original upload destination.');
-          await page.evaluate(() => { window.turnBehavior = 'reject'; }); await page.locator('#send').click();
-          await page.waitForFunction(() => document.querySelector('#notice').textContent.includes('Native prompt rejected'));
+          await rejectedNativePrompt();
           const boundUploads = await count('gateway/upload'), boundPrompts = await count('native');
           for (const change of [{ cwd: '/projects/changed' }, { runtime_generation: 2 }, { worker_id: 'different-worker' }, { runtime_id: 'different-runtime' }, { codex_thread_id: 'different-thread' }]) {
             test.targetOverrides[sessions[0].session_id] = change;
@@ -256,8 +267,7 @@ async function setup(browser, mobile) {
           await page.evaluate(sessionId => { delete window.nativeTopLevelCWD[sessionId]; window.readyOverrides[sessionId] = { runtime_generation: 2 }; window.uploadSockets.findLast(row => !row.activity && row.readyState === 1).close(1006); }, sessions[0].session_id);
           await page.clock.fastForward(5000); await ready();
           await attach('fresh-ready.txt'); await page.locator('#prompt').fill('Use the fresh ready target.');
-          await page.evaluate(() => { window.turnBehavior = 'reject'; }); await page.locator('#send').click();
-          await page.waitForFunction(() => document.querySelector('#notice').textContent.includes('Native prompt rejected'));
+          await rejectedNativePrompt();
           await page.evaluate(sessionId => { window.readyOverrides[sessionId] = { runtime_generation: 3 }; window.uploadSockets.findLast(row => !row.activity && row.readyState === 1).close(1006); }, sessions[0].session_id);
           await page.clock.fastForward(5000); await ready();
           const readyPrompts = await count('native'); await page.locator('#send').click();
@@ -270,7 +280,16 @@ async function setup(browser, mobile) {
           await attach('upload-retry.txt'); await page.evaluate(() => { window.uploadBehavior = 'reject'; });
           await page.locator('#send').click(); await page.waitForFunction(() => document.querySelector('#notice').textContent.includes('Upload rejected'));
           const failedUploadID = (await last('gateway/upload')).params.uploadId;
+          const failedUploads = await count('gateway/upload'), failedUploadPrompts = await count('native');
+          await page.evaluate(() => window.uploadSockets.findLast(row => !row.activity && row.readyState === 1).close(1006));
+          await page.clock.fastForward(5000); await ready();
+          assert.equal(await count('gateway/upload'), failedUploads, 'Reconnect never replays a failed upload');
           await page.locator('#send').click(); await sent(); assert.equal((await last('gateway/upload')).params.uploadId, failedUploadID, 'Upload failures retain the attachment ID');
+          assert.equal(await count('native'), failedUploadPrompts, 'A file-only retry never dispatches a native prompt');
+          assert.equal((await page.locator('#notice').textContent()).includes('Upload rejected'), false, 'A successful file-only retry clears the upload failure');
+          assert.match(await page.locator('#notice').textContent(), /File saved in/);
+          await choose(1); await choose(0);
+          assert.equal((await page.locator('#notice').textContent()).includes('Upload rejected'), false, 'A recovered upload failure does not return after switching sessions');
 
           await attach('mismatch.txt'); await page.evaluate(() => { window.uploadBehavior = 'mismatch'; }); await page.locator('#send').click();
           await page.waitForFunction(() => document.querySelector('#notice').textContent.includes('acknowledgement was incomplete'));

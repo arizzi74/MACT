@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -32,6 +33,9 @@ type lifecycleFixture struct {
 func newLifecycleFixture(t *testing.T) *lifecycleFixture {
 	t.Helper()
 	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	turn := &savedTurn{ID: uuid.NewString(), Status: "inProgress", Items: []map[string]any{}}
 	thread := &savedThread{ID: uuid.NewString(), CWD: root, Turns: []*savedTurn{turn}}
 	s := &server{cfg: Config{StateDirectory: root}, threads: map[string]*savedThread{thread.ID: thread}, runners: map[string]*process{}, pending: map[string]*permission{}, peers: map[*peer]bool{}, ctx: context.Background()}

@@ -2800,6 +2800,7 @@
       $('prompt').value = ''; state.drafts.delete(sessionId); uncertainDrafts.delete(sessionId); syncRecoveryDrafts(); resizePrompt();
       if (attachmentSteer) commandUI?.close();
     };
+    let nativePromptDispatched = false;
     state.submitting = true; updateControls(); notice();
     try {
       if (file && !file.uploadedPath) {
@@ -2831,7 +2832,7 @@
       dismissSessionError(sessionId);
       let result;
       if (steerTurn) result = await rpc('turn/steer', { ...params, expectedTurnId: steerTurn });
-      else result = await rpc('turn/start', params);
+      else { nativePromptDispatched = true; result = await rpc('turn/start', params); }
       if (!current()) return;
       clearSentText();
       if (attachment) removeAttachment(sessionId, attachment);
@@ -2841,7 +2842,7 @@
     } catch (error) {
       if (sameDraft()) {
         const message = error.message + (file?.uploadedPath ? ' The file is already uploaded. Retrying this draft will reuse it.' : '');
-        if (error.rpcResponse && !steerTurn) { rememberSessionError(sessionId, message); notice(); }
+        if (error.rpcResponse && nativePromptDispatched) { rememberSessionError(sessionId, message); notice(); }
         else notice(message);
       }
     }
