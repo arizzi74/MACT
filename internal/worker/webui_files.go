@@ -261,7 +261,7 @@ func openWebUIFile(cwd, home, rawPath string, roots, privatePaths []string) (*os
 	for index, component := range components {
 		flags := unix.O_RDONLY | unix.O_CLOEXEC | unix.O_NOFOLLOW | unix.O_NONBLOCK
 		if index < len(components)-1 {
-			flags |= unix.O_DIRECTORY
+			flags = webUIDirectoryTraversalFlags
 		}
 		fd, err := unix.Openat(int(directory.Fd()), component, flags, 0)
 		if err != nil {
@@ -313,27 +313,33 @@ func openWebUIFileDirectory(cwd string, roots []string) (*os.File, error) {
 	if !allowed {
 		return nil, errors.New("workspace is outside allowed roots")
 	}
-	root, err := os.OpenRoot(string(filepath.Separator))
+	// Ancestors only need to be traversed. On Linux, O_PATH avoids asking
+	// for directory read access that an AppArmor profile or an execute-only
+	// ancestor may deny even though access to the workspace is permitted.
+	fd, err := unix.Open(string(filepath.Separator), webUIDirectoryTraversalFlags, 0)
 	if err != nil {
 		return nil, err
 	}
-	directory, err := root.Open(".")
-	root.Close()
-	if err != nil {
-		return nil, err
-	}
+	directory := os.NewFile(uintptr(fd), string(filepath.Separator))
+	defer func() { directory.Close() }()
 	for _, component := range strings.Split(strings.TrimPrefix(cwd, string(filepath.Separator)), string(filepath.Separator)) {
 		if component == "" {
 			continue
 		}
-		fd, err := unix.Openat(int(directory.Fd()), component, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_DIRECTORY, 0)
+		fd, err := unix.Openat(int(directory.Fd()), component, webUIDirectoryTraversalFlags, 0)
 		directory.Close()
 		if err != nil {
 			return nil, err
 		}
 		directory = os.NewFile(uintptr(fd), component)
 	}
-	return directory, nil
+	// Uploads sync the workspace after creating inbound, so return a readable
+	// handle to the workspace itself, rather than the traversal-only anchor.
+	fd, err = unix.Openat(int(directory.Fd()), ".", unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_DIRECTORY, 0)
+	if err != nil {
+		return nil, err
+	}
+	return os.NewFile(uintptr(fd), cwd), nil
 }
 
 func protectedWebUIFilePath(path string, privatePaths []string) bool {
