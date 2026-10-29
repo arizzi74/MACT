@@ -3,12 +3,14 @@
   "private": true,
   "scripts": {
     "build:mermaid": "node scripts/build-mermaid.mjs",
-    "test:browser": "npm run build:mermaid -- --check && node scripts/test-admin-ui.cjs && node scripts/test-admin-bots.cjs && node scripts/test-admin-audio.cjs && node scripts/test-admin-codex-defaults.cjs && node scripts/test-claude-ui.cjs && node scripts/test-password-auth.cjs && node scripts/test-webui.cjs && node scripts/test-webui-async-questions.cjs && node scripts/test-webui-session-errors.cjs && node scripts/test-webui-tools.cjs && node scripts/test-webui-tool-code.cjs && node scripts/test-webui-progressive-history.cjs && node scripts/test-webui-session-management.cjs && node scripts/test-webui-telegram-bots.cjs && node scripts/test-webui-files.cjs && node scripts/test-webui-uploads.cjs && node scripts/test-webui-mermaid.cjs && node scripts/test-webui-auth.cjs && node scripts/test-webui-console-navigation.cjs && node scripts/test-webui-drafts.cjs && node scripts/test-webui-notifications.cjs && node scripts/test-site.cjs",
-    "screenshots": "node scripts/capture-site-screenshots.cjs"
+    "test:browser": "npm run build:mermaid -- --check && node scripts/test-admin-ui.cjs && node scripts/test-admin-bots.cjs && node scripts/test-admin-audio.cjs && node scripts/test-admin-codex-defaults.cjs && node scripts/test-claude-ui.cjs && node scripts/test-password-auth.cjs && node scripts/test-webui.cjs && node scripts/test-webui-async-questions.cjs && node scripts/test-webui-session-errors.cjs && node scripts/test-webui-tools.cjs && node scripts/test-webui-tool-code.cjs && node scripts/test-webui-markdown.cjs && node scripts/test-webui-progressive-history.cjs && node scripts/test-webui-session-management.cjs && node scripts/test-webui-telegram-bots.cjs && node scripts/test-webui-files.cjs && node scripts/test-webui-uploads.cjs && node scripts/test-webui-mermaid.cjs && node scripts/test-webui-auth.cjs && node scripts/test-webui-console-navigation.cjs && node scripts/test-webui-drafts.cjs && node scripts/test-webui-notifications.cjs && node scripts/test-site.cjs",
+    "screenshots": "node scripts/capture-site-screenshots.cjs",
+    "security:audit": "npm run build:mermaid -- --check && node scripts/audit-browser-deps.mjs"
   },
   "devDependencies": {
     "esbuild": "0.28.2",
-    "mermaid": "12.0.0",
+    "js-yaml": "4.3.2",
+    "mermaid": "12.2.0",
     "playwright": "1.63.0"
   },
   "overrides": {

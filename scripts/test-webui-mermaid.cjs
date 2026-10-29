@@ -72,7 +72,7 @@ const fence = source => '```mermaid\n' + source + '\n```';
   try {
     await page.goto(origin + '/tgw/webui/');
     await page.waitForFunction(() => window.CodexDiagrams && window.CodexFormat);
-    for (const [label, source] of [['flowchart', flow], ['sequence diagram', sequence], ['class diagram', classDiagram]]) {
+    for (const [label, source] of [['flowchart', flow], ['sequence diagram', sequence], ['class diagram', classDiagram], ['YAML node metadata', 'flowchart LR\nA@{ shape: rect, label: "Patched YAML" } --> B']]) {
       await mount(fence(source));
       const diagram = await ready();
       assert.equal(await diagram.locator('details.mermaid-source pre').textContent(), source, label + ' retains its complete source');

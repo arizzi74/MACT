@@ -32,7 +32,7 @@ SOFTWARE.
 
 ==============================================================================
 
-@chevrotain/cst-dts-gen@11.1.2
+@chevrotain/cst-dts-gen@13.2.0
 License: Apache-2.0
 
 LICENSE.txt
@@ -241,7 +241,7 @@ Apache License
 
 ==============================================================================
 
-@chevrotain/gast@11.1.2
+@chevrotain/gast@13.2.0
 License: Apache-2.0
 
 LICENSE.txt
@@ -450,7 +450,7 @@ Apache License
 
 ==============================================================================
 
-@chevrotain/regexp-to-ast@11.1.2
+@chevrotain/regexp-to-ast@13.2.0
 License: Apache-2.0
 
 LICENSE.txt
@@ -659,7 +659,7 @@ Apache License
 
 ==============================================================================
 
-@chevrotain/utils@11.1.2
+@chevrotain/utils@13.2.0
 License: Apache-2.0
 
 LICENSE.txt
@@ -897,7 +897,7 @@ SOFTWARE.
 
 ==============================================================================
 
-@mermaid-js/parser@2.0.0
+@mermaid-js/parser@2.0.1
 License: MIT
 
 LICENSE
@@ -956,7 +956,7 @@ SOFTWARE.
 
 ==============================================================================
 
-chevrotain@11.1.2
+chevrotain@13.2.0
 License: Apache-2.0
 
 LICENSE.txt
@@ -2242,7 +2242,7 @@ SOFTWARE.
 
 ==============================================================================
 
-dompurify@3.4.16
+dompurify@3.4.17
 License: (MPL-2.0 OR Apache-2.0)
 
 LICENSE
@@ -3206,8 +3206,10 @@ THIS SOFTWARE.
 
 ==============================================================================
 
-js-yaml@4.3.0
-Prebundled by Mermaid; license copied from the published npm package.
+js-yaml@4.3.2
+License: MIT
+
+LICENSE
 
 (The MIT License)
 
@@ -3233,7 +3235,7 @@ THE SOFTWARE.
 
 ==============================================================================
 
-katex@0.16.47
+katex@0.18.10
 License: MIT
 
 LICENSE
@@ -3456,7 +3458,7 @@ This software is provided by the copyright holders and contributors “as is” 
 
 ==============================================================================
 
-mermaid@12.0.0
+mermaid@12.2.0
 License: MIT
 
 LICENSE
@@ -3594,7 +3596,7 @@ Additional license comments retained by esbuild
 Bundled license information:
 
 dompurify/dist/purify.es.mjs:
-  /*! @license DOMPurify 3.4.16 | (c) Cure53 and other contributors | Released under the Apache license 2.0 and Mozilla Public License 2.0 | github.com/cure53/DOMPurify/blob/3.4.16/LICENSE */
+  /*! @license DOMPurify 3.4.17 | (c) Cure53 and other contributors | Released under the Apache license 2.0 and Mozilla Public License 2.0 | github.com/cure53/DOMPurify/blob/3.4.17/LICENSE */
   /*! regenerator-runtime -- Copyright (c) 2014-present, Facebook, Inc. -- license (MIT): https://github.com/babel/babel/blob/main/packages/babel-helpers/LICENSE */
 
 lodash-es/lodash.js:
@@ -3623,21 +3625,6 @@ cytoscape/dist/cytoscape.esm.mjs:
   */
   /*! Bezier curve function generator. Copyright Gaetan Renaudeau. MIT License: http://en.wikipedia.org/wiki/MIT_License */
   /*! Runge-Kutta spring physics function generator. Adapted from Framer.js, copyright Koen Bok. MIT License: http://en.wikipedia.org/wiki/MIT_License */
-
-@mermaid-js/parser/dist/chunks/mermaid-parser.core/chunk-FOHPRMQF.mjs:
-  /*! Bundled license information:
-  
-  lodash-es/lodash.js:
-    (**
-     * @license
-     * Lodash (Custom Build) <https://lodash.com/>
-     * Build: `lodash modularize exports="es" -o ./`
-     * Copyright OpenJS Foundation and other contributors <https://openjsf.org/>
-     * Released under MIT license <https://lodash.com/license>
-     * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
-     * Copyright Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
-     *)
-  */
 
 mermaid/dist/mermaid.core.mjs:
   /*! Check if previously processed */

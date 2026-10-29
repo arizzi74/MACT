@@ -8,25 +8,97 @@ window.CodexFormat = (() => {
     if (text !== undefined) value.textContent = String(text);
     return value;
   };
+  // Consume terminal escapes once. An unterminated OSC must not cause another
+  // scan of the remaining string for every later ESC ] in streamed output.
+  function terminalText(value, guard = false) {
+    const text = String(value ?? ''), parts = [];
+    let cursor = 0, noOSCEnd = false;
+    for (let i = 0; i < text.length; i++) {
+      const char = text.charCodeAt(i);
+      if (!(char < 32 && char !== 9 && char !== 10 || char === 127)) continue;
+      let end = i + 1;
+      if (char === 27 && text[i + 1] === ']' && !noOSCEnd) {
+        let close = i + 2;
+        while (close < text.length && text[close] !== '\x07' && !(text[close] === '\x1b' && text[close + 1] === '\\')) close++;
+        if (close < text.length) end = close + (text[close] === '\x07' ? 1 : 2);
+        else noOSCEnd = true;
+      } else if (char === 27 && text[i + 1] === '[') {
+        let close = i + 2;
+        while (close < text.length && /[0-?]/.test(text[close])) close++;
+        while (close < text.length && /[ -/]/.test(text[close])) close++;
+        if (close < text.length && /[@-~]/.test(text[close])) end = close + 1;
+      }
+      parts.push(text.slice(cursor, i), guard ? '\ufffd'.repeat(end - i) : '');
+      cursor = end; i = end - 1;
+    }
+    parts.push(text.slice(cursor));
+    return parts.join('');
+  }
   // Neither terminal escapes nor control characters are meaningful to a browser transcript.
-  const clean = value => String(value ?? '').replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '').replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '');
+  const clean = value => terminalText(value);
+  const markdownLimit = 64 * 1024, markdownNodeLimit = 4000;
+  const exhausted = Symbol('Markdown work limit');
+  const budgetFor = text => ({ work: 4096 + text.length * 32, nodes: markdownNodeLimit });
+  function spend(budget, work = 1, nodes = 0) {
+    budget.work -= work; budget.nodes -= nodes;
+    if (budget.work < 0 || budget.nodes < 0) throw exhausted;
+  }
+  // All speculative scans share the message budget. A failed opening delimiter
+  // cannot repeatedly scan an arbitrarily large suffix on the main thread.
+  function linkAt(text, start, budget, guarding = false) {
+    let i = start + 1;
+    while (i < text.length && text[i] !== ']' && text[i] !== '\n') { spend(budget); i++; }
+    if (i === start + 1 || text[i] !== ']' || text[i + 1] !== '(') return null;
+    const labelEnd = i; i += 2;
+    const padding = char => char === ' ' || char === '\t' || guarding && char === '\ufffd';
+    while (i < text.length && padding(text[i])) { spend(budget); i++; }
+    const targetStart = i;
+    if (text[i] === '<') {
+      i++;
+      while (i < text.length && !['<', '>', '\n'].includes(text[i])) { spend(budget); i++; }
+      if (i === targetStart + 1 || text[i] !== '>') return null;
+      const targetEnd = ++i;
+      while (i < text.length && padding(text[i])) { spend(budget); i++; }
+      return text[i] === ')' ? { end: i + 1, label: text.slice(start + 1, labelEnd), target: text.slice(targetStart, targetEnd) } : null;
+    }
+    let nesting = 0, targetEnd = i, trailing = false;
+    for (; i < text.length && text[i] !== '\n'; i++) {
+      spend(budget);
+      const char = text[i];
+      if (char === ')' && !nesting) return i > targetStart ? { end: i + 1, label: text.slice(start + 1, labelEnd), target: text.slice(targetStart, targetEnd) } : null;
+      if (!guarding && /\s/.test(char)) {
+        if (char !== ' ' && char !== '\t') return null;
+        trailing = true; continue;
+      }
+      if (trailing) return null;
+      if (char === '\\') {
+        if (i + 1 >= text.length || text[i + 1] === '\n') return null;
+        spend(budget); i++;
+      } else if (char === '(') { if (++nesting > 1) return null; }
+      else if (char === ')') nesting--;
+      targetEnd = i + 1;
+    }
+    return null;
+  }
   // Do not turn an invalid raw target into a different, valid worker path when
   // removing terminal controls from the surrounding message.
-  function cleanMarkdown(value) {
+  function cleanMarkdown(value, budget) {
     const raw = String(value ?? '');
     // Preserve offsets and mark entire terminal escapes before clean() can
     // remove them. Invalid controls around destination padding stay guarded too.
-    const guard = value => '\ufffd'.repeat(value.length);
-    const guarded = raw.replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, guard).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, guard).replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '\ufffd');
-    // The guard also accepts malformed destination whitespace. Keep padding
-    // out of the generic branch to avoid ambiguous sentinel partitions.
-    const references = /\[[^\]\n]+\]\((?:[ \t\ufffd]*<[^<>\n]+>[ \t\ufffd]*|(?:\\.|[^\n\\()]|\((?:\\.|[^\n\\()])*\))+)\)/g;
-    let result = '', cursor = 0;
-    for (const match of guarded.matchAll(references)) {
-      result += raw.slice(cursor, match.index) + match[0];
-      cursor = match.index + match[0].length;
+    const guarded = terminalText(raw, true), parts = [];
+    let cursor = 0;
+    for (let i = 0; i < guarded.length; i++) {
+      spend(budget);
+      if (guarded[i] === '\\') { i++; continue; }
+      if (guarded[i] !== '[') continue;
+      const match = linkAt(guarded, i, budget, true);
+      if (!match) continue;
+      parts.push(raw.slice(cursor, i), guarded.slice(i, match.end));
+      cursor = match.end; i = match.end - 1;
     }
-    return clean(result + raw.slice(cursor));
+    parts.push(raw.slice(cursor));
+    return clean(parts.join(''));
   }
   function safeLink(value) {
     if (value.includes('\ufffd') || /[\x00-\x1f\x7f]/.test(value)) return null;
@@ -47,33 +119,64 @@ window.CodexFormat = (() => {
     if (/^[a-z][a-z0-9+.-]*:/i.test(value)) return /^[^/:]+\.[^/:]+(?::\d+){1,2}$/.test(value);
     return true;
   }
-  function inline(parent, value, depth = 0) {
-    const text = cleanMarkdown(value);
+  function renderInline(parent, value, depth, budget) {
+    spend(budget, 0, 1);
+    const text = cleanMarkdown(value, budget);
     if (depth > 8) { parent.append(document.createTextNode(text)); return; }
-    const pattern = /(`+)([^`\n]+?)\1|\[([^\]\n]+)\]\([ \t]*(<[^<>\n]+>|(?:\\.|[^\s\\()]|\((?:\\.|[^\s\\()])*\))+)[ \t]*\)|\*\*([^*\n]+)\*\*|__([^_\n]+)__|~~([^~\n]+)~~|\*([^*\n]+)\*|_([^_\n]+)_|https?:\/\/[^\s<>]+/g;
     let cursor = 0;
-    for (const match of text.matchAll(pattern)) {
-      parent.append(document.createTextNode(text.slice(cursor, match.index)));
-      let child;
-      if (match[1]) child = node('code', '', match[2]);
-      else if (match[3]) {
-        const target = match[4].replace(/^<|>$/g, '').replace(/\\([\\ ()])/g, '$1');
+    for (let i = 0; i < text.length; i++) {
+      spend(budget);
+      if (text[i] === '\\') { i++; continue; }
+      let child, end = i, content, tag;
+      const link = text[i] === '[' ? linkAt(text, i, budget) : null;
+      if (link) {
+        const target = link.target.replace(/^<|>$/g, '').replace(/\\([\\ ()])/g, '$1');
         const href = safeLink(target), local = !href && fileLink(target);
-        child = node(href || local ? 'a' : 'span', local ? 'file-link' : '', match[3]);
+        child = node(href || local ? 'a' : 'span', local ? 'file-link' : '', link.label);
         if (href) { child.href = href; child.target = '_blank'; child.rel = 'noopener noreferrer'; }
         else if (local) {
           child.href = '#file'; child.dataset.filePath = target; child.title = target;
           child.setAttribute('aria-haspopup', 'dialog'); child.setAttribute('aria-controls', 'file-dialog');
           const icon = node('span', 'file-link-icon', '↧'); icon.setAttribute('aria-hidden', 'true'); child.append(icon);
         } else child.title = target;
-      } else if (match[5] || match[6]) { child = node('strong'); inline(child, match[5] || match[6], depth + 1); }
-      else if (match[7]) { child = node('s'); inline(child, match[7], depth + 1); }
-      else if (match[8] || match[9]) { child = node('em'); inline(child, match[8] || match[9], depth + 1); }
-      else { child = node('a', '', match[0]); child.href = safeLink(match[0]); child.target = '_blank'; child.rel = 'noopener noreferrer'; }
-      parent.append(child);
-      cursor = match.index + match[0].length;
+        end = link.end;
+      } else if ('`*_~'.includes(text[i])) {
+        const char = text[i]; let width = char !== '`' && text[i + 1] === char ? 2 : 1;
+        if (char === '`') { while (text[i + width] === char) { spend(budget); width++; } }
+        if (char === '~' && width === 1) continue;
+        let close = i + width;
+        while (close < text.length && text[close] !== char && text[close] !== '\n') { spend(budget); close++; }
+        if (close > i + width && text.slice(close, close + width) === char.repeat(width)) {
+          content = text.slice(i + width, close); end = close + width;
+          tag = char === '`' ? 'code' : char === '~' ? 's' : width === 2 ? 'strong' : 'em';
+          child = node(tag);
+          if (tag === 'code') child.textContent = content;
+          else renderInline(child, content, depth + 1, budget);
+        }
+      } else if (text.startsWith('https://', i) || text.startsWith('http://', i)) {
+        end = i;
+        while (end < text.length && !/[\s<>]/.test(text[end])) { spend(budget); end++; }
+        content = text.slice(i, end);
+        const href = safeLink(content);
+        if (href) { child = node('a', '', content); child.href = href; child.target = '_blank'; child.rel = 'noopener noreferrer'; }
+      }
+      if (!child) continue;
+      spend(budget, 0, 3);
+      parent.append(document.createTextNode(text.slice(cursor, i)), child);
+      cursor = end; i = end - 1;
     }
     parent.append(document.createTextNode(text.slice(cursor)));
+  }
+  function inline(parent, value) {
+    const text = String(value ?? ''), fragment = document.createDocumentFragment();
+    try {
+      if (text.length > markdownLimit) throw exhausted;
+      renderInline(fragment, text, 0, budgetFor(text));
+      parent.append(fragment);
+    } catch (error) {
+      if (error !== exhausted) throw error;
+      parent.append(document.createTextNode(clean(text)));
+    }
   }
   const highlightLimit = 100000, tokenLimit = 4000;
   const aliases = { js: 'javascript', node: 'javascript', nodejs: 'javascript', ts: 'typescript', py: 'python', sh: 'shell', bash: 'shell', zsh: 'shell', command: 'shell', golang: 'go', rs: 'rust', yml: 'yaml', patch: 'diff' };
@@ -251,14 +354,28 @@ window.CodexFormat = (() => {
     return pre;
   }
   const cells = text => text.trim().replace(/^\||\|$/g, '').split('|').map(value => value.trim());
-  function markdown(value, depth = 0) {
+  function fenceAt(line) {
+    const text = line.trim(), char = text[0];
+    if (char !== '`' && char !== '~') return null;
+    let width = 0;
+    while (text[width] === char) width++;
+    if (width < 3 || /\s/.test(text.slice(width))) return null;
+    return [text, text.slice(0, width), text.slice(width)];
+  }
+  function tableSeparator(line) {
+    const columns = cells(line);
+    return columns.length > 1 && columns.every(column => /^:?-{3,}:?$/.test(column));
+  }
+  function renderMarkdown(value, depth, budget) {
     const root = document.createDocumentFragment();
     if (depth > 12) { root.append(node('p', '', clean(value))); return root; }
-    const lines = cleanMarkdown(value).split('\n');
+    const lines = cleanMarkdown(value, budget).split('\n');
+    const inline = (parent, text) => renderInline(parent, text, 0, budget);
     for (let i = 0; i < lines.length;) {
       const line = lines[i];
+      spend(budget, line.length + 1, 1);
       if (!line.trim()) { i++; continue; }
-      const fence = line.match(/^\s*(`{3,}|~{3,})([^\s]*)\s*$/);
+      const fence = fenceAt(line);
       if (fence) {
         const body = [];
         i++;
@@ -267,6 +384,7 @@ window.CodexFormat = (() => {
         const complete = i < lines.length;
         if (complete) i++;
         const source = body.join('\n');
+        spend(budget, source.length, body.length);
         root.append(complete && /^mermaid$/i.test(fence[2]) && window.CodexDiagrams ? window.CodexDiagrams.create(source) : code(source, fence[2]));
         continue;
       }
@@ -276,9 +394,9 @@ window.CodexFormat = (() => {
       if (/^\s*>/.test(line)) {
         const quote = node('blockquote'); const body = [];
         while (i < lines.length && /^\s*>/.test(lines[i])) body.push(lines[i++].replace(/^\s*> ?/, ''));
-        quote.append(markdown(body.join('\n'), depth + 1)); root.append(quote); continue;
+        quote.append(renderMarkdown(body.join('\n'), depth + 1, budget)); root.append(quote); continue;
       }
-      if (line.includes('|') && i + 1 < lines.length && /^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(lines[i + 1])) {
+      if (line.includes('|') && i + 1 < lines.length && tableSeparator(lines[i + 1])) {
         const labels = cells(line); const wrap = node('div', 'table-wrap'); const table = node('table'); const head = node('thead'); const row = node('tr');
         for (const label of labels) { const th = node('th'); th.scope = 'col'; inline(th, label); row.append(th); }
         head.append(row); table.append(head); const body = node('tbody'); i += 2;
@@ -305,6 +423,19 @@ window.CodexFormat = (() => {
       const p = node('p'); inline(p, para.join('\n')); root.append(p);
     }
     return root;
+  }
+  function markdown(value) {
+    const text = String(value ?? '');
+    try {
+      // Check before cleaning, splitting, matching delimiters or constructing
+      // DOM nodes. Plain text retains the complete response without parser work.
+      if (text.length > markdownLimit) throw exhausted;
+      return renderMarkdown(text, 0, budgetFor(text));
+    } catch (error) {
+      if (error !== exhausted) throw error;
+      const root = document.createDocumentFragment(), plain = node('p', 'markdown-plain', clean(text));
+      root.append(plain); return root;
+    }
   }
   return { node, clean, inline, markdown, code, toolCode };
 })();
