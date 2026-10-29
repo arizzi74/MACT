@@ -582,10 +582,10 @@ func TestDocumentedInstallerAuthenticatesBeforeExecution(t *testing.T) {
 		t.Fatal("missing installation command")
 	}
 	command := strings.SplitN(block[1], "```", 2)[0]
-	if strings.Count(command, "version=v0.7.8") != 1 {
+	if strings.Count(command, "version=v0.7.9") != 1 {
 		t.Fatal("missing explicit stable installer version")
 	}
-	command = strings.Replace(command, "version=v0.7.8", "version=v1.2.3", 1)
+	command = strings.Replace(command, "version=v0.7.9", "version=v1.2.3", 1)
 	for _, scenario := range []string{"authenticated", "matching malicious checksums", "substituted manager", "wrong tag", "missing provenance", "interrupted download"} {
 		t.Run(scenario, func(t *testing.T) {
 			fixture := bootstrapTestFixture(t)

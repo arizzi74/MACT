@@ -114,6 +114,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       RELEASE_TAG: ${{ github.ref_name }}
+      RELEASE_COMMIT: ${{ github.sha }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
@@ -124,30 +125,5 @@ jobs:
         with:
           name: signed-release-files
           path: dist
-      - name: Verify release files and tag
-        run: |
-          ./scripts/verify-release.sh
-          go run ./cmd/release-tool verify-provenance --repo "$GH_REPO" --tag "$RELEASE_TAG"
-          test "$(gh api "repos/$GH_REPO/commits/$RELEASE_TAG" --jq .sha)" = "$GITHUB_SHA"
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            echo 'A release already exists for this tag; refusing to replace its assets.' >&2
-            exit 1
-          fi
-      - name: Upload and verify draft before publishing
-        run: |
-          if [[ -f "docs/releases/$RELEASE_TAG.md" ]]; then
-            gh release create "$RELEASE_TAG" --draft --verify-tag --title "$RELEASE_TAG" --notes-file "docs/releases/$RELEASE_TAG.md"
-          else
-            gh release create "$RELEASE_TAG" --draft --verify-tag --title "$RELEASE_TAG" --generate-notes
-          fi
-          gh release upload "$RELEASE_TAG" dist/*.tar.gz dist/SHA256SUMS dist/SHA256SUMS.sigstore.json dist/codex-telegramgw-linux-* dist/codex-telegramgw-darwin-* dist/install.sh
-          verify_dir=$(mktemp -d)
-          trap 'rm -rf -- "$verify_dir"' EXIT
-          gh release download "$RELEASE_TAG" --dir "$verify_dir"
-          expected_files=$(( $(wc -l < dist/SHA256SUMS) + 2 ))
-          test "$(find "$verify_dir" -type f | wc -l)" -eq "$expected_files"
-          cmp dist/SHA256SUMS "$verify_dir/SHA256SUMS"
-          cmp dist/SHA256SUMS.sigstore.json "$verify_dir/SHA256SUMS.sigstore.json"
-          go run ./cmd/release-tool verify-provenance --dist "$verify_dir" --repo "$GH_REPO" --tag "$RELEASE_TAG"
-          (cd "$verify_dir" && sha256sum -c SHA256SUMS)
-          gh release edit "$RELEASE_TAG" --draft=false --latest
+      - name: Verify and publish through a resumable draft
+        run: python3 scripts/publish-release.py --repo "$GH_REPO" --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT" --dist dist

@@ -105,7 +105,7 @@ Keep this terminal open for the installation commands below.
 export MACT_INSTALLER_DIR
 MACT_INSTALLER_DIR=$(
   set -eu
-  version=v0.7.8
+  version=v0.7.9
   repository=arizzi74/MACT
   case "$(uname -s)" in Linux) platform=linux ;; Darwin) platform=darwin ;; *) exit 1 ;; esac
   case "$(uname -m)" in x86_64|amd64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; *) exit 1 ;; esac

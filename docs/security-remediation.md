@@ -1,7 +1,9 @@
 # Security remediation record
 
-Status: validated for the v0.7.8 release. The release operator will record
-release publication and deployment verification separately.
+Status: the security implementation was validated for v0.7.8; its publication
+stopped during a GitHub upload timeout. The changes are being released as
+v0.7.9 with transaction-cancellation and release-upload reliability fixes. The
+release operator records publication and deployment verification separately.
 
 This implementation starts at commit
 `cce495c3308aeff5fb0f06682c24c6005a27db1c` (v0.7.7). Initial `git status --short`
@@ -71,7 +73,7 @@ current trusted `gh`; saved HTTP Claude endpoints must be changed to HTTPS befor
 restart; state-at-project-root installations need a dedicated state directory for
 raw project downloads; large/dense Markdown becomes inert text; manual aborts
 read stdin. Uploaded evidence and local build/audit data remain ignored rather
-than entering source control. See [v0.7.8 behavior changes](releases/v0.7.8.md).
+than entering source control. See [v0.7.9 behavior changes](releases/v0.7.9.md).
 
 ## Validation record
 
@@ -218,5 +220,53 @@ coverage. MACT does not currently ship a Windows worker package.
 
 The threat model, dependency triage and compatibility notes are documentation;
 the enforcement changes and regressions above are executable code. This record
-documents implementation validation for v0.7.8. Release publication and production
-deployment verification will be recorded separately by the release operator.
+documents the original security validation and the v0.7.9 shipping follow-up
+below. Release publication and production deployment verification are recorded
+separately by the release operator.
+
+
+## v0.7.9 shipping follow-up
+
+The v0.7.8 release workflow passed its build, package, provenance and security
+checks, but publication stopped on a GitHub HTTP 408 asset-upload timeout. Its
+separate main-branch CI run exposed an existing workerdb cancellation race:
+`database/sql` could roll back a canceled transaction before `Commit`, returning
+`sql.ErrTxDone` instead of the caller's context error. The original tag is kept
+unchanged; v0.7.9 includes a real transaction fix and the publication hardening.
+
+The transaction fix normalizes only failed `Commit` calls matching
+`sql.ErrTxDone` when the context has been canceled. Callback and retained SQL
+errors keep precedence. A successful commit still returns success, even when
+cancellation arrives during that commit, so callers do not retry committed
+writes. Real SQLite and controlled-driver tests cover both race orderings,
+aborted writes, pool recovery and error precedence. These commands passed:
+
+```sh
+go test ./internal/workerdb -count=1
+go test -race ./internal/workerdb -count=1
+go test -race ./internal/workerdb -run 'Test(ReadContext|CanceledTransactions|CancellationPreserves|CommitCancellation)' -count=10
+go vet ./internal/workerdb
+go test ./internal/workerdb ./internal/worker ./internal/releasemanager -count=1
+```
+
+Publication now verifies native packages and signed provenance before using an
+exactly owned draft, uploads assets individually with bounded transient retries,
+verifies existing/ambiguous upload results, rechecks all downloaded bytes and
+provenance before publication, and confirms the published release is latest.
+Published, unrelated or changed releases are refused. Only an empty `starter`
+asset with the expected name in that exact owned draft can be removed after
+fresh identity checks. No tag is moved and no mismatched uploaded file is
+clobbered. Synthetic API tests and an installed-GitHub-CLI loopback transport
+fixture cover binary/JSON Content-Length, empty 204 responses, failure recovery
+and refusal conditions; no test performs a production release mutation.
+
+
+Final publisher validation passed all 17 tests, including nullable-draft metadata
+and exact-tag fallback checks, and the full Python suite passed 11 SQLite plus
+68 CI tests. Pinned workflow lint and the secret scanner also passed:
+
+```sh
+python3 -m unittest discover -s scripts -p test_ci_publish_release.py
+./scripts/check.sh python
+go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color
+```
