@@ -224,13 +224,48 @@ jobs:
               ('upload', 'asset synchronization'), ('remove_starter', 'empty owned asset cleanup')):
               setattr(DiagnosticPublisher, name, diagnose(getattr(publisher.Publisher, name), phase))
 
+          def prepare_owned_draft(client):
+              client.check_tag()
+              existing = client.release()
+              if existing is not None:
+                  return client.check_release(existing)
+              notes = publisher.ROOT / 'docs' / 'releases' / (client.tag + '.md')
+              payload = {'tag_name': client.tag, 'name': client.tag,
+                         'body': notes.read_text().rstrip() + '\n\n' + client.marker + '\n',
+                         'draft': True, 'prerelease': False}
+              # The exact existing tag is checked before and after every POST.
+              # target_commitish is unused for an existing tag; omitting it avoids
+              # GitHub's extra Workflows-write requirement for historical workflow
+              # files. This does not create, move or change the verified Git tag.
+              for attempt in range(publisher.ATTEMPTS):
+                  client.check_tag()
+                  try:
+                      try:
+                          publisher.gh(['--method', 'POST', client.base + '/releases', '--input', '-'], payload)
+                      finally:
+                          client.check_tag()
+                      return client.draft()
+                  except publisher.GhError as error:
+                      if not error.transient:
+                          raise
+                      existing = client.release()
+                      if existing is not None:
+                          return client.check_release(existing)
+                      if attempt == publisher.ATTEMPTS - 1:
+                          raise
+                      publisher.pause(attempt)
+
+          operation = 'owned draft preparation'
           try:
-              DiagnosticPublisher(os.environ['GH_REPO'], os.environ['RELEASE_TAG'],
-                                  os.environ['RELEASE_COMMIT'], Path('dist')).publish()
+              client = DiagnosticPublisher(os.environ['GH_REPO'], os.environ['RELEASE_TAG'],
+                                           os.environ['RELEASE_COMMIT'], Path('dist'))
+              prepare_owned_draft(client)
+              operation = 'signed files and repository verification'
+              client.publish()
           except publisher.PublishError as error:
               # Frozen PublishError/GhError messages contain only constant reasons
               # and numeric HTTP status. Never print local exception/CLI text.
-              phase = failed_phase[0] or 'signed files and repository verification'
+              phase = failed_phase[0] or operation
               print('Frozen publisher stopped during ' + phase + ': ' + str(error), file=sys.stderr)
               sys.exit(1)
           except Exception:
