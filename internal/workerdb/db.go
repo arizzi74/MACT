@@ -323,7 +323,16 @@ func (db *DB) transaction(ctx context.Context, write bool, fn func(*Tx) error) e
 	if tx.err != nil {
 		return tx.err
 	}
-	return sqlTx.Commit()
+	err = sqlTx.Commit()
+	// database/sql can complete its automatic rollback before Commit observes
+	// cancellation. Preserve the caller's context error in either ordering,
+	// without changing successful commits or unrelated transaction errors.
+	if errors.Is(err, sql.ErrTxDone) {
+		if contextErr := ctx.Err(); contextErr != nil {
+			return contextErr
+		}
+	}
+	return err
 }
 
 // Reads retain their first SQL error because the ledger's existing Get/Cursor
