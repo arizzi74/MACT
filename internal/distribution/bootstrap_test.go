@@ -20,13 +20,13 @@ type bootstrapFixture struct {
 	key                                              ed25519.PrivateKey
 }
 
-// Independently checked against the published v0.7.9 SHA256SUMS manifest, whose
-// SHA256 is 7ed8bdf540fb43db1f67d6feb4d9aff202c8aa69a290cc0b55d29984d8eea309.
+// Independently checked against the published v0.7.10 SHA256SUMS manifest, whose
+// SHA256 is 5c24e4581f704bceb1f4c54e1a0efb9af11badc72714d10a15b676138071b8f3.
 var bootstrapPins = map[string]string{
-	"linux-amd64":  "c994d10109a0626d64a5209ca594534f2fa88ddd640650062f34df63c1739dd9",
-	"linux-arm64":  "e9c8aaf0fa6e95f004d6921b4b6a39415416b17265f8363f621d5e222731fe95",
-	"darwin-amd64": "cdf9d3a74e3f534b237daba6b93417f344e1f11539fdda8fead20acd204ccecb",
-	"darwin-arm64": "700a5839c8a6f6d5750f75e38182662439f308114496f7f19611e0788127eecd",
+	"linux-amd64":  "14679733a214051917367b297c2b1053f8a9aff2aca3ae1ac15382b967887c96",
+	"linux-arm64":  "50644f55ac39030140e2de84387f71ba397f7c8285037e3e33d6756a00a958cb",
+	"darwin-amd64": "0ef44ca5d470166944ef71d17657a51800a3d7defeaf0351012c24110992abf1",
+	"darwin-arm64": "af5085990b286575c98ac839112a2b6d6c232d8b8cd097812bd5eef52dc4d7cc",
 }
 
 func bootstrapTestFixture(t *testing.T) bootstrapFixture {
@@ -167,7 +167,7 @@ func TestBootstrapProductionPinsRejectSubstitutedManagersOnEveryPlatform(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(script), "bootstrap_version=v0.7.9\n") || len(bootstrapPins) != len(Targets()) {
+	if !strings.Contains(string(script), "bootstrap_version=v0.7.10\n") || len(bootstrapPins) != len(Targets()) {
 		t.Fatal("bootstrap version or supported target pins changed")
 	}
 	for _, target := range Targets() {
@@ -219,7 +219,7 @@ func TestBootstrapWorksWithoutGhPythonOrGoAndPreservesArguments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "https://github.com/arizzi74/MACT/releases/latest\nhttps://github.com/arizzi74/MACT/releases/download/v0.7.9/codex-telegramgw-linux-amd64\n"
+	want := "https://github.com/arizzi74/MACT/releases/latest\nhttps://github.com/arizzi74/MACT/releases/download/v0.7.10/codex-telegramgw-linux-amd64\n"
 	if string(requests) != want {
 		t.Fatalf("wrong release requests: %s", requests)
 	}
@@ -302,7 +302,7 @@ func TestBootstrapSelectsTargetVersionAndRepositoryIndependentlyOfPinnedManager(
 			if !strings.Contains(strings.Join(args, " "), "--version") {
 				selection = "latest"
 			}
-			want := "https://github.com/owner/repository/releases/" + selection + "\nhttps://github.com/arizzi74/MACT/releases/download/v0.7.9/codex-telegramgw-linux-amd64\n"
+			want := "https://github.com/owner/repository/releases/" + selection + "\nhttps://github.com/arizzi74/MACT/releases/download/v0.7.10/codex-telegramgw-linux-amd64\n"
 			if string(requests) != want {
 				t.Fatalf("target selection changed bootstrap repository/version: %s", requests)
 			}
@@ -380,7 +380,7 @@ func TestBootstrapFollowsOnlyOfficialRenameForLatestAndPinnedReleases(t *testing
 				t.Fatalf("legacy selection did not resolve through its original URL: %s", requests[0])
 			}
 			for _, request := range requests[1:] {
-				if !strings.HasPrefix(request, "https://github.com/arizzi74/MACT/releases/download/v0.7.9/") {
+				if !strings.HasPrefix(request, "https://github.com/arizzi74/MACT/releases/download/v0.7.10/") {
 					t.Fatalf("asset did not use canonical renamed repository: %s", request)
 				}
 			}
@@ -513,7 +513,7 @@ func TestBootstrapSelectsEverySupportedPlatform(t *testing.T) {
 				t.Fatalf("platform selection failed: %v %s", err, output)
 			}
 			requests, err := os.ReadFile(filepath.Join(fixture.root, "requests"))
-			if err != nil || !strings.HasSuffix(string(requests), "https://github.com/arizzi74/MACT/releases/download/v0.7.9/"+target.ManagerAsset()+"\n") {
+			if err != nil || !strings.HasSuffix(string(requests), "https://github.com/arizzi74/MACT/releases/download/v0.7.10/"+target.ManagerAsset()+"\n") {
 				t.Fatalf("wrong manager asset: %s %v", requests, err)
 			}
 		})
@@ -744,10 +744,10 @@ func documentedInstallerCommand(t *testing.T) string {
 		t.Fatal("missing installation command")
 	}
 	command := strings.SplitN(block[1], "```", 2)[0]
-	if strings.Count(command, "version=v0.7.9") != 1 {
+	if strings.Count(command, "version=v0.7.10") != 1 {
 		t.Fatal("missing explicit stable installer version")
 	}
-	command = strings.Replace(command, "version=v0.7.9", "version=v1.2.3", 1)
+	command = strings.Replace(command, "version=v0.7.10", "version=v1.2.3", 1)
 	return command
 }
 

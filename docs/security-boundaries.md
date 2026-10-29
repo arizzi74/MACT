@@ -9,7 +9,7 @@ with the same filesystem privileges.
 ## Installation trust
 
 The default one-line setup trusts the shell bootstrap delivered from the
-canonical repository over HTTPS. The bootstrap checks a pinned v0.7.9 native
+canonical repository over HTTPS. The bootstrap checks a pinned v0.7.10 native
 manager against embedded SHA-256 hashes. That manager verifies signed release
 provenance and all target packages before installation. This does not
 independently authenticate the bootstrap script itself.

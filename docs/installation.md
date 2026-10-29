@@ -87,7 +87,7 @@ worker's safe workspace / on-request permissions. See
 [Codex worker defaults](admin.md#codex-worker-defaults) for details.
 
 The one-line commands below install the latest stable MACT release. The
-HTTPS-delivered bootstrap checks a known-good v0.7.9 native manager against
+HTTPS-delivered bootstrap checks a known-good v0.7.10 native manager against
 embedded SHA-256 hashes; that manager verifies signed release provenance and
 all downloaded target packages before installation. GitHub CLI is not required.
 For a separately authenticated first executable, use the
@@ -851,7 +851,7 @@ Keep this terminal open to use the verified manager.
 export MACT_INSTALLER_DIR
 MACT_INSTALLER_DIR=$(
   set -eu
-  version=v0.7.9
+  version=v0.7.10
   repository=arizzi74/MACT
   case "$(uname -s)" in Linux) platform=linux ;; Darwin) platform=darwin ;; *) exit 1 ;; esac
   case "$(uname -m)" in x86_64|amd64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; *) exit 1 ;; esac

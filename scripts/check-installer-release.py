@@ -19,6 +19,8 @@ ALLOWED = frozenset({
     "internal/distribution/bootstrap_test.go", "internal/releasemanager/setup_gateway_finish.go",
     "internal/releasemanager/setup_gateway_finish_test.go", "scripts/install.sh",
     "scripts/test-admin-ui.cjs", "scripts/test-site.cjs", "site/index.html",
+    ".github/workflows/installer-release-launch.yml",
+    ".github/workflows/installer-release-publish.yml",
     ".github/workflows/release.yml", ".github/workflows/native-whisper.yml",
     ".github/workflows/native-speech.yml", "scripts/check-installer-release.py",
     "scripts/test_ci_installer_release.py",

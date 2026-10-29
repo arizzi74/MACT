@@ -1,6 +1,6 @@
 #!/bin/sh
 # This HTTPS-fetched script is the initial trust root. Before execution, verify
-# the known v0.7.9 native manager against a checksum pinned in this script.
+# the known v0.7.10 native manager against a checksum pinned in this script.
 set -eu
 
 # The native manager selects gateway setup under sudo, worker setup otherwise.
@@ -63,16 +63,16 @@ fi
 case "$(uname -s)" in Linux) platform=linux ;; Darwin) platform=darwin ;; *) fail 'unsupported operating system' ;; esac
 case "$(uname -m)" in x86_64|amd64) architecture=amd64 ;; aarch64|arm64) architecture=arm64 ;; *) fail 'unsupported CPU architecture' ;; esac
 asset="codex-telegramgw-$platform-$architecture"
-# These pins come from the authenticated canonical v0.7.9 SHA256SUMS manifest
-# (SHA256 7ed8bdf540fb43db1f67d6feb4d9aff202c8aa69a290cc0b55d29984d8eea309).
+# These pins come from the authenticated canonical v0.7.10 SHA256SUMS manifest
+# (SHA256 5c24e4581f704bceb1f4c54e1a0efb9af11badc72714d10a15b676138071b8f3).
 # The bootstrap version is independent of the release/repository being installed.
 # This manager verifies signed provenance and checksums for the target release.
-bootstrap_version=v0.7.9
+bootstrap_version=v0.7.10
 case "$platform-$architecture" in
-  linux-amd64) expected=c994d10109a0626d64a5209ca594534f2fa88ddd640650062f34df63c1739dd9 ;;
-  linux-arm64) expected=e9c8aaf0fa6e95f004d6921b4b6a39415416b17265f8363f621d5e222731fe95 ;;
-  darwin-amd64) expected=cdf9d3a74e3f534b237daba6b93417f344e1f11539fdda8fead20acd204ccecb ;;
-  darwin-arm64) expected=700a5839c8a6f6d5750f75e38182662439f308114496f7f19611e0788127eecd ;;
+  linux-amd64) expected=14679733a214051917367b297c2b1053f8a9aff2aca3ae1ac15382b967887c96 ;;
+  linux-arm64) expected=50644f55ac39030140e2de84387f71ba397f7c8285037e3e33d6756a00a958cb ;;
+  darwin-amd64) expected=0ef44ca5d470166944ef71d17657a51800a3d7defeaf0351012c24110992abf1 ;;
+  darwin-arm64) expected=af5085990b286575c98ac839112a2b6d6c232d8b8cd097812bd5eef52dc4d7cc ;;
 esac
 printf 'Preparing the %s installer for %s/%s...\n' "$1" "$platform" "$architecture"
 download() {
