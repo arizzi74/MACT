@@ -180,5 +180,60 @@ jobs:
           github-token: ${{ github.token }}
           merge-multiple: true
           path: dist
-      - name: Verify existing signed files and publish the immutable release
-        run: python3 scripts/publish-release.py --repo "$GH_REPO" --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT" --dist dist
+      - name: Verify frozen source against the existing release payload
+        run: go run ./cmd/release-tool verify --root . --dist dist
+      - name: Verify the existing checksum manifest provenance
+        run: go run ./cmd/release-tool verify-provenance --repo "$GH_REPO" --tag "$RELEASE_TAG" --dist dist
+      - name: Publish with safe diagnostics from the unchanged frozen publisher
+        run: |
+          python3 - <<'PY'
+          import importlib.util
+          import os
+          from pathlib import Path
+          import sys
+
+          try:
+              spec = importlib.util.spec_from_file_location('frozen_release_publisher', 'scripts/publish-release.py')
+              publisher = importlib.util.module_from_spec(spec)
+              spec.loader.exec_module(publisher)
+          except Exception:
+              print('Could not load the frozen release publisher.', file=sys.stderr)
+              sys.exit(1)
+
+          failed_phase = [None]
+
+          class DiagnosticPublisher(publisher.Publisher):
+              pass
+
+          def diagnose(method, phase):
+              def call(self, *args, **kwargs):
+                  try:
+                      return method(self, *args, **kwargs)
+                  except publisher.PublishError:
+                      if failed_phase[0] is None:
+                          failed_phase[0] = phase
+                      raise
+              return call
+
+          # Add static phase labels only. Every check and mutation still executes
+          # the original frozen method with its original arguments and result.
+          for name, phase in (
+              ('check_tag', 'exact tag verification'), ('release', 'release lookup'),
+              ('check_release', 'owned release validation'), ('create', 'draft creation'),
+              ('assets', 'asset inventory'), ('download', 'asset readback'),
+              ('upload', 'asset synchronization'), ('remove_starter', 'empty owned asset cleanup')):
+              setattr(DiagnosticPublisher, name, diagnose(getattr(publisher.Publisher, name), phase))
+
+          try:
+              DiagnosticPublisher(os.environ['GH_REPO'], os.environ['RELEASE_TAG'],
+                                  os.environ['RELEASE_COMMIT'], Path('dist')).publish()
+          except publisher.PublishError as error:
+              # Frozen PublishError/GhError messages contain only constant reasons
+              # and numeric HTTP status. Never print local exception/CLI text.
+              phase = failed_phase[0] or 'signed files and repository verification'
+              print('Frozen publisher stopped during ' + phase + ': ' + str(error), file=sys.stderr)
+              sys.exit(1)
+          except Exception:
+              print('Frozen publisher stopped with an undisclosed local failure.', file=sys.stderr)
+              sys.exit(1)
+          PY
