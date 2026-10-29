@@ -360,7 +360,7 @@ const data = {
     await page.locator('#new-worker').focus();
     await page.keyboard.press('Enter');
     await waitForEnrollment();
-    assert.equal(await page.locator('.enrollment-command code').textContent(), 'curl -fsSL https://raw.githubusercontent.com/arizzi74/MACT/main/scripts/install.sh | sh');
+    assert.equal(await page.locator('.enrollment-command code').textContent(), '"$MACT_INSTALLER_DIR/install" setup worker');
     const firstEnrollment = enrollmentResponses.at(-1);
     assert.equal(await page.locator('#enrollment-url').inputValue(), firstEnrollment.enrollment_url);
     assert.match(await page.locator('#enrollment-url').inputValue(), /^https:\/\/ADMIN\.TEST:443\//, 'A same-origin URL is preserved verbatim');

@@ -126,7 +126,7 @@ func TestFinishGatewayRegistersBotAsServiceAccountAndGuidesEnrollment(t *testing
 			t.Fatalf("unexpected operation %v", command)
 		}
 	}
-	for _, message := range []string{"https://gateway.example.com/tgw/admin/", "enroll a worker", "worker ID", "curl -fsSL", "/tgsessions"} {
+	for _, message := range []string{"https://gateway.example.com/tgw/admin/", "enroll a worker", "worker ID", "installation.md#download-and-authenticate-the-installer", `"$MACT_INSTALLER_DIR/install" setup worker`, "/tgsessions"} {
 		if !strings.Contains(output.String(), message) {
 			t.Fatalf("missing setup guidance: %s", message)
 		}

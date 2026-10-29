@@ -14,6 +14,9 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  security:
+    uses: ./.github/workflows/security.yml
+
   go-checks:
     uses: ./.github/workflows/go-checks.yml
 
@@ -50,7 +53,7 @@ jobs:
       version: ${{ github.ref_name }}
 
   test-and-build:
-    needs: [go-checks, browser, package, native-session-archive]
+    needs: [go-checks, browser, package, native-session-archive, security]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

@@ -151,7 +151,8 @@ func (m *Manager) guideGatewayCompletion(ctx context.Context, l *Layout, cfg con
 	}
 	fmt.Fprintf(m.Out, "\nOpen %s/tgw/admin/ and register your passkey using the one-time token above, or sign in with your existing passkey.\n", cfg.PublicBaseURL)
 	fmt.Fprintln(m.Out, "In the console, enroll a worker and copy its worker ID and one-time enrollment token. On the worker machine, run as the user who owns the projects:")
-	fmt.Fprintf(m.Out, "  curl -fsSL https://raw.githubusercontent.com/%s/main/scripts/install.sh | sh\n", DefaultRepo)
+	fmt.Fprintf(m.Out, "First authenticate the installer: https://github.com/%s/blob/main/docs/installation.md#download-and-authenticate-the-installer\n", DefaultRepo)
+	fmt.Fprintln(m.Out, `  "$MACT_INSTALLER_DIR/install" setup worker`)
 	fmt.Fprintf(m.Out, "Enter %s when asked for the gateway address, then the worker ID and token.\n", cfg.PublicBaseURL)
 	fmt.Fprintf(m.Out, "After the worker connects, open @%s in Telegram and use /tgsessions.\n", strings.TrimPrefix(cfg.Secrets.BotName, "@"))
 	return nil

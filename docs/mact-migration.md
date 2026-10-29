@@ -147,22 +147,22 @@ its uploaded draft before publication.
 
 ## Recovery when an update cannot run
 
-Download `scripts/install.sh` from the canonical repository and run it with an
-explicit `--repo arizzi74/MACT`. The bootstrap supplies a manager from v0.6.21
-or later; it rejects earlier versions. Run gateway commands with sudo and worker
+First [download and authenticate the installer](installation.md#download-and-authenticate-the-installer). Use a release whose provenance names the
+canonical repository, then pass an explicit `--repo arizzi74/MACT`. This sets
+`MACT_INSTALLER_DIR`; the bootstrap rejects canonical versions before v0.6.21. Run gateway commands with sudo and worker
 commands as the worker's existing account. Preserve the existing configuration
 and enrollment.
 
 For a worker, install the verified manager without restarting its runtime:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/arizzi74/MACT/main/scripts/install.sh | sh -s -- adopt worker --repo arizzi74/MACT
+"$MACT_INSTALLER_DIR/install" adopt worker --repo arizzi74/MACT
 ```
 
 For a gateway, use the corresponding supported adoption command:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/arizzi74/MACT/main/scripts/install.sh | sudo sh -s -- adopt gateway --repo arizzi74/MACT
+sudo "$MACT_INSTALLER_DIR/install" adopt gateway --repo arizzi74/MACT
 ```
 
 For an active worker, install the verified manager with `adopt worker` first;

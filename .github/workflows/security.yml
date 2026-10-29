@@ -1,0 +1,49 @@
+name: Security checks
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  secrets:
+    name: Git history and working tree secrets
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.26.10'
+      - name: Build the pinned secret scanner
+        env:
+          GOBIN: ${{ runner.temp }}/security-tools
+        run: |
+          go install -ldflags '-X github.com/zricethezav/gitleaks/v8/version.Version=8.30.1' github.com/zricethezav/gitleaks/v8@v8.30.1
+      - name: Scan history and current files without exposing findings
+        env:
+          GITLEAKS_BIN: ${{ runner.temp }}/security-tools/gitleaks
+        run: ./scripts/check-secrets.sh
+      - name: Exercise scanner rejection and safe file staging
+        env:
+          GITLEAKS_BIN: ${{ runner.temp }}/security-tools/gitleaks
+        run: PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_check_secrets.py
+
+  browser-dependencies:
+    name: Shipped browser dependency advisories
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22.22.1'
+          cache: npm
+      - run: npm ci
+      - name: Audit lockfile and packages embedded in production assets
+        run: npm run security:audit
+      - name: Verify committed browser bundle and notices are reproducible
+        run: npm run build:mermaid -- --check

@@ -1,5 +1,6 @@
 #!/bin/sh
-# Download and execute the native, checksum-verified release manager.
+# Run only a previously authenticated copy of this script (see installation.md).
+# Authenticate the native manager with an already trusted GitHub CLI before use.
 set -eu
 
 # The native manager selects gateway setup under sudo, worker setup otherwise.
@@ -53,9 +54,12 @@ for argument do
   esac
 done
 [ -z "$expect" ] || fail "--$expect requires a value"
-for utility in curl uname mktemp chmod rm; do
+for utility in curl gh uname mktemp chmod rm; do
   command -v "$utility" >/dev/null 2>&1 || fail "$utility is required"
 done
+# Never fetch a verifier through the release channel we are about to verify.
+# Old CLIs, including versions without attestation support, fail closed here.
+gh attestation verify --help >/dev/null 2>&1 || fail 'a trusted GitHub CLI with attestation verification support is required; install it through your trusted package channel'
 if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
   fail 'sha256sum or shasum is required'
 fi
@@ -97,6 +101,19 @@ trap 'exit 1' HUP INT TERM
 base="https://github.com/$repository/releases/download/$release_tag"
 printf 'Downloading and verifying installer %s...\n' "$release_tag"
 download --max-filesize 1048576 --output "$temporary/SHA256SUMS" "$base/SHA256SUMS" || fail 'could not download release checksums'
+download --max-filesize 4194304 --output "$temporary/SHA256SUMS.sigstore.json" "$base/SHA256SUMS.sigstore.json" || fail 'could not download signed release provenance; no installer code was executed'
+# Both the certificate SAN and source ref must name this exact release. A hash
+# obtained alongside the manager is trusted only after this independent check.
+# No downloaded trust roots, relaxed identity fallback, or unverified manager
+# can participate in verification. Unsupported flags also fail closed.
+gh attestation verify "$temporary/SHA256SUMS" \
+  --bundle "$temporary/SHA256SUMS.sigstore.json" \
+  --repo "$repository" \
+  --cert-identity "https://github.com/$repository/.github/workflows/release.yml@refs/tags/$release_tag" \
+  --cert-oidc-issuer https://token.actions.githubusercontent.com \
+  --source-ref "refs/tags/$release_tag" \
+  --predicate-type https://slsa.dev/provenance/v1 \
+  >/dev/null || fail 'release provenance verification failed; no installer code was executed'
 expected=
 seen=' '
 while IFS= read -r line || [ -n "$line" ]; do
@@ -123,5 +140,5 @@ fi
 chmod 0700 "$temporary/$asset"
 CODEX_TELEGRAMGW_BOOTSTRAP_RELEASE=$release_tag
 export CODEX_TELEGRAMGW_BOOTSTRAP_RELEASE
-printf 'Installer verified. Follow the terminal prompts; press Enter to accept defaults.\n'
+printf 'Installer publisher and checksum verified. Follow the terminal prompts; press Enter to accept defaults.\n'
 "$temporary/$asset" "$@"

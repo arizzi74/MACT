@@ -20,7 +20,8 @@ recovering an installation that missed that prerequisite.
 
 ## Before installing
 
-Install curl and provide `sha256sum` (Linux) or `shasum` (macOS). The bootstrap
+Install curl, an independently trusted current GitHub CLI, and
+`sha256sum` (Linux) or `shasum` (macOS). The bootstrap
 uses the system POSIX shell and standard utilities. Installation and updates run
 in the downloaded native Go manager. Linux binaries are statically linked;
 macOS binaries use the normal macOS system libraries. Linux service installation
@@ -86,18 +87,85 @@ Codex configuration. Empty overrides use native model/reasoning settings and the
 worker's safe workspace / on-request permissions. See
 [Codex worker defaults](admin.md#codex-worker-defaults) for details.
 
-## Download the installer
+## Download and authenticate the installer
+
+First install a current GitHub CLI (`gh`) through an independently trusted
+package channel, such as your operating system's signed packages. Confirm that
+`gh attestation verify --help` supports `--bundle`, `--cert-identity` and
+`--source-ref`. The installer never downloads its own verifier. An old or missing
+verifier causes installation to stop. See the official
+[GitHub CLI verification reference](https://cli.github.com/manual/gh_attestation_verify).
+
+Run the following in your project account's terminal. It authenticates the
+native manager before giving it executable permissions; no downloaded shell
+script runs. Change the explicit stable version when selecting another release.
+Keep this terminal open for the installation commands below.
 
 ```sh
-curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
-  https://raw.githubusercontent.com/arizzi74/MACT/main/scripts/install.sh \
-  --output /tmp/codex-telegramgw-install.sh
+export MACT_INSTALLER_DIR
+MACT_INSTALLER_DIR=$(
+  set -eu
+  version=v0.7.8
+  repository=arizzi74/MACT
+  case "$(uname -s)" in Linux) platform=linux ;; Darwin) platform=darwin ;; *) exit 1 ;; esac
+  case "$(uname -m)" in x86_64|amd64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; *) exit 1 ;; esac
+  asset="codex-telegramgw-$platform-$arch"
+  temporary=$(mktemp -d "${TMPDIR:-/tmp}/mact-installer.XXXXXXXX")
+  trap 'rm -rf -- "$temporary"' EXIT
+  trap 'exit 1' HUP INT TERM
+  download() {
+    curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+      --tlsv1.2 --connect-timeout 15 --max-time 180 --retry 2 "$@"
+  }
+  base="https://github.com/$repository/releases/download/$version"
+  download --max-filesize 1048576 --output "$temporary/SHA256SUMS" "$base/SHA256SUMS"
+  download --max-filesize 4194304 --output "$temporary/SHA256SUMS.sigstore.json" "$base/SHA256SUMS.sigstore.json"
+  gh attestation verify "$temporary/SHA256SUMS" \
+    --bundle "$temporary/SHA256SUMS.sigstore.json" \
+    --repo "$repository" \
+    --cert-identity "https://github.com/$repository/.github/workflows/release.yml@refs/tags/$version" \
+    --cert-oidc-issuer https://token.actions.githubusercontent.com \
+    --source-ref "refs/tags/$version" \
+    --predicate-type https://slsa.dev/provenance/v1 >/dev/null
+  LC_ALL=C grep -E "^[0-9a-fA-F]{64}  $asset\$" "$temporary/SHA256SUMS" > "$temporary/manager.sha256"
+  test "$(wc -l < "$temporary/manager.sha256")" -eq 1
+  download --max-filesize 67108864 --output "$temporary/$asset" "$base/$asset"
+  if command -v sha256sum >/dev/null 2>&1; then
+    (cd "$temporary" && sha256sum -c manager.sha256) >/dev/null
+  else
+    (cd "$temporary" && shasum -a 256 -c manager.sha256) >/dev/null
+  fi
+  chmod 0700 "$temporary/$asset"
+  mv "$temporary/$asset" "$temporary/install"
+  trap - EXIT
+  printf '%s\n' "$temporary"
+)
 ```
 
-The bootstrap resolves a stable GitHub Release and verifies the downloaded
-manager against that release's SHA-256 manifest before running it. The manager
-verifies both the platform archive and its contained binary. Downloaded archives
-cannot install symlinks or paths outside the staging directory.
+Continue only after successful verification. The commands below use that private
+verified executable. When finished, remove it with
+`rm -rf -- "$MACT_INSTALLER_DIR"`.
+
+The trusted CLI authenticates the manifest's signature, certificate and
+transparency evidence, and requires the exact repository, release workflow,
+GitHub OIDC issuer, source tag and SLSA v1 predicate. Only then does its manager
+checksum become an authenticity check. An unsigned, substituted or truncated
+asset fails before execution, including gateway setup with sudo.
+
+Do not pipe the mutable `main` branch installer into a shell. If using
+`scripts/install.sh` instead, obtain it from a separately trusted reviewed source
+checkout, or verify that script's digest against an independently authenticated
+release manifest before invoking it. A script cannot establish its own integrity
+by downloading a checksum or embedding a key. This script also requires the
+preinstalled trusted `gh` and verifies provenance before running the manager.
+For historical releases whose shell bootstrap predates these checks, use the
+authenticated native manager procedure above. The exact identity policy rejects historical attestations under a different
+repository name; use a release signed under `arizzi74/MACT` for first installs.
+The native updater's explicitly authorized historical migration policy is
+unchanged.
+
+The manager verifies both the platform archive and its contained binary.
+Downloaded archives cannot install symlinks or paths outside the staging directory.
 
 For a dedicated Claude Code installation, see [Claude Code workers](claude-code.md).
 Use `mact setup claude-worker`; this preserves the separate Codex worker, if present.
@@ -107,11 +175,10 @@ Use `mact setup claude-worker`; this preserves the separate Codex worker, if pre
 Run on the Linux gateway host:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/arizzi74/MACT/main/scripts/install.sh | sudo sh
+sudo "$MACT_INSTALLER_DIR/install" setup gateway
 ```
 
-Running with sudo selects gateway setup; running without sudo selects worker
-setup. No installer arguments are needed. Daily automatic updates are enabled.
+The authenticated native manager starts guided gateway setup. Daily automatic updates are enabled.
 
 - An existing gateway in the standard location is adopted without replacing
   its configuration or restarting its service.
@@ -129,19 +196,19 @@ setup. No installer arguments are needed. Daily automatic updates are enabled.
   and a one-time token for the first passkey. Enroll your worker in that console
   before running the worker installer.
 
-The prompts read the terminal directly, so they work through the pipe. Without
+The prompts read the terminal directly. Without
 a terminal, prepare the configuration files first. The installer sets up the
 service account, private configuration, SQLite data directory, gateway binary,
 systemd service, and updater. It uses SQLite, so no separate database server is
 needed. DNS and firewall changes remain your responsibility; the prompts explain
 what is required and let you retry or finish later.
 
-You can also use `sudo sh /tmp/codex-telegramgw-install.sh` or
+You can also use `sudo "$MACT_INSTALLER_DIR/install"` or
 `sudo mact setup gateway`. For an unattended installation using
 custom paths, the explicit command remains available:
 
 ```sh
-sudo sh /tmp/codex-telegramgw-install.sh install gateway \
+sudo "$MACT_INSTALLER_DIR/install" install gateway \
   --config /path/to/gateway.json \
   --secrets-env /path/to/secrets.env \
   --auto-update
@@ -256,11 +323,10 @@ the webhook or command menu.
 Run as the developer account that owns Codex and the workspaces:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/arizzi74/MACT/main/scripts/install.sh | sh
+"$MACT_INSTALLER_DIR/install" setup worker
 ```
 
-No installer arguments are needed. The default is worker setup with daily
-automatic updates enabled:
+Guided worker setup enables daily automatic updates:
 
 - If saved setup recovery exists, setup resumes that installation with its
   existing enrollment credentials before checking for an installed worker.
@@ -279,9 +345,8 @@ automatic updates enabled:
   Symlinks pointing outside an allowed root do not expand access; configure
   another root explicitly when needed.
 
-The prompts use the terminal directly, so they work when the script is piped
-into `sh`. Without an interactive terminal, provide `worker.json` beforehand.
-You can also run the downloaded script with `sh /tmp/codex-telegramgw-install.sh`
+The prompts use the terminal directly. Without an interactive terminal, provide `worker.json` beforehand.
+You can also run the authenticated manager with `"$MACT_INSTALLER_DIR/install"`
 or run the native manager's `mact setup worker` command.
 
 This installs both `codex-worker` and `codex-local` for the current user and sets
@@ -364,7 +429,7 @@ For unattended installation with a configuration at another location, the
 explicit command is still available:
 
 ```sh
-sh /tmp/codex-telegramgw-install.sh install worker \
+"$MACT_INSTALLER_DIR/install" install worker \
   --config /path/to/worker.json \
   --auto-update
 ```
@@ -392,8 +457,8 @@ For services already installed in the standard paths, use `adopt` instead of
 update manager:
 
 ```sh
-sudo sh /tmp/codex-telegramgw-install.sh adopt gateway --auto-update
-sh /tmp/codex-telegramgw-install.sh adopt worker --auto-update
+sudo "$MACT_INSTALLER_DIR/install" adopt gateway --auto-update
+"$MACT_INSTALLER_DIR/install" adopt worker --auto-update
 ```
 
 Gateway adoption also makes the configuration directory root-owned so the
@@ -509,11 +574,11 @@ these settings. Existing proxy installations must have their saved rules
 updated too; installing a new gateway binary does not rewrite arbitrary virtual
 hosts.
 
-Use the bootstrap to run the new manager for this gateway update. Older managers
+Authenticate the installer as described above to run the new manager for this gateway update. Older managers
 continue checking the previous readiness URL even after installing a new binary:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/arizzi74/MACT/main/scripts/install.sh | sudo sh -s -- update gateway
+sudo "$MACT_INSTALLER_DIR/install" update gateway
 ```
 
 Reload the matching proxy configuration, then run `gateway webhook set` using
@@ -893,11 +958,11 @@ OpenSSL, or external verifier on the installed machine. The release workflow is
 pinned to immutable Action commits and verifies the same policy before publishing.
 
 New managers reject unsigned legacy releases, including explicit version pins.
-Previously installed managers can adopt the first signed release using their
-existing checksum verification; subsequent updates require provenance. The initial
-curl bootstrap still trusts GitHub HTTPS and the installer/manager it retrieves.
-For a separately trusted first install, review and build the manager from a trusted
-source checkout. Signatures do not protect against an authorized change to the
+First installation requires an independently trusted `gh` verifier and the
+authentication procedure above, or a manager built from a separately trusted
+source checkout. Previously installed unsigned-era managers cannot establish
+publisher authenticity from release checksums alone; use the authenticated
+installer for that transition. Subsequent native updates require provenance. Signatures do not protect against an authorized change to the
 trusted release workflow: repository write access remains deployment access.
 Trust-root rotations require a reviewed manager update before old roots expire.
 
