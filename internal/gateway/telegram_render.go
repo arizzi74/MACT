@@ -888,7 +888,7 @@ func telegramErrorText(code string) string {
 	case "voice_cancelled":
 		return "Voice note cancelled."
 	case "worker_updates_usage":
-		return "Use /tgupdateworkers without arguments to check and update workers and Codex runtimes when idle."
+		return "Use /tgupdateworkers without arguments to check and update workers and their runtimes when idle."
 	case "image_too_large":
 		return "The image is too large. Send an image of 10 MiB or less."
 	case "image_download_failed":

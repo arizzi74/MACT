@@ -32,7 +32,8 @@ Install and sign in to Claude Code using its
 [official installation instructions](https://code.claude.com/docs/en/setup).
 Alternatively, configure an API key or authentication token in MACT after
 worker enrollment. Claude must already be installed for the worker's OS account.
-MACT does not install or update the Claude CLI itself.
+MACT uses an existing Claude CLI installation. After setup, it checks the configured official
+release channel daily and updates supported native installations when the worker is idle.
 
 In the gateway admin console choose **Enroll worker**, then on the worker host:
 
@@ -219,8 +220,36 @@ an unavailable value. Other providers show no invented account balance.
 claude-worker status
 claude-worker doctor
 mact update claude-worker
+mact update claude --check
+mact update claude
 ```
 
 Worker updates use the normal signed MACT release and idle checks. They do not
 invoke the Codex runtime updater or overwrite another worker's service or state.
-Update the Claude CLI separately using its supported update command.
+Claude worker maintenance also checks the official Claude Code release channel
+once per UTC day. The default channel is `latest`; an installation that explicitly
+selects `stable` retains that choice. Pending runtime updates and restarts are retried at every maintenance
+tick until all turns, queues, approvals and background work are idle. The worker's
+private update lease blocks new work throughout installation and readiness checks.
+The Web UI worker update action and `/tgupdateworkers` perform a fresh runtime
+check even when the worker binary is current, and report worker and Claude runtime
+outcomes separately. Their discovery result is retained across idle retries and
+updater restarts without changing the automatic daily schedule.
+
+`mact update claude` runs only runtime maintenance under the Claude worker's own
+installation lock; `--check` inspects versions without installing or changing
+update state. Supported native installations use Claude Code's official configured
+release channel. npm, package-manager, wrapper, custom or otherwise unrecognized
+installations remain externally managed and are reported without modification.
+Failed validation restores the previous launcher and withholds the rejected
+release. Runtime replacement preserves configuration, credentials, workspaces
+and native conversation data. Claude and Codex maintenance keep separate state,
+recovery journals, services and runtime reports. Interrupted Claude runtime
+recovery finishes before another worker release can replace the worker binary;
+normal updates resume on the following maintenance tick.
+
+MACT keeps three private copies of previous Claude executables for recovery.
+Retention removes only old native version files that MACT created and whose
+contents still match its recorded hash. Independently installed or changed files
+are preserved, along with global configuration, credentials, projects and
+conversations.

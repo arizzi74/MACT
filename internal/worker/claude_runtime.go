@@ -39,7 +39,10 @@ func (m *RuntimeManager) startClaudeProfile(ctx context.Context, profile config.
 			// Clear all account/model overrides first, so selecting inherited
 			// login cannot accidentally keep a service environment API token.
 			env := map[string]string{
-				"ANTHROPIC_API_KEY": "", "ANTHROPIC_AUTH_TOKEN": "", "ANTHROPIC_BASE_URL": settings.BaseURL,
+				// Runtime maintenance owns version changes for worker children.
+				// Keep native settings and separately launched CLIs untouched.
+				"DISABLE_AUTOUPDATER": "1",
+				"ANTHROPIC_API_KEY":   "", "ANTHROPIC_AUTH_TOKEN": "", "ANTHROPIC_BASE_URL": settings.BaseURL,
 				"ANTHROPIC_MODEL":                settings.Model,
 				"ANTHROPIC_DEFAULT_OPUS_MODEL":   settings.Model,
 				"ANTHROPIC_DEFAULT_SONNET_MODEL": settings.Model,
@@ -98,7 +101,9 @@ func claudeExecutableVersion(ctx context.Context, binary string) (string, error)
 	if binary == "" {
 		binary = "claude"
 	}
-	data, err := exec.CommandContext(ctx, binary, "--version").Output()
+	command := exec.CommandContext(ctx, binary, "--version")
+	command.Env = append(os.Environ(), "DISABLE_AUTOUPDATER=1")
+	data, err := command.Output()
 	if err != nil {
 		return "", fmt.Errorf("Claude Code version unavailable")
 	}

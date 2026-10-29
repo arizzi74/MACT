@@ -96,7 +96,7 @@ func (s *Sender) renderWorkerUpdates(response registry.AcceptResult) string {
 			status = "Updated and restarted · " + worker.Version
 		case "up_to_date":
 			status = "Already up to date · " + worker.Version + " · No worker restart"
-			if worker.Codex != nil {
+			if worker.Codex != nil || worker.Claude != nil {
 				status = "Worker binary up to date · " + worker.Version
 			}
 		case "failed":
@@ -106,14 +106,14 @@ func (s *Sender) renderWorkerUpdates(response registry.AcceptResult) string {
 			}
 		}
 		lines = append(lines, "\n"+name+"\n"+status)
-		if summary := worker.CodexSummary(); summary != "" {
+		if summary := worker.RuntimeSummary(); summary != "" {
 			for _, line := range strings.Split(summary, "\n") {
 				lines = append(lines, s.sessionListField(line, 600, 2400))
 			}
 		}
 	}
 	if response.View == "worker_updates" {
-		lines = append(lines, "\nEach worker will check GitHub and update at its next idle point, after all its turns and pending work finish. Supporting workers also check Codex runtime versions. Offline workers receive the request when they reconnect. A Codex runtime update may also restart the worker supervisor.")
+		lines = append(lines, "\nEach worker will check GitHub and update at its next idle point, after all its turns and pending work finish. Supporting workers also check their Codex or Claude Code runtime versions. Offline workers receive the request when they reconnect. A runtime update may also restart the worker supervisor.")
 	}
 	return strings.Join(lines, "\n")
 }

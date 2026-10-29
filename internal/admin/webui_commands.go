@@ -166,8 +166,8 @@ func (s *Server) webuiCommands(w http.ResponseWriter, r *http.Request) {
 
 func webUIWorkerUpdateText(worker registry.WorkerUpdateStatus) string {
 	status := webUIWorkerBinaryUpdateText(worker)
-	if codex := worker.CodexSummary(); codex != "" {
-		status += "\n" + codex
+	if runtime := worker.RuntimeSummary(); runtime != "" {
+		status += "\n" + runtime
 	}
 	return status
 }
@@ -183,7 +183,7 @@ func webUIWorkerBinaryUpdateText(worker registry.WorkerUpdateStatus) string {
 	case "completed":
 		return "updated and restarted · " + worker.Version
 	case "up_to_date":
-		if worker.Codex != nil {
+		if worker.Codex != nil || worker.Claude != nil {
 			return "worker binary up to date · " + worker.Version
 		}
 		return "up to date · " + worker.Version + " · no worker restart"

@@ -18,13 +18,36 @@ const workerUpdateRetryAfter = 5 * time.Second
 // WorkerUpdateStatus freezes a maintenance notice independently of the active
 // session. The renderer bounds and redacts worker names before presentation.
 type WorkerUpdateStatus struct {
-	WorkerID  string                      `json:"worker_id"`
-	RequestID string                      `json:"request_id,omitempty"`
-	Name      string                      `json:"name"`
-	State     string                      `json:"state"`
-	Version   string                      `json:"version,omitempty"`
-	ErrorCode string                      `json:"error_code,omitempty"`
-	Codex     *protocol.CodexUpdateReport `json:"codex,omitempty"`
+	WorkerID  string                       `json:"worker_id"`
+	RequestID string                       `json:"request_id,omitempty"`
+	Name      string                       `json:"name"`
+	State     string                       `json:"state"`
+	Version   string                       `json:"version,omitempty"`
+	ErrorCode string                       `json:"error_code,omitempty"`
+	Codex     *protocol.CodexUpdateReport  `json:"codex,omitempty"`
+	Claude    *protocol.ClaudeUpdateReport `json:"claude,omitempty"`
+}
+
+// RuntimeSummary preserves the provider identity in Web UI and Telegram results.
+func (w WorkerUpdateStatus) RuntimeSummary() string {
+	if w.Claude != nil {
+		r := w.Claude
+		report := protocol.CodexUpdateReport{State: r.State, LatestVersion: r.LatestVersion, CheckedAt: r.CheckedAt, ErrorCode: r.ErrorCode, Profiles: r.Profiles}
+		summary := runtimeUpdateSummary("Claude Code", &report)
+		if r.Channel != "" {
+			summary += "\nRelease channel: " + r.Channel
+		}
+		return summary
+	}
+	if w.Codex != nil {
+		return w.CodexSummary()
+	}
+	switch w.State {
+	case "completed", "up_to_date", "failed":
+		return "Runtime: check not reported by this worker."
+	default:
+		return ""
+	}
 }
 
 // CodexSummary formats only the structured, bounded runtime result. Callers
@@ -40,7 +63,10 @@ func (w WorkerUpdateStatus) CodexSummary() string {
 			return ""
 		}
 	}
-	r := w.Codex
+	return runtimeUpdateSummary("Codex", w.Codex)
+}
+
+func runtimeUpdateSummary(provider string, r *protocol.CodexUpdateReport) string {
 	status := "result unavailable"
 	switch r.State {
 	case "up_to_date":
@@ -65,9 +91,13 @@ func (w WorkerUpdateStatus) CodexSummary() string {
 	case "no_runtimes":
 		status = "no runtimes configured"
 	}
-	lines := []string{"Codex runtime: " + status}
+	lines := []string{provider + " runtime: " + status}
 	if r.LatestVersion != "" {
-		lines = append(lines, "Latest stable: "+r.LatestVersion)
+		label := "Latest stable: "
+		if provider == "Claude Code" {
+			label = "Latest release: "
+		}
+		lines = append(lines, label+r.LatestVersion)
 	}
 	if !r.CheckedAt.IsZero() {
 		lines = append(lines, "Checked: "+r.CheckedAt.UTC().Format("2006-01-02 15:04:05 UTC"))
@@ -166,7 +196,7 @@ func queueWorkerUpdates(ctx context.Context, tx *dbTx, subscriber *IncomingUpdat
 // WorkerUpdateSnapshot returns only the latest maintenance request per enabled
 // worker. It excludes subscriber identities and internal dispatch metadata.
 func (s *Store) WorkerUpdateSnapshot(ctx context.Context) ([]WorkerUpdateStatus, error) {
-	rows, err := s.pool.Query(ctx, `SELECT r.worker_id,r.request_id,w.name,r.state,COALESCE(r.version,''),COALESCE(r.error_code,''),r.codex_report
+	rows, err := s.pool.Query(ctx, `SELECT r.worker_id,r.request_id,w.name,r.state,COALESCE(r.version,''),COALESCE(r.error_code,''),r.codex_report,r.claude_report
         FROM workers w JOIN worker_update_requests r ON r.request_id=(
             SELECT request_id FROM worker_update_requests WHERE worker_id=w.worker_id
             ORDER BY (state='pending') DESC,created_at DESC,rowid DESC LIMIT 1)
@@ -178,13 +208,18 @@ func (s *Store) WorkerUpdateSnapshot(ctx context.Context) ([]WorkerUpdateStatus,
 	updates := make([]WorkerUpdateStatus, 0)
 	for rows.Next() {
 		var update WorkerUpdateStatus
-		var codex []byte
-		if err := rows.Scan(&update.WorkerID, &update.RequestID, &update.Name, &update.State, &update.Version, &update.ErrorCode, &codex); err != nil {
+		var codex, claude []byte
+		if err := rows.Scan(&update.WorkerID, &update.RequestID, &update.Name, &update.State, &update.Version, &update.ErrorCode, &codex, &claude); err != nil {
 			return nil, err
 		}
 		if len(codex) != 0 {
 			if err := json.Unmarshal(codex, &update.Codex); err != nil {
 				return nil, fmt.Errorf("registry: decode worker Codex update report: %w", err)
+			}
+		}
+		if len(claude) != 0 {
+			if err := json.Unmarshal(claude, &update.Claude); err != nil {
+				return nil, fmt.Errorf("registry: decode worker Claude update report: %w", err)
 			}
 		}
 		updates = append(updates, update)
@@ -279,7 +314,7 @@ func completeWorkerUpdate(ctx context.Context, tx *dbTx, workerID uuid.UUID, res
 		// or overwrite the outcome of this request or a later request.
 		return nil
 	}
-	var codex any
+	var codex, claude any
 	if result.Codex != nil {
 		raw, err := json.Marshal(result.Codex)
 		if err != nil {
@@ -287,8 +322,15 @@ func completeWorkerUpdate(ctx context.Context, tx *dbTx, workerID uuid.UUID, res
 		}
 		codex = string(raw)
 	}
-	if _, err := tx.Exec(ctx, `UPDATE worker_update_requests SET state=$3,version=$4,error_code=$5,codex_report=$6,
-		completed_at=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z') WHERE request_id=$1 AND worker_id=$2`, result.RequestID, workerID, result.State, result.Version, result.ErrorCode, codex); err != nil {
+	if result.Claude != nil {
+		raw, err := json.Marshal(result.Claude)
+		if err != nil {
+			return fmt.Errorf("registry: encode worker Claude update report: %w", err)
+		}
+		claude = string(raw)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE worker_update_requests SET state=$3,version=$4,error_code=$5,codex_report=$6,claude_report=$7,
+		completed_at=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z') WHERE request_id=$1 AND worker_id=$2`, result.RequestID, workerID, result.State, result.Version, result.ErrorCode, codex, claude); err != nil {
 		return fmt.Errorf("registry: complete worker update: %w", err)
 	}
 	rows, err := tx.Query(ctx, `SELECT bot_id,user_id,chat_id,message_thread_id FROM worker_update_watchers WHERE request_id=$1`, result.RequestID)
@@ -309,7 +351,7 @@ func completeWorkerUpdate(ctx context.Context, tx *dbTx, workerID uuid.UUID, res
 		return err
 	}
 	rows.Close()
-	response := AcceptResult{View: "worker_update_result", WorkerUpdates: []WorkerUpdateStatus{{WorkerID: workerID.String(), RequestID: result.RequestID, Name: name, State: result.State, Version: result.Version, ErrorCode: result.ErrorCode, Codex: result.Codex}}}
+	response := AcceptResult{View: "worker_update_result", WorkerUpdates: []WorkerUpdateStatus{{WorkerID: workerID.String(), RequestID: result.RequestID, Name: name, State: result.State, Version: result.Version, ErrorCode: result.ErrorCode, Codex: result.Codex, Claude: result.Claude}}}
 	for _, destination := range destinations {
 		if err := queueUIResponse(ctx, tx, destination, response); err != nil {
 			return err

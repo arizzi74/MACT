@@ -11,7 +11,7 @@ menu names, so `/debug_config` is the menu spelling of `/debug-config`; both wor
 | --- | --- |
 | `/tgstart`, `/tghelp` | Show gateway help. |
 | `/tginstances` | List workers and their runtimes. |
-| `/tgupdateworkers` | Check worker and Codex runtime versions on every worker; install available updates after its turns and pending work finish. |
+| `/tgupdateworkers` | Check worker and Codex or Claude runtime versions on every worker; install available updates after its turns and pending work finish. |
 | `/tgsessions [runtime]` | Browse sessions, select one, or create a session with **New session**. |
 | `/tgstatus [session]` | Show gateway connectivity, queued commands and approvals. |
 | `/tghistory [count]` | Show saved user and Codex messages for the selected session, including Telegram input; original order with newest last, defaults to 2, maximum 50 per page. |
@@ -46,12 +46,13 @@ show a different count because it has its own source and directory filters.
 
 `/tgupdateworkers` works without selecting a session. It queues every enabled
 worker, including offline workers, and waits until each worker has no active
-turns or pending work before installing newer worker or supported Codex runtime
-releases. A runtime update can restart the worker service to refresh its app
+turns or pending work before installing newer worker or supported Codex or
+Claude runtime releases. A runtime update can restart the worker service to refresh its app
 servers even when the worker binary is current. Repeated requests share an existing pending update;
 offline workers receive it on reconnection, and requests survive restarts.
 Completion or failure is reported to the requesting chat and topic, including
-installed, running, and latest Codex versions. The explicit runtime check can
+installed, running, and available runtime versions. Codex follows its stable
+channel; Claude follows its configured official channel (`latest` by default). The explicit runtime check can
 run even if the automatic check already ran today; it does not change update
 schedules. Pinned or externally managed runtimes are reported without installing
 an update. Gateway and worker v0.5.29 or later are required; older workers need

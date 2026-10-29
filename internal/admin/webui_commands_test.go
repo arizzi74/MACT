@@ -216,3 +216,10 @@ func TestWebUIRuntimeUpdateDoesNotClaimWorkerWasNotRestarted(t *testing.T) {
 		t.Fatalf("runtime installation falsely claims no restart: %s", text)
 	}
 }
+
+func TestWebUIWorkerUpdateTextPreservesClaudeRuntimeIdentity(t *testing.T) {
+	text := webUIWorkerUpdateText(registry.WorkerUpdateStatus{State: "up_to_date", Version: "1.2.3", Claude: &protocol.ClaudeUpdateReport{State: "completed", LatestVersion: "2.1.310"}})
+	if !strings.Contains(text, "worker binary up to date") || !strings.Contains(text, "Claude Code runtime: updated") || strings.Contains(text, "Codex") || strings.Contains(text, "no worker restart") {
+		t.Fatalf("Claude runtime update mislabeled: %s", text)
+	}
+}

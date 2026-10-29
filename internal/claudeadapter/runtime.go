@@ -239,17 +239,20 @@ func (r *Runtime) LocalSocket() string {
 	return r.SocketPath
 }
 
-// WithIdleSettingsUpdate atomically fences turn admission while the caller
-// persists new settings. Existing idle native processes are retired only after
-// persistence succeeds. The next prompt resumes its native session with fresh
-// settings. The callback must not call back into this runtime.
-func (r *Runtime) WithIdleSettingsUpdate(update func() error) error {
+// CheckUpdateIdle observes native activity without changing sessions, settings,
+// or processes. The worker must fence command and attachment admission before
+// using this check to authorize a maintenance lease.
+func (r *Runtime) CheckUpdateIdle() error {
 	if r == nil || r.server == nil {
 		return errors.New("Claude runtime is unavailable")
 	}
 	s := r.server
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.checkUpdateIdleLocked()
+}
+
+func (s *server) checkUpdateIdleLocked() error {
 	if s.closed {
 		return errors.New("Claude runtime is closed")
 	}
@@ -270,6 +273,23 @@ func (r *Runtime) WithIdleSettingsUpdate(update func() error) error {
 		if p.hasBackgroundWork() {
 			return errors.New("Claude runtime has active background work")
 		}
+	}
+	return nil
+}
+
+// WithIdleSettingsUpdate atomically fences turn admission while the caller
+// persists new settings. Existing idle native processes are retired only after
+// persistence succeeds. The next prompt resumes its native session with fresh
+// settings. The callback must not call back into this runtime.
+func (r *Runtime) WithIdleSettingsUpdate(update func() error) error {
+	if r == nil || r.server == nil {
+		return errors.New("Claude runtime is unavailable")
+	}
+	s := r.server
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.checkUpdateIdleLocked(); err != nil {
+		return err
 	}
 	if update != nil {
 		if err := update(); err != nil {

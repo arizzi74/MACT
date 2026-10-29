@@ -922,16 +922,20 @@ itemTimes['timestamp-older-completed'] = { startedAtMs: null, completedAtMs: tim
     await page.clock.fastForward(5100);
     assert.equal(gatewayStatusReads(), longWaitReads, 'Long-running worker updates use a slower polling interval');
     gatewayUpdateWorkers[1].state = 'up_to_date';
-    gatewayStatusText = 'Linux worker: updated and restarted · 0.5.test. Remote worker: up to date · no restart. Codex: up to date.';
+    gatewayUpdateWorkers[1].claude = { state: 'completed', channel: 'latest', latest_version: '2.1.310' };
+    gatewayStatusText = 'Linux worker: updated and restarted · 0.5.test.\nCodex runtime: up to date.\nRemote worker: worker binary up to date · 0.5.test.\nClaude Code runtime: updated\nLatest release: 2.1.310\nRelease channel: latest';
     await Promise.all([nextGatewayStatus(), page.clock.fastForward(15000)]);
     await page.waitForFunction(() => document.querySelector('#command-content').textContent.includes('All worker update checks finished'));
-    assert.match(await page.locator('#command-content').textContent(), /Codex: up to date/, 'The panel displays the server runtime report without a separate mutation');
+    assert.match(await page.locator('#command-content').textContent(), /Codex runtime: up to date/, 'The panel displays the server runtime report without a separate mutation');
+    assert.match(await page.locator('#command-content').textContent(), /Claude Code runtime: updated/, 'Claude runtime identity survives automatic status observation');
+    assert.match(await page.locator('#command-content').textContent(), /Release channel: latest/, 'The panel displays the configured Claude release channel');
+    assert.doesNotMatch(await page.locator('#command-content').textContent(), /no restart/i, 'Runtime installation does not claim that its current worker binary avoided a supervisor restart');
     const completedUpdateReads = gatewayStatusReads();
     await page.clock.fastForward(30000);
     assert.equal(gatewayStatusReads(), completedUpdateReads, 'Completion stops automatic status reads');
     assert.equal(gatewayCommands.filter(request => request.command === 'tgupdateworkers').length, 1, 'Progress checks never replay the update POST');
     assert.ok(gatewayCommands.filter(request => request.command === 'tgstatus').every(request => request.method === 'GET' && request.session_id === undefined), 'Automatic status reads are read-only and independent of the selected session');
-    gatewayUpdateWorkers.forEach(worker => { worker.state = 'pending'; });
+    gatewayUpdateWorkers.forEach(worker => { worker.state = 'pending'; delete worker.claude; });
     await page.getByRole('button', { name: 'Close command menu', exact: true }).click();
     // Connection phases describe the actual wait. Recent messages appear as
     // soon as their page arrives, while the active-turn check still gates sends.

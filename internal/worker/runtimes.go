@@ -295,9 +295,9 @@ func (m *RuntimeManager) startProfile(ctx context.Context, profile config.Runtim
 	}
 	cancel()
 	if versionErr == nil {
-		if m.cfg.AgentKind != "claude" {
-			runtime.CodexVersion = version
-		}
+		// Keep the legacy wire field for both providers so maintenance can
+		// prove the version observed when each configured profile started.
+		runtime.CodexVersion = version
 		m.log.Info("runtime started", "profile_id", profile.ID, "agent_kind", m.cfg.AgentKind, "agent_version", version)
 	}
 	return runtime, client, nil

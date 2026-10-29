@@ -79,3 +79,48 @@ func TestWorkerUpdateCodexReportsAreOptionalAndBounded(t *testing.T) {
 		}
 	}
 }
+
+func TestWorkerUpdateClaudeReportsAreOptionalAndBounded(t *testing.T) {
+	base := WorkerUpdateResult{RequestID: uuid.NewString(), State: "completed", Version: "0.5.61"}
+	for _, state := range []string{"up_to_date", "completed", "unsupported", "no_runtimes", "failed", "withheld"} {
+		report := &ClaudeUpdateReport{State: state, LatestVersion: "2.1.123", CheckedAt: time.Now().UTC(), Profiles: []ClaudeRuntimeVersion{{ProfileID: "main", InstalledVersion: "2.1.123", RunningVersion: "2.1.122", Support: "supported"}}}
+		if state == "failed" {
+			report.ErrorCode = "update_failed"
+		} else if state == "withheld" {
+			report.ErrorCode = "rejected_release"
+		}
+		result := base
+		result.Claude = report
+		if err := result.Validate(); err != nil {
+			t.Fatalf("valid %s report rejected: %v", state, err)
+		}
+	}
+	for _, report := range []ClaudeUpdateReport{
+		{State: "up_to_date", Channel: "https://private.example"},
+		{State: "unknown"},
+		{State: "up_to_date", LatestVersion: "2.1.123\nprivate"},
+		{State: "up_to_date", LatestVersion: strings.Repeat("1", 129)},
+		{State: "failed", ErrorCode: "private raw error"},
+		{State: "failed"},
+		{State: "withheld", ErrorCode: "update_failed"},
+		{State: "completed", ErrorCode: "check_failed"},
+		{State: "completed", Profiles: make([]ClaudeRuntimeVersion, 129)},
+		{State: "completed", Profiles: []ClaudeRuntimeVersion{{ProfileID: "main", Support: "other"}}},
+		{State: "completed", Profiles: []ClaudeRuntimeVersion{{ProfileID: "main\nprivate", Support: "supported"}}},
+		{State: "completed", Profiles: []ClaudeRuntimeVersion{{ProfileID: "main", Support: "supported", RunningVersion: "https://private.example"}}},
+		{State: "completed", Profiles: []ClaudeRuntimeVersion{{ProfileID: "main", Support: "supported"}, {ProfileID: "main", Support: "external"}}},
+	} {
+		result := base
+		result.Claude = &report
+		if result.Validate() == nil {
+			t.Fatalf("invalid Claude report accepted: %#v", report)
+		}
+	}
+}
+
+func TestWorkerUpdateResultRejectsMixedRuntimeProviders(t *testing.T) {
+	result := WorkerUpdateResult{RequestID: uuid.NewString(), State: "up_to_date", Version: "1.2.3", Codex: &CodexUpdateReport{State: "up_to_date"}, Claude: &ClaudeUpdateReport{State: "up_to_date"}}
+	if result.Validate() == nil {
+		t.Fatal("one worker update accepted contradictory runtime providers")
+	}
+}

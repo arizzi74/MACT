@@ -198,3 +198,16 @@ func TestWorkerUpdateRenderingSeparatesCodexCheckFromWorkerSuccess(t *testing.T)
 		t.Fatalf("older worker falsely promises runtime check: %s", text)
 	}
 }
+
+func TestWorkerUpdateRenderingPreservesClaudeRuntimeIdentity(t *testing.T) {
+	s := &Sender{}
+	text := s.renderWorkerUpdates(registry.AcceptResult{View: "worker_update_result", WorkerUpdates: []registry.WorkerUpdateStatus{{Name: "Claude host", State: "up_to_date", Version: "1.2.3", Claude: &protocol.ClaudeUpdateReport{State: "completed", LatestVersion: "2.1.310", Profiles: []protocol.ClaudeRuntimeVersion{{ProfileID: "main", InstalledVersion: "2.1.310", RunningVersion: "2.1.310", Support: "supported"}}}}}})
+	for _, want := range []string{"Worker binary up to date", "Claude Code runtime: updated", "installed 2.1.310", "running 2.1.310"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing %q in %s", want, text)
+		}
+	}
+	if strings.Contains(text, "Codex") || strings.Contains(text, "No worker restart") {
+		t.Fatalf("Claude runtime update mislabeled: %s", text)
+	}
+}

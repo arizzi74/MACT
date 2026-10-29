@@ -173,6 +173,7 @@
     return true;
   }
   let noticeRecovery = '', noticeText = '';
+  let providerRetry = null, providerEventOrder = 0;
   let steerNoticeTimer = null, steerNoticeTurn = null;
   function renderNotice() {
     const error = state.authenticated && state.selected ? sessionErrors.get(state.selected.session_id) : null;
@@ -182,6 +183,7 @@
   function notice(text = '', recovery = '') {
     noticeText = text;
     noticeRecovery = text ? recovery : '';
+    providerRetry = null;
     renderNotice();
   }
   function errorWasDismissed(id, value) {
@@ -244,6 +246,37 @@
     // A recovered transport does not confirm an interrupted send or resolve
     // an unrelated Codex error. Clear only the operation that recovered.
     if (scopes.includes(noticeRecovery)) notice();
+  }
+  function recoverProviderRetry(message) {
+    const retry = providerRetry, p = message.params || {};
+    if (!retry || noticeRecovery !== 'retry:' + retry.turnID || !p.turnId || p.turnId !== retry.turnID) return;
+    if (!Number.isSafeInteger(message._providerEventOrder) || !Number.isSafeInteger(retry.order) || message._providerEventOrder <= retry.order || itemMilliseconds(retry.observedAt) === undefined) return;
+    const item = p.item, previous = item?.id ? state.items.get(item.id) : null;
+    const completed = message.method === 'item/completed';
+    const modelOutput = completed && ['agentMessage', 'reasoning'].includes(item?.type) && clean(itemText(item)).trim();
+    const modelDelta = ['item/agentMessage/delta', 'item/reasoning/summaryTextDelta'].includes(message.method) && typeof p.delta === 'string' && clean(p.delta).trim();
+    // A completed history item replayed over the live connection is not new
+    // provider output. Lifecycle dates also reject delayed pre-retry frames.
+    const completedAt = itemMilliseconds(p.completedAtMs) ?? itemMilliseconds(item?.completedAtMs);
+    if (modelDelta || modelOutput && !previous?._complete && !retry.completedItems.has(item.id) && (completedAt === undefined || completedAt >= retry.observedAt)) {
+      recoverNotice('retry:' + retry.turnID); return;
+    }
+    // An old command or background agent can finish during an upstream retry.
+    // A fresh native tool invocation demonstrates that the model resumed issuing
+    // work, even when the worker withholds raw model/reasoning stream deltas.
+    const toolCall = item && (
+      item.type === 'commandExecution' && typeof item.command === 'string' && item.command.trim() ||
+      ['dynamicToolCall', 'mcpToolCall'].includes(item.type) && typeof item.tool === 'string' && item.tool.trim() ||
+      item.type === 'webSearch' && (item.query || item.action?.query) ||
+      item.type === 'fileChange' && Array.isArray(item.changes) && item.changes.length
+    );
+    if (!toolCall || typeof item.id !== 'string' || !item.id || !['item/started', 'item/completed'].includes(message.method) || retry.knownItems.has(item.id) || previous?._complete) return;
+    const startedAt = itemMilliseconds(p.startedAtMs) ?? itemMilliseconds(item.startedAtMs) ?? legacyItemMilliseconds(item.createdAt);
+    if (startedAt !== undefined && startedAt < retry.observedAt) return;
+    // Completion alone needs an authoritative post-retry start date; otherwise
+    // it could belong to work that began before this viewer attached.
+    if (completed && startedAt === undefined) return;
+    recoverNotice('retry:' + retry.turnID);
   }
   function clearSteerNotice() {
     clearTimeout(steerNoticeTimer); steerNoticeTimer = null; steerNoticeTurn = null;
@@ -1927,7 +1960,7 @@
       if (generation !== state.generation || state.socket !== socket) return;
       let message;
       try { message = JSON.parse(event.data); } catch (_) { notice('Received an unreadable update. Reconnect to refresh this conversation.', 'connection'); return; }
-      if (message.method === 'item/started' || message.method === 'item/completed') message._observedAtMs = Date.now();
+      if (message.method) { message._observedAtMs = Date.now(); message._providerEventOrder = ++providerEventOrder; }
       if (message.type === 'ready') {
         clearTimeout(handshakeTimer);
         if (message.session?.session_id === state.selected?.session_id) state.selected = { ...state.selected, ...message.session };
@@ -2535,11 +2568,7 @@
     if (handleClaudeStatusEvent(message)) return;
     if (method === 'gateway/history/timestamps') { applyHistoryTimestamps(p); return; }
     if (handleGoalEvent(message)) return;
-    // Workers withhold raw deltas so secrets split across frames cannot leak.
-    // Completed public model output is the recovery signal on that transport;
-    // an already-running tool or subagent can finish while Codex still retries.
-    const modelOutput = method === 'item/completed' && ['agentMessage', 'reasoning'].includes(p.item?.type) && clean(itemText(p.item)).trim();
-    if (p.turnId && (modelOutput || (p.delta && ['item/agentMessage/delta', 'item/reasoning/summaryTextDelta'].includes(method)))) recoverNotice('retry:' + p.turnId);
+    recoverProviderRetry(message);
     if (method === 'thread/settings/updated') {
       // Older workers can already relay this native notification to viewers.
       // Once the versioned activity feed has confirmed settings, its ordered
@@ -2606,10 +2635,16 @@
       const text = p.error?.message || p.message || 'Codex reported an error.';
       // The native event owns its turn ID even if the active-turn snapshot is
       // still catching up. Do not turn that transient retry into a sticky error.
-      if (retrying) notice(agentLabel() + ' is retrying: ' + text, p.turnId ? 'retry:' + p.turnId : '');
+      if (retrying) {
+        const turnID = p.turnId || state.turn || '';
+        notice(agentLabel() + ' is retrying: ' + text, 'retry:' + turnID);
+        providerRetry = { turnID, order: message._providerEventOrder, observedAt: message._observedAtMs,
+          knownItems: new Set(state.items.keys()), completedItems: new Set([...state.items.values()].filter(item => item._complete).map(item => item.id)) };
+      }
       else {
-        recoverNotice('retry:' + p.turnId);
-        rememberSessionError(state.selected?.session_id, text, p.turnId || state.turn || '');
+        const turnID = p.turnId || state.turn || providerRetry?.turnID || '';
+        recoverNotice('retry:' + turnID);
+        rememberSessionError(state.selected?.session_id, text, turnID);
       }
       return;
     }

@@ -28,11 +28,12 @@ func (r WorkerUpdateRequest) Validate() error {
 }
 
 type WorkerUpdateResult struct {
-	RequestID string             `json:"request_id"`
-	State     string             `json:"state"`
-	Version   string             `json:"version,omitempty"`
-	ErrorCode string             `json:"error_code,omitempty"`
-	Codex     *CodexUpdateReport `json:"codex,omitempty"`
+	RequestID string              `json:"request_id"`
+	State     string              `json:"state"`
+	Version   string              `json:"version,omitempty"`
+	ErrorCode string              `json:"error_code,omitempty"`
+	Codex     *CodexUpdateReport  `json:"codex,omitempty"`
+	Claude    *ClaudeUpdateReport `json:"claude,omitempty"`
 }
 
 // CodexUpdateReport is independent of worker binary maintenance: a runtime
@@ -50,6 +51,27 @@ type CodexRuntimeVersion struct {
 	InstalledVersion string `json:"installed_version,omitempty"`
 	RunningVersion   string `json:"running_version,omitempty"`
 	Support          string `json:"support"`
+}
+
+// ClaudeUpdateReport uses the same bounded, credential-free fields as a Codex
+// report while preserving the runtime's identity throughout maintenance results.
+type ClaudeUpdateReport struct {
+	State         string                 `json:"state"`
+	Channel       string                 `json:"channel,omitempty"`
+	LatestVersion string                 `json:"latest_version,omitempty"`
+	CheckedAt     time.Time              `json:"checked_at,omitempty"`
+	ErrorCode     string                 `json:"error_code,omitempty"`
+	Profiles      []ClaudeRuntimeVersion `json:"profiles,omitempty"`
+}
+
+type ClaudeRuntimeVersion = CodexRuntimeVersion
+
+func (r ClaudeUpdateReport) Validate() error {
+	report := CodexUpdateReport{State: r.State, LatestVersion: r.LatestVersion, CheckedAt: r.CheckedAt, ErrorCode: r.ErrorCode, Profiles: r.Profiles}
+	if (r.Channel != "" && r.Channel != "latest" && r.Channel != "stable") || report.Validate() != nil {
+		return errors.New("invalid Claude update report")
+	}
+	return nil
 }
 
 func validCodexReportVersion(value string) bool {
@@ -105,6 +127,14 @@ func (r WorkerUpdateResult) Validate() error {
 	id, err := uuid.Parse(r.RequestID)
 	if err != nil || id == uuid.Nil || id.String() != r.RequestID {
 		return errors.New("invalid worker update result identity")
+	}
+	if r.Codex != nil && r.Claude != nil {
+		return errors.New("worker update cannot report two runtime providers")
+	}
+	if r.Claude != nil {
+		if err := r.Claude.Validate(); err != nil {
+			return err
+		}
 	}
 	if r.Codex != nil {
 		if err := r.Codex.Validate(); err != nil {

@@ -63,19 +63,11 @@ func TestClaudeWorkerCommandsUseSeparateInstallation(t *testing.T) {
 }
 
 func TestClaudeRequestedUpdateDoesNotRunCodexMaintenance(t *testing.T) {
-	l, err := newLayout("claude-worker", "linux", "amd64", t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	m := New(nil)
-	m.Run = func(context.Context, ...string) (CommandResult, error) {
-		t.Fatal("finished Claude request inspected a Codex runtime")
-		return CommandResult{}, nil
-	}
+	f := newClaudeWiringFixture(t)
 	plan := &requestedWorkerPlan{workerResult: &protocol.WorkerUpdateResult{State: "up_to_date", Version: "v1.2.3"}}
-	result, err := m.requestedWorkerStep(t.Context(), l, plan)
-	if err != nil || result.Codex != nil || plan.codexReport != nil || result.State != "up_to_date" {
-		t.Fatalf("Claude ran Codex maintenance: %#v %v", result, err)
+	result, err := f.m.requestedWorkerStep(t.Context(), f.l, plan)
+	if err != nil || result.Codex != nil || plan.codexReport != nil || result.State != "up_to_date" || result.Claude == nil || result.Claude.State != "up_to_date" || f.checks != 1 {
+		t.Fatalf("Claude-only maintenance missing or Codex touched: %#v %v", result, err)
 	}
 }
 

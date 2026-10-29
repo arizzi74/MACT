@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/iaia/telegramgw/internal/claudeadapter"
 	"github.com/iaia/telegramgw/internal/codexadapter"
 	"github.com/iaia/telegramgw/internal/config"
 	"github.com/iaia/telegramgw/internal/protocol"
@@ -289,6 +290,9 @@ func (a *Agent) prepareUpdate(ctx context.Context, ttl time.Duration) (UpdateLea
 			return UpdateLease{}, err
 		}
 	}
+	if err := a.manager.verifyClaudeUpdateIdle(); err != nil {
+		return UpdateLease{}, err
+	}
 	lease := UpdateLease{WorkerID: a.cfg.WorkerID, PID: os.Getpid(), Token: uuid.NewString(), ExpiresAt: time.Now().UTC().Add(ttl)}
 	a.update = &updateState{lease: lease, proxies: proxies}
 	a.update.timer = time.AfterFunc(ttl, func() { _ = a.abortUpdate(lease.Token) })
@@ -411,6 +415,9 @@ func (m *RuntimeManager) verifyUpdateIdleWithQueues(ctx context.Context, nativeQ
 // as ordinary idle checks. The update restart retires them without archiving or
 // deleting their history. Accepted work and uncertain RPC outcomes still block.
 func (m *RuntimeManager) verifyUpdateIdleWithRecovery(ctx context.Context, nativeQueues map[string][]string, candidates map[string]map[string]string) (map[string]map[string]string, error) {
+	if err := m.verifyClaudeUpdateIdle(); err != nil {
+		return nil, err
+	}
 	m.mu.RLock()
 	runtimes := make([]*managedRuntime, 0, len(m.runtimes))
 	for _, runtime := range m.runtimes {
@@ -435,4 +442,34 @@ func (m *RuntimeManager) verifyUpdateIdleWithRecovery(ctx context.Context, nativ
 		}
 	}
 	return proofs, nil
+}
+
+// The Claude bridge owns queues, deletions, approvals and background work that
+// can be absent from the loaded-thread inventory. Observe it behind the same
+// lifecycle and admission fences as the shared protocol checks.
+func (m *RuntimeManager) verifyClaudeUpdateIdle() error {
+	if m.cfg.AgentKind != "claude" {
+		return nil
+	}
+	m.mu.RLock()
+	bridges := make([]*claudeadapter.Runtime, 0, len(m.claude))
+	for _, runtime := range m.runtimes {
+		if runtime.client != nil {
+			bridge := m.claude[runtime.runtime.ProfileID]
+			if bridge == nil || bridge.Client != runtime.client {
+				m.mu.RUnlock()
+				return errors.New("worker update: Claude runtime is unavailable")
+			}
+		}
+	}
+	for _, bridge := range m.claude {
+		bridges = append(bridges, bridge)
+	}
+	m.mu.RUnlock()
+	for _, bridge := range bridges {
+		if err := bridge.CheckUpdateIdle(); err != nil {
+			return fmt.Errorf("worker update: %w", err)
+		}
+	}
+	return nil
 }

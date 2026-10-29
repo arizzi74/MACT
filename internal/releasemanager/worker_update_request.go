@@ -70,7 +70,12 @@ func (m *Manager) requestWorkerUpdate(ctx context.Context, args []string) error 
 		return err
 	}
 	defer os.RemoveAll(stage)
-	plan := &requestedWorkerPlan{stage: stage, codexCache: filepath.Join(workerupdate.Directory(stateFile), id+".codex-check.json")}
+	plan := &requestedWorkerPlan{stage: stage}
+	if l.AgentKind == "claude" {
+		plan.claudeCache = filepath.Join(workerupdate.Directory(stateFile), id+".claude-check.json")
+	} else {
+		plan.codexCache = filepath.Join(workerupdate.Directory(stateFile), id+".codex-check.json")
+	}
 	loggedBusy := false
 	return runRequestedWorkerUpdate(ctx, stateFile, request, 5*time.Second, 30*time.Second, func(ctx context.Context) (protocol.WorkerUpdateResult, error) {
 		result, err := m.requestedWorkerStep(ctx, l, plan)
@@ -102,9 +107,11 @@ type requestedWorkerPlan struct {
 	workerResult *protocol.WorkerUpdateResult
 	codexReport  *protocol.CodexUpdateReport
 	codexCache   string
+	claudeReport *protocol.ClaudeUpdateReport
+	claudeCache  string
 }
 
-// Explicit maintenance checks Codex once per durable request, independently of
+// Explicit maintenance checks the worker runtime once per durable request, independently of
 // automatic discovery. Each component still obtains its own live idle lease.
 func (m *Manager) requestedWorkerStep(ctx context.Context, l *Layout, plan *requestedWorkerPlan) (protocol.WorkerUpdateResult, error) {
 	unlock, err := Lock(l.Lock)
@@ -113,14 +120,7 @@ func (m *Manager) requestedWorkerStep(ctx context.Context, l *Layout, plan *requ
 	}
 	defer unlock()
 	if l.AgentKind == "claude" {
-		if plan.workerResult == nil {
-			result, err := m.requestedWorkerReleaseStep(ctx, l, plan)
-			if err != nil {
-				return result, err
-			}
-			plan.workerResult = &result
-		}
-		return *plan.workerResult, nil
+		return m.requestedClaudeWorkerStep(ctx, l, plan)
 	}
 	m.requestedCodexDiscovery(ctx, plan)
 	if ctx.Err() != nil {

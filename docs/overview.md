@@ -137,7 +137,8 @@ mode and tool permissions in the admin console. Claude supports existing login,
 API keys and authentication tokens; its private account settings stay on the
 worker. Tool permission modes include normal approval requests, accepting edits,
 plan mode and an explicit bypass-permissions choice. MACT installs and updates
-the dedicated worker, while the account owner maintains the Claude CLI. See
+the dedicated worker and maintains supported native Claude CLI installations
+when idle. See
 [Claude Code workers](claude-code.md).
 
 Prompts work through the pipe; bot-token input is hidden and enrollment URLs are
@@ -153,14 +154,15 @@ and `/tgw/healthz` and `/tgw/readyz` for health checks.
 The gateway and worker installers enable daily MACT updates from
 [GitHub Releases](https://github.com/arizzi74/MACT/releases).
 Codex workers also check for stable Codex runtime updates once per day (UTC).
-Claude workers leave their installed Claude CLI unchanged.
+Claude workers check their configured official release channel daily, defaulting
+to `latest` and honoring an explicit `stable` selection.
 Supported standalone installations update when the worker has no active or
 queued work, then its app servers restart and their versions are verified.
 Runtime updates test compatibility before restarting production and retain the
 previous release for recovery if the candidate fails.
 Use `/tgupdateworkers` in Telegram or the Web UI to check every worker and its
-Codex runtime against the latest releases. Results include installed, running,
-and available Codex versions. Updates wait until the worker has no active turns
+Codex or Claude runtime against the official releases. Results include installed,
+running, and available runtime versions. Updates wait until the worker has no active turns
 or pending work. When both are current, no restart is needed. This explicit
 check does not change the daily background schedule.
 See the [installation guide](installation.md) for HTTPS setup, worker

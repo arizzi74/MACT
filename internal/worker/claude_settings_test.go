@@ -33,13 +33,22 @@ func TestClaudeWorkerProcessHelper(t *testing.T) {
 	if os.Getenv("MACT_WORKER_CLAUDE_HELPER") != "1" {
 		return
 	}
+	for _, arg := range os.Args[1:] {
+		if arg == "--version" {
+			_, _ = os.Stdout.WriteString("9.8.7 (Claude Code)\n")
+			os.Exit(0)
+		}
+	}
 	send := func(value any) { _ = json.NewEncoder(os.Stdout).Encode(value) }
 	scan := bufio.NewScanner(os.Stdin)
 	for scan.Scan() {
 		var msg struct {
 			Type      string `json:"type"`
 			RequestID string `json:"request_id"`
-			Message   struct {
+			Request   struct {
+				Subtype string `json:"subtype"`
+			} `json:"request"`
+			Message struct {
 				Content []struct {
 					Text string `json:"text"`
 				} `json:"content"`
@@ -50,6 +59,9 @@ func TestClaudeWorkerProcessHelper(t *testing.T) {
 		}
 		if msg.Type == "control_request" {
 			send(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": msg.RequestID, "response": map[string]any{}}})
+			if msg.Request.Subtype == "interrupt" {
+				send(map[string]any{"type": "result", "subtype": "error_during_execution", "is_error": true})
+			}
 		}
 		if msg.Type == "user" {
 			if path := os.Getenv("MACT_WORKER_CLAUDE_ENV_LOG"); path != "" {
@@ -57,7 +69,7 @@ func TestClaudeWorkerProcessHelper(t *testing.T) {
 				if err != nil {
 					os.Exit(3)
 				}
-				_ = json.NewEncoder(f).Encode(map[string]any{"api_key": os.Getenv("ANTHROPIC_API_KEY") != "", "auth_token": os.Getenv("ANTHROPIC_AUTH_TOKEN") != "", "base_url": os.Getenv("ANTHROPIC_BASE_URL"), "model": os.Getenv("ANTHROPIC_MODEL")})
+				_ = json.NewEncoder(f).Encode(map[string]any{"api_key": os.Getenv("ANTHROPIC_API_KEY") != "", "auth_token": os.Getenv("ANTHROPIC_AUTH_TOKEN") != "", "base_url": os.Getenv("ANTHROPIC_BASE_URL"), "model": os.Getenv("ANTHROPIC_MODEL"), "disable_autoupdater": os.Getenv("DISABLE_AUTOUPDATER")})
 				_ = f.Close()
 			}
 			text := ""

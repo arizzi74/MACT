@@ -493,6 +493,16 @@ func workerPrepareFailure(output []byte) string {
 		return workerPrepareUnknownReason
 	}
 	switch reason {
+	case "worker update: Claude runtime is unavailable", "worker update: Claude runtime is closed":
+		return "worker update deferred: Claude runtime is unavailable"
+	case "worker update: Claude runtime has an incomplete session deletion; retry deleting that session first":
+		return "worker update deferred: finish the pending Claude session deletion"
+	case "worker update: Claude runtime has pending approvals or questions":
+		return "worker update deferred: Claude has pending approvals or questions"
+	case "worker update: Claude runtime has an active turn":
+		return "worker update deferred: Claude has active or queued work"
+	case "worker update: Claude runtime has active background work":
+		return "worker update deferred: Claude background work is still running"
 	case "worker update: command admission is busy":
 		return "worker update deferred: command admission is busy"
 	case "worker update: another update is already prepared":

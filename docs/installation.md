@@ -423,6 +423,11 @@ mact update worker
 # Check or apply only the worker's Codex runtime maintenance:
 mact update codex --check
 mact update codex
+
+# Dedicated Claude worker and its runtime, as their owning user:
+mact update claude-worker
+mact update claude --check
+mact update claude
 ```
 
 Checks fetch release metadata, the checksum manifest, and its signed build
@@ -681,7 +686,11 @@ owning user. Releases marked draft or prerelease are not selected automatically.
 An older version is not installed over a newer one. Network or verification
 failures leave the installed binaries in place.
 
-Worker update checks also maintain the Codex runtime. Stable release discovery
+Worker update checks also maintain their Codex or Claude runtime. Claude uses
+its configured official release channel (`latest` by default, or an explicit
+`stable` selection) and supported native installations; see
+[Claude Code maintenance](claude-code.md#maintenance) for its separate state and
+recovery behavior. The following details describe Codex maintenance. Stable release discovery
 is limited to one automatic check per UTC day, even if a local timer runs more
 frequently. The private `codex-update.json` beside the worker's `update.json`
 records the last attempt and available version. A failed check is retried on the

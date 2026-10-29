@@ -79,8 +79,8 @@ Usage:
   mact install worker|claude-worker --config PATH [--service-access restricted|full] [--auto-update]
   mact adopt gateway|worker|claude-worker [--auto-update]
   mact update gateway|worker|claude-worker [--check]
-  mact update codex [--check]
-  mact request-update worker --request-id UUID --worker-state PATH
+  mact update codex|claude [--check]
+  mact request-update worker|claude-worker --request-id UUID --worker-state PATH
   mact auto-update enable|disable gateway|worker|claude-worker
   mact version
 
@@ -98,14 +98,15 @@ Worker setup installs Codex and starts device sign-in when needed.
 Claude worker setup uses an existing Claude Code CLI and its local login;
 configure model, endpoint and account credentials in the gateway admin console.
 Claude workers use separate configuration, state and services.
-Claude CLI installations remain managed by their owning account.
+Supported native Claude CLI installations receive idle-safe official channel updates.
 Worker setup reuses ./worker.json or asks for a name and one-use enrollment URL.
 Claude setup reuses ./claude-worker.json or enrolls a separate worker identity.
 Fresh workers start in the user's home and can use all its subfolders.
 Linux service access comes from the enrollment profile chosen in gateway administration.
 Existing worker services keep their access settings during adoption and updates.
 Setup enables daily updates and adopts existing services without restarting them.
-Codex worker updates also check the stable Codex runtime once per day and apply it when idle.
+Worker updates also check their Codex stable or Claude configured channel once per day and apply it when idle.
+Claude uses its official latest channel unless the installation explicitly selects stable.
 Runtime updates support the official standalone installation and preserve active turns.
 `
 
@@ -167,9 +168,9 @@ func parseOptions(args []string) (options, error) {
 			return result, errors.New("install requires --config PATH")
 		}
 	}
-	if result.Component == "codex" {
+	if result.Component == "codex" || result.Component == "claude" {
 		if result.Action != "update" || result.Repo != "" || result.Version != "" {
-			return result, errors.New("use update codex [--check]; runtime updates follow the official stable channel")
+			return result, fmt.Errorf("use update %s [--check]; runtime updates follow the official release channel", result.Component)
 		}
 		return result, nil
 	}
@@ -272,6 +273,8 @@ func (m *Manager) execute(ctx context.Context, opts options) (retErr error) {
 	component := opts.Component
 	if component == "codex" {
 		component = "worker"
+	} else if component == "claude" {
+		component = "claude-worker"
 	}
 	l, err := NewLayout(component)
 	if err != nil {
@@ -293,9 +296,12 @@ func (m *Manager) execute(ctx context.Context, opts options) (retErr error) {
 		return err
 	}
 	defer unlock()
-	if opts.Component == "codex" {
+	if opts.Component == "codex" || opts.Component == "claude" {
 		if _, err := SavedSettings(l); err != nil {
 			return err
+		}
+		if opts.Component == "claude" {
+			return m.UpdateClaudeRuntime(ctx, l, opts.Check)
 		}
 		return m.UpdateCodexRuntime(ctx, l, opts.Check)
 	}
@@ -371,6 +377,18 @@ func (m *Manager) execute(ctx context.Context, opts options) (retErr error) {
 		if err != nil {
 			return err
 		}
+		if l.Component == "worker" && l.AgentKind == "claude" {
+			// Recovery pins the worker executable's identity. Resolve its journal
+			// before a MACT release can replace that executable, then resume normal
+			// worker and runtime maintenance on the next tick.
+			journal, recoveryErr := loadClaudeRecovery(l)
+			if recoveryErr != nil {
+				return recoveryErr
+			}
+			if journal != nil {
+				return m.UpdateClaudeRuntime(ctx, l, opts.Check)
+			}
+		}
 		if l.Component == "gateway" && !opts.Check {
 			// Renewed source certificates must be picked up even when release
 			// discovery fails. This shares the gateway update lock.
@@ -383,14 +401,19 @@ func (m *Manager) execute(ctx context.Context, opts options) (retErr error) {
 				}
 			}()
 		}
-		if l.Component == "worker" && l.AgentKind != "claude" {
+		if l.Component == "worker" {
 			// A failed or busy gateway-project update must not starve the daily
-			// Codex check. Both maintenance paths remain under the worker lock.
+			// native runtime check. Both maintenance paths remain under the worker lock.
 			defer func() {
 				if ctx.Err() != nil {
 					return
 				}
-				runtimeErr := m.UpdateCodexRuntime(ctx, l, opts.Check)
+				var runtimeErr error
+				if l.AgentKind == "claude" {
+					runtimeErr = m.UpdateClaudeRuntime(ctx, l, opts.Check)
+				} else {
+					runtimeErr = m.UpdateCodexRuntime(ctx, l, opts.Check)
+				}
 				if retErr == nil {
 					retErr = runtimeErr
 				} else if runtimeErr != nil {
