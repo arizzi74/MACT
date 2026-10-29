@@ -1,0 +1,118 @@
+name: Launch installer release
+
+on:
+  create:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: installer-release-launch-${{ github.event.ref }}
+  cancel-in-progress: false
+
+jobs:
+  launch:
+    if: >-
+      github.repository == 'arizzi74/MACT' && github.event.ref_type == 'branch' &&
+      startsWith(github.event.ref, 'release/installer-v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      # No checkout: run only this inline launcher, never code from the branch.
+      # workflow_dispatch is an explicit exception to GITHUB_TOKEN recursion
+      # prevention. The tag's existing release workflow still proves its scope.
+      - name: Validate the immutable tag and dispatch guarded release and website
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CREATED_REF: ${{ github.event.ref }}
+          CREATED_TYPE: ${{ github.event.ref_type }}
+          CREATED_SHA: ${{ github.sha }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import sys
+          import urllib.error
+          import urllib.request
+
+          REPOSITORY = 'arizzi74/MACT'
+          BASE = '/repos/' + REPOSITORY
+          STABLE = r'v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)'
+          SHA = re.compile(r'[0-9a-f]{40}')
+
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  return None
+
+          def api(method, path, payload=None):
+              request = urllib.request.Request(
+                  'https://api.github.com' + BASE + path, method=method,
+                  data=json.dumps(payload).encode() if payload is not None else None,
+                  headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
+                           'Accept': 'application/vnd.github+json',
+                           'Content-Type': 'application/json',
+                           'X-GitHub-Api-Version': '2022-11-28'})
+              with urllib.request.build_opener(NoRedirect).open(request, timeout=30) as response:
+                  data = response.read()
+              return json.loads(data) if data else None
+
+          def require(condition):
+              if not condition:
+                  raise ValueError('Release launcher validation failed')
+
+          def ref_commit(reference):
+              data = api('GET', '/git/ref/' + reference)
+              require(data['ref'] == 'refs/' + reference)
+              target = data['object']
+              for _ in range(5):
+                  require(SHA.fullmatch(target['sha']) is not None)
+                  if target['type'] == 'commit':
+                      return target['sha']
+                  require(target['type'] == 'tag')
+                  annotated = api('GET', '/git/tags/' + target['sha'])
+                  require(annotated['sha'] == target['sha'])
+                  target = annotated['object']
+              raise ValueError('Tag nesting exceeds limit')
+
+          def launch(environment):
+              require(environment.get('GITHUB_REPOSITORY') == REPOSITORY)
+              require(environment.get('GITHUB_EVENT_NAME') == 'create')
+              require(environment.get('CREATED_TYPE') == 'branch')
+              branch = environment.get('CREATED_REF', '')
+              match = re.fullmatch('release/installer-(' + STABLE + ')', branch)
+              require(match is not None)
+              tag = match[1]
+              expected = environment.get('CREATED_SHA', '')
+              require(SHA.fullmatch(expected) is not None)
+              require(ref_commit('heads/' + branch) == expected)
+              require(ref_commit('heads/main') == expected)
+              commit = ref_commit('tags/' + tag)
+              comparison = api('GET', '/compare/' + commit + '...' + expected)
+              require(comparison['status'] in ('ahead', 'identical'))
+              require(comparison['merge_base_commit']['sha'] == commit)
+              latest = api('GET', '/releases/latest')
+              require(latest['draft'] is False and latest['prerelease'] is False)
+              baseline = latest['tag_name']
+              previous = re.fullmatch(STABLE, baseline)
+              require(previous is not None)
+              version = re.fullmatch(STABLE, tag)
+              require(tuple(map(int, previous.groups())) < tuple(map(int, version.groups())))
+              # Only these two dispatches can mutate state. No tag, release,
+              # asset, branch, credentials or workflow contents are changed.
+              api('POST', '/actions/workflows/release.yml/dispatches',
+                  {'ref': tag, 'inputs': {'installer_only': True, 'baseline_tag': baseline}})
+              api('POST', '/actions/workflows/pages.yml/dispatches', {'ref': 'main'})
+              print('Dispatched installer-only release ' + tag + ' from ' + baseline + ' and website main.')
+
+          if __name__ == '__main__':
+              try:
+                  launch(os.environ)
+              except Exception:
+                  # Never emit response bodies, tokens or untrusted exception text.
+                  print('Installer release launch refused or failed; inspect workflow run status.', file=sys.stderr)
+                  sys.exit(1)
+          PY
