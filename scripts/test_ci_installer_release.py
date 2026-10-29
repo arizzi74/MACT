@@ -145,6 +145,7 @@ class InstallerReleaseWorkflowTest(unittest.TestCase):
         self.assertIn("needs.release-mode.outputs.installer_only == 'false'", gate)
         self.assertIn("needs.release-mode.outputs.installer_only == 'true'", gate)
         self.assertIn("verify-provenance", gate)
+        self.assertIn("if: always() && !cancelled() && needs.test-and-build.result == 'success'", jobs["publish"])
         for name in ("native-whisper", "native-speech"):
             self.assertIn("needs: release-mode", jobs[name])
             self.assertIn("run-smoke-tests: ${{ needs.release-mode.outputs.installer_only != 'true' }}", jobs[name])

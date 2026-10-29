@@ -188,6 +188,7 @@ jobs:
 
   publish:
     needs: test-and-build
+    if: always() && !cancelled() && needs.test-and-build.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

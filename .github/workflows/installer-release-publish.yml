@@ -1,0 +1,184 @@
+name: Recover verified installer publication
+
+on:
+  create:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: installer-release-publish-${{ github.event.ref }}
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    if: >-
+      github.repository == 'arizzi74/MACT' && github.event.ref_type == 'branch' &&
+      startsWith(github.event.ref, 'release/publish-v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.source.outputs.tag }}
+      commit: ${{ steps.source.outputs.commit }}
+      run_id: ${{ steps.source.outputs.run_id }}
+      artifact_id: ${{ steps.source.outputs.artifact_id }}
+    steps:
+      # Validate metadata without checking out or executing branch code.
+      - name: Prove the exact successful installer run and signed artifact
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CREATED_REF: ${{ github.event.ref }}
+          CREATED_TYPE: ${{ github.event.ref_type }}
+          CREATED_SHA: ${{ github.sha }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import sys
+          import urllib.request
+
+          REPOSITORY = 'arizzi74/MACT'
+          STABLE = r'v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)'
+          SHA = re.compile(r'[0-9a-f]{40}')
+
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  return None
+
+          def api(path):
+              request = urllib.request.Request(
+                  'https://api.github.com/repos/' + REPOSITORY + path,
+                  headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
+                           'Accept': 'application/vnd.github+json',
+                           'X-GitHub-Api-Version': '2022-11-28'})
+              with urllib.request.build_opener(NoRedirect).open(request, timeout=30) as response:
+                  return json.load(response)
+
+          def require(condition):
+              if not condition:
+                  raise ValueError('Recovery source validation failed')
+
+          def ref_commit(reference):
+              data = api('/git/ref/' + reference)
+              require(data['ref'] == 'refs/' + reference)
+              target = data['object']
+              for _ in range(5):
+                  require(SHA.fullmatch(target['sha']) is not None)
+                  if target['type'] == 'commit':
+                      return target['sha']
+                  require(target['type'] == 'tag')
+                  annotated = api('/git/tags/' + target['sha'])
+                  require(annotated['sha'] == target['sha'])
+                  target = annotated['object']
+              raise ValueError('Tag nesting exceeds limit')
+
+          def pages(path, key):
+              entries = []
+              for page in range(1, 11):
+                  data = api(path + '?per_page=100&page=' + str(page))
+                  require(type(data['total_count']) is int)
+                  entries.extend(data[key])
+                  require(len(entries) <= data['total_count'])
+                  if len(entries) == data['total_count']:
+                      return entries
+                  require(len(data[key]) == 100)
+              raise ValueError('Recovery inventory exceeds limit')
+
+          def recover(environment):
+              require(environment.get('GITHUB_REPOSITORY') == REPOSITORY)
+              require(environment.get('GITHUB_EVENT_NAME') == 'create')
+              require(environment.get('CREATED_TYPE') == 'branch')
+              branch = environment.get('CREATED_REF', '')
+              match = re.fullmatch('release/publish-(' + STABLE + r')-run-([1-9][0-9]*)', branch)
+              require(match is not None)
+              tag, run_id = match[1], match[5]
+              expected = environment.get('CREATED_SHA', '')
+              require(SHA.fullmatch(expected) is not None)
+              require(ref_commit('heads/' + branch) == expected)
+              require(ref_commit('heads/main') == expected)
+              commit = ref_commit('tags/' + tag)
+              comparison = api('/compare/' + commit + '...' + expected)
+              require(comparison['status'] in ('ahead', 'identical'))
+              require(comparison['merge_base_commit']['sha'] == commit)
+              run = api('/actions/runs/' + run_id)
+              require(run['id'] == int(run_id) and run['path'] == '.github/workflows/release.yml')
+              require(run['name'] == 'Release' and run['event'] == 'workflow_dispatch')
+              require(run['head_branch'] == tag and run['head_sha'] == commit)
+              require(run['repository']['full_name'] == REPOSITORY)
+              require(run['head_repository']['full_name'] == REPOSITORY)
+              require(run['status'] == 'completed' and run['conclusion'] == 'success')
+              attempt = run['run_attempt']
+              require(type(attempt) is int and attempt > 0)
+              jobs = pages('/actions/runs/' + run_id + '/attempts/' + str(attempt) + '/jobs', 'jobs')
+              for name, conclusion in (('release-mode', 'success'), ('installer-tests', 'success'),
+                                       ('test-and-build', 'success'), ('publish', 'skipped')):
+                  selected = [job for job in jobs if job['name'] == name]
+                  require(len(selected) == 1)
+                  job = selected[0]
+                  require(job['run_id'] == int(run_id) and job['run_attempt'] == attempt)
+                  require(job['status'] == 'completed' and job['conclusion'] == conclusion)
+              artifacts = pages('/actions/runs/' + run_id + '/artifacts', 'artifacts')
+              signed = [artifact for artifact in artifacts if artifact['name'] == 'signed-release-files']
+              require(len(signed) == 1)
+              artifact = signed[0]
+              require(type(artifact['id']) is int and artifact['id'] > 0)
+              require(artifact['expired'] is False and type(artifact['size_in_bytes']) is int
+                      and artifact['size_in_bytes'] > 0)
+              require(re.fullmatch(r'sha256:[0-9a-f]{64}', artifact['digest']) is not None)
+              source = artifact['workflow_run']
+              require(source['id'] == int(run_id) and source['head_sha'] == commit)
+              require(source['repository_id'] == run['repository']['id'])
+              require(source['head_repository_id'] == run['head_repository']['id'])
+              fresh = api('/actions/runs/' + run_id)
+              require(all(fresh[key] == run[key] for key in
+                          ('id', 'run_attempt', 'path', 'event', 'head_branch', 'head_sha', 'status', 'conclusion')))
+              return {'tag': tag, 'commit': commit, 'run_id': run_id, 'artifact_id': str(artifact['id'])}
+
+          if __name__ == '__main__':
+              try:
+                  values = recover(os.environ)
+                  with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+                      for key, value in values.items():
+                          output.write(key + '=' + value + '\n')
+                  print('Verified frozen installer release source and signed artifact.')
+              except Exception:
+                  print('Installer publication recovery refused or failed.', file=sys.stderr)
+                  sys.exit(1)
+          PY
+
+  publish:
+    needs: guard
+    if: always() && !cancelled() && needs.guard.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: arizzi74/MACT
+      RELEASE_TAG: ${{ needs.guard.outputs.tag }}
+      RELEASE_COMMIT: ${{ needs.guard.outputs.commit }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # Execute only the source that passed the original installer checks.
+          ref: ${{ needs.guard.outputs.commit }}
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.26.x'
+          check-latest: true
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          # Guard checked this exact ID's name, run, SHA, expiry and digest.
+          artifact-ids: ${{ needs.guard.outputs.artifact_id }}
+          run-id: ${{ needs.guard.outputs.run_id }}
+          repository: arizzi74/MACT
+          github-token: ${{ github.token }}
+          merge-multiple: true
+          path: dist
+      - name: Verify existing signed files and publish the immutable release
+        run: python3 scripts/publish-release.py --repo "$GH_REPO" --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT" --dist dist
