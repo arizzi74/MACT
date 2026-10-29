@@ -56,7 +56,7 @@ func receiveRuntimeSettingsRequest(t *testing.T, p *peer) protocol.WorkerRuntime
 func runtimeSettingsResult(t *testing.T, requestID string) protocol.Envelope {
 	t.Helper()
 	envelope, err := protocol.NewEnvelope("worker_runtime_settings_result", protocol.WorkerRuntimeSettingsResult{RequestID: requestID,
-		Settings: &protocol.WorkerRuntimeSettings{Provider: "claude", Model: "custom[1m]", BaseURL: "http://localhost:8080", AuthMode: "auth_token", PermissionMode: "default", APIKeyConfigured: true}})
+		Settings: &protocol.WorkerRuntimeSettings{Provider: "claude", Model: "custom[1m]", BaseURL: "https://provider.example.test:8080", AuthMode: "auth_token", PermissionMode: "default", APIKeyConfigured: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestWorkerRuntimeSettingsTransientRPCAndPeerFencing(t *testing.T) {
 	key := "private-runtime-key"
 	finished := make(chan error, 1)
 	go func() {
-		settings, err := h.WorkerRuntimeSettings(t.Context(), p.workerID, &protocol.WorkerRuntimeSettingsUpdate{Model: "custom[1m]", BaseURL: "http://localhost:8080", AuthMode: "auth_token", PermissionMode: "default", APIKey: &key})
+		settings, err := h.WorkerRuntimeSettings(t.Context(), p.workerID, &protocol.WorkerRuntimeSettingsUpdate{Model: "custom[1m]", BaseURL: "https://provider.example.test:8080", AuthMode: "auth_token", PermissionMode: "default", APIKey: &key})
 		if err == nil && (!settings.APIKeyConfigured || settings.Provider != "claude") {
 			err = errors.New("incorrect public runtime settings")
 		}

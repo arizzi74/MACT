@@ -41,7 +41,7 @@ func TestChatRevocationDisablesRememberedApprovalsAndSurvivesRestart(t *testing.
 			}
 			// A prior /start alone remembers both chats. Neither selects a session.
 			for i, chat := range []int64{20, 30} {
-				if _, err := env.store.AcceptTelegram(ctx, IncomingUpdate{BotID: "bot", UpdateID: int64(i), UserID: 10, ChatID: chat, Action: "help"}); err != nil {
+				if _, err := env.store.AcceptTelegram(ctx, IncomingUpdate{BotID: "bot", UpdateID: int64(i + 1), UserID: 10, ChatID: chat, Action: "help"}); err != nil {
 					t.Fatal(err)
 				}
 			}

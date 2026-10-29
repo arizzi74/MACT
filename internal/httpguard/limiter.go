@@ -5,16 +5,21 @@ import (
 	"time"
 )
 
-// Limiter admits a fixed-window per-client and global request budget. Rejected
-// requests neither allocate state nor consume another client's global budget;
-// the map is bounded by the global budget and discarded once per window.
+// Limiter admits per-client and global budgets over a rolling window. Admissions
+// cannot double at a fixed-window boundary. Rejected requests allocate no state;
+// the event queue and client map are bounded by the global admission budget.
 type Limiter struct {
 	mu                       sync.Mutex
 	window                   time.Duration
 	clientLimit, globalLimit int
-	since                    time.Time
-	count                    int
+	last                     time.Time
+	events                   []admission
 	clients                  map[string]int
+}
+
+type admission struct {
+	client string
+	at     time.Time
 }
 
 func NewLimiter(clientLimit, globalLimit int, window time.Duration) *Limiter {
@@ -24,14 +29,36 @@ func NewLimiter(clientLimit, globalLimit int, window time.Duration) *Limiter {
 func (l *Limiter) Allow(client string, now time.Time) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.clients == nil || now.Sub(l.since) >= l.window {
-		l.since, l.count = now, 0
+	if l.window <= 0 || l.clientLimit <= 0 || l.globalLimit <= 0 {
+		return false
+	}
+	// A wall-clock correction must not release an already consumed budget.
+	if now.Before(l.last) {
+		now = l.last
+	}
+	l.last = now
+	if l.clients == nil {
 		l.clients = make(map[string]int)
 	}
-	if l.count >= l.globalLimit || l.clients[client] >= l.clientLimit {
+	cutoff := now.Add(-l.window)
+	expired := 0
+	for expired < len(l.events) && !l.events[expired].at.After(cutoff) {
+		client := l.events[expired].client
+		l.clients[client]--
+		if l.clients[client] == 0 {
+			delete(l.clients, client)
+		}
+		expired++
+	}
+	if expired > 0 {
+		remaining := copy(l.events, l.events[expired:])
+		clear(l.events[remaining:])
+		l.events = l.events[:remaining]
+	}
+	if len(l.events) >= l.globalLimit || l.clients[client] >= l.clientLimit {
 		return false
 	}
 	l.clients[client]++
-	l.count++
+	l.events = append(l.events, admission{client: client, at: now})
 	return true
 }

@@ -32,6 +32,9 @@ func TestWebhookRejectsActorBeforeProcessing(t *testing.T) {
 		want         int
 	}{
 		{"bad", `{"update_id":1,"message":{"from":{"id":7},"chat":{"id":7},"text":"hi"}}`, 401},
+		{"secret", `{"update_id":0,"message":{"from":{"id":7},"chat":{"id":7},"text":"hi"}}`, 400},
+		{"secret", `{"message":{"from":{"id":7},"chat":{"id":7},"text":"hi"}}`, 400},
+		{"secret", `{"update_id":-1,"message":{"from":{"id":7},"chat":{"id":7},"text":"hi"}}`, 400},
 		{"secret", `{"update_id":2,"message":{"from":{"id":8,"username":"allowed-name"},"chat":{"id":7},"text":"hi"}}`, 403},
 		{"secret", `{"update_id":3,"message":{"from":{"id":7},"chat":{"id":7},"text":"hi"}}`, 200},
 	} {

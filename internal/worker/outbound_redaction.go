@@ -25,7 +25,7 @@ func (c *Connection) sendRedactedEnvelope(ctx context.Context, writes chan<- out
 }
 
 func newWorkerRedactor(patterns []string) (*auth.Redactor, error) {
-	return auth.NewRedactor(append([]string{`cwk_[a-fA-F0-9]{64}`, `sk-[A-Za-z0-9_-]{20,}`, `[0-9]{6,12}:[A-Za-z0-9_-]{30,}`}, patterns...), "")
+	return auth.NewRedactor(append(auth.DefaultCredentialPatterns(), patterns...), "")
 }
 
 // Configure the outbound boundary before starting producers or the transport.

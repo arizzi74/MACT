@@ -50,6 +50,10 @@ func newCodexApplyFixture(t *testing.T) *codexApplyFixture {
 		t.Fatal(err)
 	}
 	f.manager = &Manager{Run: f.run, CodexRun: f.update, Now: func() time.Time { return f.now }, ReadyTimeout: 10 * time.Millisecond, PollInterval: time.Millisecond}
+	f.manager.abortWorkerUpdate = func(context.Context, *Layout, string) error {
+		f.events = append(f.events, "abort")
+		return nil
+	}
 	f.manager.codexPreflight = func(_ context.Context, _ *codexDistribution) error {
 		f.events = append(f.events, "preflight")
 		if f.preflightFault {

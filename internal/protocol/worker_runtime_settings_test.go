@@ -10,7 +10,7 @@ import (
 
 func TestWorkerRuntimeSettingsCredentialSemanticsAndPublicProjection(t *testing.T) {
 	for _, value := range []string{
-		`{"model":"custom[1m]","base_url":"http://127.0.0.1:8080","auth_mode":"login","permission_mode":"default"}`,
+		`{"model":"custom[1m]","base_url":"https://proxy.example.test:8080","auth_mode":"login","permission_mode":"default"}`,
 		`{"model":"custom[1m]","base_url":"https://provider.example/v1","auth_mode":"api_key","permission_mode":"acceptEdits","api_key":"private-key"}`,
 		`{"model":"","base_url":"","auth_mode":"auth_token","permission_mode":"bypassPermissions","api_key":""}`,
 	} {
@@ -36,6 +36,9 @@ func TestWorkerRuntimeSettingsCredentialSemanticsAndPublicProjection(t *testing.
 func TestWorkerRuntimeSettingsValidationAndEphemeralEnvelope(t *testing.T) {
 	valid := WorkerRuntimeSettingsUpdate{Model: "custom[1m]", BaseURL: "https://provider.example/anthropic", AuthMode: "api_key", PermissionMode: "default"}
 	for _, mutate := range []func(*WorkerRuntimeSettingsUpdate){
+		func(s *WorkerRuntimeSettingsUpdate) { s.BaseURL = "http://provider.example" },
+		func(s *WorkerRuntimeSettingsUpdate) { s.BaseURL = "http://127.0.0.1:8080" },
+		func(s *WorkerRuntimeSettingsUpdate) { s.BaseURL = "http://[::1]:8080" },
 		func(s *WorkerRuntimeSettingsUpdate) { s.BaseURL = "https://user:private-key@provider.example" },
 		func(s *WorkerRuntimeSettingsUpdate) { s.BaseURL = "https://provider.example?api_key=private-key" },
 		func(s *WorkerRuntimeSettingsUpdate) { s.BaseURL = "https://provider.example#private-key" },

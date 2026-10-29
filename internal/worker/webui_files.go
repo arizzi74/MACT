@@ -12,8 +12,10 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+	"golang.org/x/text/unicode/norm"
 
 	"github.com/iaia/telegramgw/internal/auth"
+	"github.com/iaia/telegramgw/internal/config"
 	"github.com/iaia/telegramgw/internal/protocol"
 )
 
@@ -130,7 +132,7 @@ func (transfer *webUIFileTransfer) run() error {
 		return errors.New("The file path is invalid.")
 	}
 	home, _ := os.UserHomeDir()
-	file, info, err := openWebUIFile(cwd, home, request.Path, p.c.cfg.AllowedWorkspaceRoots, []string{p.c.cfg.TokenFile, p.c.cfg.StateFile})
+	file, info, err := openWebUIFile(cwd, home, request.Path, p.c.cfg.AllowedWorkspaceRoots, workerPrivateFilePaths(p.c.cfg, home, cwd))
 	if err != nil {
 		return err
 	}
@@ -342,14 +344,48 @@ func openWebUIFileDirectory(cwd string, roots []string) (*os.File, error) {
 	return os.NewFile(uintptr(fd), cwd), nil
 }
 
+// A trailing separator denotes a directory excluded as a unit, even before it
+// exists. Exact files also protect SQLite sidecars and atomic-settings siblings.
+func workerPrivateFilePaths(cfg config.WorkerConfig, home string, workspaces ...string) []string {
+	paths := []string{cfg.ConfigFile, cfg.TokenFile, cfg.StateFile, codexDefaultsPath(cfg), claudeSettingsPath(cfg)}
+	if cfg.StateFile != "" {
+		paths = append(paths, filepath.Dir(cfg.StateFile)+string(filepath.Separator))
+	}
+	for _, runtime := range cfg.Runtimes {
+		paths = append(paths, runtime.ClaudeSettingsFile)
+	}
+	if home != "" {
+		for _, name := range []string{"codex-worker", "claude-worker", "codex-gateway"} {
+			paths = append(paths, filepath.Join(home, ".local", "state", name)+string(filepath.Separator))
+		}
+		paths = append(paths, filepath.Join(home, ".claude.json"))
+	}
+	if directory := os.Getenv("CLAUDE_CONFIG_DIR"); directory != "" {
+		directory = norm.NFC.String(directory)
+		if filepath.IsAbs(directory) {
+			paths = append(paths, directory+string(filepath.Separator))
+		} else {
+			// The native CLI resolves a relative config directory against each
+			// thread's workspace, rather than against the worker service CWD.
+			for _, runtime := range cfg.Runtimes {
+				workspaces = append(workspaces, runtime.WorkingDirectory)
+			}
+			for _, workspace := range workspaces {
+				paths = append(paths, filepath.Join(workspace, directory)+string(filepath.Separator))
+			}
+		}
+	}
+	return paths
+}
+
 func protectedWebUIFilePath(path string, privatePaths []string) bool {
 	for _, component := range strings.Split(path, string(filepath.Separator)) {
 		component = strings.ToLower(component)
 		switch component {
-		case ".ssh", ".gnupg", ".aws", ".azure", ".kube", ".docker", ".codex", ".config", ".telegramgw", ".git", ".netrc", ".npmrc", ".pypirc", ".git-credentials", ".gitconfig", ".bash_history", ".zsh_history", "keyrings":
+		case ".ssh", ".gnupg", ".aws", ".azure", ".kube", ".docker", ".codex", ".claude", ".config", ".telegramgw", ".git", ".netrc", ".npmrc", ".pypirc", ".git-credentials", ".gitconfig", ".bash_history", ".zsh_history", "keyrings":
 			return true
 		}
-		if component == ".env" || strings.HasPrefix(component, ".env.") {
+		if component == ".env" || strings.HasPrefix(component, ".env.") || strings.HasPrefix(component, ".runtime-settings-") || component == ".claude.json" || strings.HasPrefix(component, ".claude.json.") {
 			return true
 		}
 	}
@@ -366,9 +402,21 @@ func protectedWebUIFilePath(path string, privatePaths []string) bool {
 		if err != nil {
 			continue
 		}
-		for _, suffix := range []string{"", "-wal", "-shm", "-journal"} {
-			if path == absolute+suffix {
+		directory := strings.HasSuffix(private, string(filepath.Separator))
+		// Session CWDs are canonical. Resolve configured aliases as well, while
+		// still checking the configured spelling if its target is unavailable.
+		candidates := []string{filepath.Clean(absolute)}
+		if resolved, err := filepath.EvalSymlinks(absolute); err == nil {
+			candidates = append(candidates, resolved)
+		}
+		for _, candidate := range candidates {
+			if directory && (path == candidate || strings.HasPrefix(path, strings.TrimSuffix(candidate, string(filepath.Separator))+string(filepath.Separator))) {
 				return true
+			}
+			for _, suffix := range []string{"", "-wal", "-shm", "-journal", ".status.json"} {
+				if path == candidate+suffix {
+					return true
+				}
 			}
 		}
 	}

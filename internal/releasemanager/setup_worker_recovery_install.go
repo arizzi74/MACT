@@ -15,6 +15,14 @@ import (
 	"github.com/iaia/telegramgw/internal/config"
 )
 
+// The config's source filename is local access-policy metadata, not an
+// enrollment setting: staging and installed files intentionally have different
+// filenames. Every persisted configuration field still participates in recovery.
+func sameWorkerConfiguration(a, b config.WorkerConfig) bool {
+	a.ConfigFile, b.ConfigFile = "", ""
+	return reflect.DeepEqual(a, b)
+}
+
 // Recovery is an internal setup operation, unavailable through installer flags.
 // Its journal must match the generated private source and any installed config.
 // An active matching worker is verified in place; its service and executables
@@ -28,7 +36,7 @@ func (m *Manager) resumeEnrolledWorkerInstall(ctx context.Context, l *Layout, so
 		return errors.New("worker setup recovery requires a valid private enrollment journal")
 	}
 	prepared, err := config.LoadWorker(source)
-	if err != nil || !reflect.DeepEqual(prepared, recovery.Config) {
+	if err != nil || !sameWorkerConfiguration(prepared, recovery.Config) {
 		return errors.New("worker setup recovery configuration does not match its enrollment journal")
 	}
 	preparedToken, readErr := os.ReadFile(prepared.TokenFile)
@@ -56,7 +64,7 @@ func (m *Manager) resumeEnrolledWorkerInstall(ctx context.Context, l *Layout, so
 	}
 	installedToken, tokenErr := os.ReadFile(installed.TokenFile)
 	installed.TokenFile = prepared.TokenFile
-	if readErr != nil || tokenErr != nil || !bytes.Equal(preparedToken, installedToken) || !reflect.DeepEqual(installed, prepared) {
+	if readErr != nil || tokenErr != nil || !bytes.Equal(preparedToken, installedToken) || !sameWorkerConfiguration(installed, prepared) {
 		return errors.New("existing worker configuration differs from saved enrollment; recovery will not change this installation")
 	}
 	serviceInfo, serviceErr := os.Lstat(servicePath)

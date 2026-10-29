@@ -67,3 +67,44 @@ func TestControlPlaneRedactedQuestionChoicePreservesNativeValue(t *testing.T) {
 		}
 	}
 }
+
+func TestControlPlaneDefaultCredentialRedactionReachesTelegramAndGateway(t *testing.T) {
+	e := newSessionModeControl(t)
+	session := e.sessions["thread-beta"]
+	selectControlSession(t, e.gw, e.telegram, 700, e.runtime, 2)
+	e.prompt(t, 702, "Start synthetic credential boundary test")
+	var turn string
+	waitControl(t, func() bool { turn = currentActive(t, e.local, e.runtime, session.ThreadID); return turn != "" })
+	var tokens []string
+	for _, token := range syntheticCredentialSamples() {
+		tokens = append(tokens, token)
+	}
+	text := "Synthetic boundary result: " + strings.Join(tokens, "\n")
+	if err := e.codex.Emit("item/completed", map[string]any{
+		"threadId": session.ThreadID, "turnId": turn,
+		"item": map[string]any{"id": "synthetic-boundary", "type": "agentMessage", "status": "completed", "phase": "final_answer", "text": text},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.codex.Emit("turn/completed", map[string]any{"threadId": session.ThreadID, "turnId": turn, "status": "completed"}); err != nil {
+		t.Fatal(err)
+	}
+	waitControl(t, func() bool {
+		return e.telegram.hasText("Synthetic boundary result:") && e.telegram.hasText("[REDACTED]")
+	})
+	for _, token := range tokens {
+		var count int
+		if err := e.probe.QueryRowContext(e.ctx, `SELECT count(*) FROM events WHERE instr(payload, ?) > 0`, token).Scan(&count); err != nil || count != 0 {
+			t.Fatal("credential entered gateway event persistence", err)
+		}
+	}
+	e.telegram.mu.Lock()
+	defer e.telegram.mu.Unlock()
+	for _, action := range e.telegram.actions {
+		for _, token := range tokens {
+			if strings.Contains(action.text, token) {
+				t.Fatal("credential reached Telegram delivery")
+			}
+		}
+	}
+}

@@ -40,7 +40,7 @@ func (s *Server) workerRuntimeSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if update.Validate() != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_runtime_settings", "message": "Check the model, reasoning, permissions and provider settings."})
+			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_runtime_settings", "message": "Check the model, reasoning, permissions and provider settings. Claude API endpoints must use HTTPS without credentials, query or fragment."})
 			return
 		}
 	}
@@ -75,7 +75,7 @@ func (s *Server) workerRuntimeSettings(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, gateway.ErrWorkerRuntimeSettingsBusy):
 			code, message, status = "runtime_settings_busy", "The worker is busy. Wait for its current work to finish and try again.", http.StatusConflict
 		case errors.Is(err, gateway.ErrWorkerRuntimeSettingsInvalid):
-			code, message, status = "invalid_runtime_settings", "The worker rejected these settings. Check the model, reasoning, permissions and provider configuration, then try again.", http.StatusBadRequest
+			code, message, status = "invalid_runtime_settings", "The worker rejected these settings. Check the model, reasoning, permissions and provider configuration. Claude API endpoints must use HTTPS without credentials, query or fragment.", http.StatusBadRequest
 		}
 		// Worker errors may contain credentials. Return only fixed local text.
 		writeJSON(w, status, map[string]string{"code": code, "message": message})

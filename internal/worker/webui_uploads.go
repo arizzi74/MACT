@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/iaia/telegramgw/internal/auth"
@@ -75,6 +77,10 @@ func (s *sessionActor) webUIUpload(request webUIActorCommand) (protocol.WebUIUpl
 	cwd, err := auth.CanonicalWorkspace(request.session.CWD, s.agent.cfg.AllowedWorkspaceRoots)
 	if err != nil || cwd != request.session.CWD {
 		return protocol.WebUIUploadResult{}, validationError("The session workspace is no longer available or allowed.")
+	}
+	home, _ := os.UserHomeDir()
+	if protectedWebUIFilePath(filepath.Join(cwd, "inbound"), workerPrivateFilePaths(s.agent.cfg, home, cwd)) {
+		return protocol.WebUIUploadResult{}, validationError("Worker credentials and configuration directories cannot receive file uploads.")
 	}
 	thread, err := client.ReadThread(request.ctx, s.session.ThreadID, false)
 	if err != nil {

@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/iaia/telegramgw/internal/workerupdate"
 	"modernc.org/sqlite"
 )
 
@@ -471,8 +472,23 @@ type workerLease struct {
 }
 
 func (m *Manager) workerAbort(ctx context.Context, l *Layout, token string) error {
-	_, err := m.command(ctx, l.Binary, "--config", l.Config, "update", "abort", "--token", token)
-	return err
+	if m.abortWorkerUpdate != nil {
+		return m.abortWorkerUpdate(ctx, l, token)
+	}
+	cfg, err := ReadJSON(l.Config)
+	if err != nil {
+		return errors.New("worker update: cannot read control socket configuration")
+	}
+	stateFile, _ := cfg["state_file"].(string)
+	workerID, _ := cfg["worker_id"].(string)
+	if stateFile != "" && !filepath.IsAbs(stateFile) {
+		base, err := filepath.Abs(filepath.Dir(l.Config))
+		if err != nil {
+			return errors.New("worker update: cannot resolve control socket configuration")
+		}
+		stateFile = filepath.Join(base, stateFile)
+	}
+	return workerupdate.AbortLease(ctx, stateFile, workerID, token)
 }
 
 const workerPrepareUnknownReason = "worker update deferred: running/waiting work or no safe update support; see installation documentation"

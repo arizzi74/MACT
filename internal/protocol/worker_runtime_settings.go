@@ -71,8 +71,8 @@ func validateWorkerRuntimeSettings(model, baseURL, authMode, permissionMode stri
 	}
 	if baseURL != "" {
 		u, err := url.Parse(baseURL)
-		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.Opaque != "" {
-			return errors.New("invalid runtime endpoint")
+		if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.Opaque != "" {
+			return errors.New("runtime endpoint must be HTTPS without credentials, query or fragment")
 		}
 	}
 	if authMode != "login" && authMode != "api_key" && authMode != "auth_token" {

@@ -58,7 +58,7 @@ func (h *Webhook) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var update TelegramUpdate
-	if err = json.Unmarshal(raw, &update); err != nil || update.ID < 0 {
+	if err = json.Unmarshal(raw, &update); err != nil || update.ID <= 0 {
 		http.Error(w, "invalid update", 400)
 		return
 	}

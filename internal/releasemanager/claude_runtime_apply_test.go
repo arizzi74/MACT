@@ -66,6 +66,11 @@ func newClaudeApplyFixture(t *testing.T) *claudeApplyFixture {
 	}
 	f.candidate = append(append([]byte(nil), f.oldBytes...), []byte("\nverified candidate 2.1.312\n")...)
 	m.Run = f.run
+	m.abortWorkerUpdate = func(context.Context, *Layout, string) error {
+		f.aborts++
+		f.leaseActive = false
+		return nil
+	}
 	f.d, err = m.inspectClaudeDistribution(t.Context(), binary)
 	if err != nil {
 		t.Fatal(err)

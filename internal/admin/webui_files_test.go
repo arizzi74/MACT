@@ -25,6 +25,13 @@ import (
 func TestWebUIFilesRequireAuthenticationExactOriginAndCSRF(t *testing.T) {
 	store := adminIntegrationStore(t)
 	token := webuiTestLogin(t, store)
+	revoked, err := store.CreateAdminSession(t.Context(), []byte("webui-test-passkey"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RevokeAdminSession(t.Context(), revoked); err != nil {
+		t.Fatal(err)
+	}
 	server, err := New(store, Config{Origin: passkeyTestOrigin})
 	if err != nil {
 		t.Fatal(err)
@@ -36,6 +43,8 @@ func TestWebUIFilesRequireAuthenticationExactOriginAndCSRF(t *testing.T) {
 	}{
 		{"no authentication", "POST", body, "", passkeyTestOrigin, "csrf", "csrf", 401},
 		{"invalid authentication", "POST", body, "bad", passkeyTestOrigin, "csrf", "csrf", 401},
+		{"revoked metadata request", "POST", body, revoked, passkeyTestOrigin, "csrf", "csrf", 401},
+		{"revoked download request", "POST", strings.Replace(body, `"download":false`, `"download":true`, 1), revoked, passkeyTestOrigin, "csrf", "csrf", 401},
 		{"no origin", "POST", body, token, "", "csrf", "csrf", 403},
 		{"wrong origin", "POST", body, token, "https://evil.example", "csrf", "csrf", 403},
 		{"different port", "POST", body, token, passkeyTestOrigin + ":8443", "csrf", "csrf", 403},

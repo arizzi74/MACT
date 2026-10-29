@@ -799,7 +799,7 @@ func (m *TelegramBotManager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var update TelegramUpdate
-	if err = json.Unmarshal(raw, &update); err != nil || update.ID < 0 {
+	if err = json.Unmarshal(raw, &update); err != nil || update.ID <= 0 {
 		http.Error(w, "invalid update", http.StatusBadRequest)
 		return
 	}

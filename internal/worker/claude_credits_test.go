@@ -71,3 +71,23 @@ func TestClaudeCreditsNeverSendsSavedCredentialForLoginOrAnotherProvider(t *test
 		}
 	}
 }
+
+func TestClaudeCreditsRejectsRedirectsBeforeAnySecondRequest(t *testing.T) {
+	for _, destination := range []string{"http://api.abliteration.ai/plaintext", "https://other.example.test/credits"} {
+		calls := 0
+		settings := claudeSettingsFile{BaseURL: "https://api.abliteration.ai", AuthMode: "api_key", Credential: "synthetic-redirect-credential"}
+		client := &http.Client{Transport: creditsTransport(func(request *http.Request) (*http.Response, error) {
+			calls++
+			if calls != 1 || request.URL.Scheme != "https" || request.URL.Host != "api.abliteration.ai" {
+				t.Fatal("redirect sent a credential to another endpoint")
+			}
+			return &http.Response{StatusCode: http.StatusFound, Header: http.Header{"Location": {destination}}, Body: io.NopCloser(strings.NewReader("")), Request: request}, nil
+		})}
+		if _, err := fetchClaudeCredits(t.Context(), settings, client); err == nil || strings.Contains(err.Error(), settings.Credential) {
+			t.Fatal("redirect accepted or credential exposed")
+		}
+		if calls != 1 {
+			t.Fatal("redirect caused another request")
+		}
+	}
+}

@@ -32,7 +32,11 @@ func fetchClaudeCredits(ctx context.Context, settings claudeSettingsFile, client
 	}
 	request.Header.Set("Authorization", "Bearer "+settings.Credential)
 	request.Header.Set("Accept", "application/json")
-	response, err := client.Do(request)
+	// Enforce this boundary even when a caller supplies a reusable client.
+	// A provider redirect must never forward account credentials elsewhere.
+	secureClient := *client
+	secureClient.CheckRedirect = func(*http.Request, []*http.Request) error { return errClaudeCreditsUnavailable }
+	response, err := secureClient.Do(request)
 	if err != nil {
 		return nil, errClaudeCreditsUnavailable
 	}

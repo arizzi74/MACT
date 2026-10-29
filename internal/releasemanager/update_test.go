@@ -494,6 +494,13 @@ func TestWorkerLeaseValidatesIdentityAndAbortsInvalidReservations(t *testing.T) 
 				}
 				return CommandResult{Output: data}, nil
 			}}
+			m.abortWorkerUpdate = func(_ context.Context, _ *Layout, token string) error {
+				aborted = true
+				if token != "private-lease" {
+					t.Fatal("wrong abort token")
+				}
+				return nil
+			}
 			_, err := m.workerPrepare(t.Context(), l)
 			if (err != nil) != (fault != "") || aborted != (fault != "") {
 				t.Fatalf("fault %q: err=%v aborted=%v", fault, err, aborted)
@@ -561,6 +568,13 @@ func TestMacWorkerLeaseMustMatchManagedProcess(t *testing.T) {
 				}
 				return CommandResult{Output: lease}, nil
 			}}
+			m.abortWorkerUpdate = func(_ context.Context, _ *Layout, token string) error {
+				aborted = true
+				if token != "lease-token" {
+					t.Fatal("wrong abort token")
+				}
+				return nil
+			}
 			_, err := m.workerPrepare(t.Context(), l)
 			valid := strings.Contains(status, "state = running\n\tpid = 123")
 			if (err == nil) != valid || aborted == valid {

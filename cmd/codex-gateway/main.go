@@ -192,7 +192,7 @@ func run(args []string, logger *slog.Logger) error {
 		}
 		mux.Handle("/tgw/api/v1/telegram/webhook", bots)
 		mux.Handle("/tgw/api/v1/telegram/bots/", bots)
-		redactor, err := auth.NewRedactor([]string{regexp.QuoteMeta(cfg.Secrets.BotToken), regexp.QuoteMeta(secret), `[0-9]{5,20}:[A-Za-z0-9_-]{20,}`, `cwk_[a-f0-9]+`, `sk-[A-Za-z0-9_-]{16,}`}, "[REDACTED]")
+		redactor, err := auth.NewRedactor(append(auth.DefaultCredentialPatterns(), regexp.QuoteMeta(cfg.Secrets.BotToken), regexp.QuoteMeta(secret), `[0-9]{5,20}:[A-Za-z0-9_-]{20,}`, `cwk_[a-f0-9]+`, `sk-[A-Za-z0-9_-]{16,}`), "[REDACTED]")
 		if err != nil {
 			return err
 		}

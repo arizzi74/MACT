@@ -31,6 +31,13 @@ func TestClaudeWorkerConfigUsesDedicatedRuntimeAndPrivateSettings(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	if loaded.ConfigFile != path {
+		t.Fatal("worker configuration source path was not retained for file access policy")
+	}
+	public, err := json.Marshal(loaded)
+	if err != nil || strings.Contains(string(public), path) {
+		t.Fatal("local configuration source path entered serialized settings")
+	}
 	settings := filepath.Join(dir, "state", "runtime-settings.json")
 	if loaded.AgentKind != "claude" || loaded.Runtimes[0].ClaudeBinary != filepath.Join(dir, "bin", "claude") || loaded.Runtimes[0].ClaudeSettingsFile != settings {
 		t.Fatalf("Claude runtime was not normalized: %#v", loaded)

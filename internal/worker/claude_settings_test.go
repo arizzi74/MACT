@@ -33,6 +33,9 @@ func TestClaudeWorkerProcessHelper(t *testing.T) {
 	if os.Getenv("MACT_WORKER_CLAUDE_HELPER") != "1" {
 		return
 	}
+	if path := os.Getenv("MACT_WORKER_CLAUDE_START_LOG"); path != "" {
+		_ = os.WriteFile(path, []byte("started"), 0o600)
+	}
 	for _, arg := range os.Args[1:] {
 		if arg == "--version" {
 			_, _ = os.Stdout.WriteString("9.8.7 (Claude Code)\n")
@@ -444,5 +447,90 @@ func TestClaudeSavedCredentialProtectsStartupRedactors(t *testing.T) {
 	}
 	if got := a.store.redactor.Load().Redact(secret); got != "[REDACTED]" {
 		t.Fatalf("connection startup removed saved account protection: %q", got)
+	}
+}
+
+func TestClaudeCredentialRotationProtectsOldAndNewQueuedText(t *testing.T) {
+	a, _ := claudeSettingsAgent(t)
+	old, next := "synthetic-old.$[credential]", "synthetic-next.$[credential]"
+	update := &protocol.WorkerRuntimeSettingsUpdate{AuthMode: "auth_token", PermissionMode: "default", APIKey: &old}
+	if result := a.runtimeSettings(t.Context(), claudeSettingsRequest(a, "put", update)); result.ErrorCode != "" {
+		t.Fatal(result.ErrorCode)
+	}
+	data, _ := json.Marshal(protocol.Result{Text: old + " " + next})
+	before, err := a.store.AppendEvent(protocol.Event{Kind: "command_completed", Data: data})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Account switches require an acknowledged outbox. Delayed native text
+	// can still mention the prior credential after the switch completes.
+	if err := a.store.AckThrough(before.Seq); err != nil {
+		t.Fatal(err)
+	}
+	update.APIKey = &next
+	if result := a.runtimeSettings(t.Context(), claudeSettingsRequest(a, "put", update)); result.ErrorCode != "" {
+		t.Fatal(result.ErrorCode)
+	}
+	for _, redactor := range []*auth.Redactor{a.redactor, a.manager.statsRedactor, a.store.redactor.Load()} {
+		for _, credential := range []string{old, next} {
+			if redactor.Redact(credential) != "[REDACTED]" {
+				t.Fatal("credential rotation lost literal protection")
+			}
+		}
+	}
+	if _, err := a.store.AppendEvent(protocol.Event{Kind: "command_completed", Data: data}); err != nil {
+		t.Fatal(err)
+	}
+	events, err := a.store.OutboxAfter(0)
+	if err != nil || len(events) != 1 || events[0].Seq != before.Seq+1 {
+		t.Fatal("rotation changed queued sequence", err)
+	}
+	if strings.Contains(string(events[0].Data), old) || strings.Contains(string(events[0].Data), next) {
+		t.Fatal("rotation left a queued credential")
+	}
+}
+
+func TestClaudeRejectsInsecureAssignedAndPersistedEndpointsBeforeNativeLaunch(t *testing.T) {
+	a, _ := claudeSettingsAgent(t)
+	root := a.cfg.AllowedWorkspaceRoots[0]
+	marker := filepath.Join(root, "started")
+	t.Setenv("MACT_WORKER_CLAUDE_HELPER", "1")
+	t.Setenv("MACT_WORKER_CLAUDE_START_LOG", marker)
+	credential := "synthetic-persisted-private-credential"
+	for _, endpoint := range []string{"http://remote.example.test", "http://127.0.0.1:8080", "http://[::1]:8080"} {
+		update := &protocol.WorkerRuntimeSettingsUpdate{BaseURL: endpoint, AuthMode: "api_key", PermissionMode: "default", APIKey: &credential}
+		if result := a.runtimeSettings(t.Context(), claudeSettingsRequest(a, "put", update)); result.ErrorCode != "invalid_settings" {
+			t.Fatal("insecure endpoint assignment accepted")
+		}
+		if _, err := os.Stat(claudeSettingsPath(a.cfg)); !os.IsNotExist(err) {
+			t.Fatal("rejected assignment wrote settings")
+		}
+	}
+	client, err := a.manager.startClaudeProfile(a.ctx, a.cfg.Runtimes[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	thread, err := client.StartThread(t.Context(), codexadapter.ThreadOptions{CWD: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Model an older installation's existing insecure file. Persisted reads
+	// must fail even though no new settings assignment occurs.
+	data, _ := json.Marshal(claudeSettingsFile{BaseURL: "http://remote.example.test", AuthMode: "api_key", PermissionMode: "default", Credential: credential})
+	if err := os.WriteFile(claudeSettingsPath(a.cfg), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readClaudeSettings(claudeSettingsPath(a.cfg)); err == nil || !strings.Contains(err.Error(), "HTTPS") || strings.Contains(err.Error(), credential) {
+		t.Fatal("persisted endpoint validation failed or exposed credential")
+	}
+	if _, err := client.StartTurn(t.Context(), thread.ID, "probe"); err == nil || strings.Contains(err.Error(), credential) || strings.Contains(err.Error(), "remote.example") {
+		t.Fatal("persisted insecure configuration used or exposed")
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("native process launched with rejected persisted settings")
+	}
+	if _, err := NewAgent(a.cfg, a.store, slog.New(slog.NewTextHandler(io.Discard, nil))); err == nil || strings.Contains(err.Error(), credential) {
+		t.Fatal("worker startup accepted insecure persisted settings or exposed credential")
 	}
 }

@@ -260,7 +260,7 @@
         <p id="worker-runtime-key-help" class="muted">Leave blank to keep the saved credential. The saved value is never returned.</p>
         <label class="audio-toggle"><input id="worker-runtime-clear" type="checkbox"><span>Remove saved API key / auth token</span></label>
         <label for="worker-runtime-permissions">Permissions<select id="worker-runtime-permissions"><option value="default">Ask before protected actions</option><option value="acceptEdits">Allow file edits</option><option value="plan">Plan only</option><option value="bypassPermissions">Bypass permission checks</option></select></label>
-        <p id="worker-runtime-bypass" class="notice" hidden>Bypass allows Claude Code to run tools and commands without permission prompts. Use it only on a worker you have isolated and trust.</p>
+        <p id="worker-runtime-bypass" class="notice" hidden>Bypass allows Claude Code to run tools and commands without permission prompts as the worker's OS account. It can read or change files accessible to that account and use sudo if the account and service already permit it. Use it only on a worker you have isolated and trust.</p>
       </div>
       <div id="worker-runtime-codex" hidden>
         <label for="worker-runtime-codex-model">Model<input id="worker-runtime-codex-model" maxlength="256" autocomplete="off" spellcheck="false" placeholder="Codex default" aria-describedby="worker-runtime-codex-model-help"></label>

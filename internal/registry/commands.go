@@ -275,7 +275,7 @@ func telegramErrorCode(err error) string {
 }
 
 func validateIncoming(in IncomingUpdate) error {
-	if strings.TrimSpace(in.BotID) == "" || in.UpdateID < 0 || in.UserID == 0 || in.ChatID == 0 || in.TopicID < 0 || in.ReplyToMessageID < 0 || in.CallbackMessageID < 0 {
+	if strings.TrimSpace(in.BotID) == "" || in.UpdateID <= 0 || in.UserID == 0 || in.ChatID == 0 || in.TopicID < 0 || in.ReplyToMessageID < 0 || in.CallbackMessageID < 0 {
 		return errors.New("registry: invalid Telegram update")
 	}
 	if len(in.Raw) != 0 && !json.Valid(in.Raw) {

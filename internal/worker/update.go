@@ -2,14 +2,12 @@ package worker
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -19,6 +17,7 @@ import (
 	"github.com/iaia/telegramgw/internal/config"
 	"github.com/iaia/telegramgw/internal/protocol"
 	"github.com/iaia/telegramgw/internal/workerdb"
+	"github.com/iaia/telegramgw/internal/workerupdate"
 )
 
 const updateLeaseDuration = 120 * time.Second
@@ -51,14 +50,7 @@ type updateState struct {
 }
 
 func updateControlPath(stateFile string) string {
-	path := stateFile + ".control.sock"
-	if len(path) <= 100 {
-		return path
-	}
-	// Keep the shortened endpoint in the state directory: a worker service's
-	// PrivateTmp namespace may differ from the updater's /tmp namespace.
-	digest := sha256.Sum256([]byte(stateFile))
-	return filepath.Join(filepath.Dir(stateFile), fmt.Sprintf("%x.sock", digest[:4]))
+	return workerupdate.ControlPath(stateFile)
 }
 
 // RequestUpdate sends a maintenance request to the live worker over its private

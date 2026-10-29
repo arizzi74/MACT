@@ -554,6 +554,11 @@ func TestTelegramBotWebhookIsolationAndVerifiedUsername(t *testing.T) {
 		return rec.Code
 	}
 	path := telegramBotsWebhookPrefix + summary.ID + "/webhook"
+	for _, invalid := range []int64{0, -1} {
+		if code := post(invalid, 7, 7, "/start@SecondaryBot", secret, path); code != http.StatusBadRequest {
+			t.Fatal("nonpositive update identifier accepted")
+		}
+	}
 	for _, tc := range []struct {
 		actor, chat int64
 		header      string

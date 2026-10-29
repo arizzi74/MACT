@@ -81,6 +81,8 @@ func (v VoiceConfig) withDefaults() (VoiceConfig, error) {
 // WorkerConfig is the JSON configuration for a dedicated coding-agent worker. WorkerID is the
 // stable identity assigned at enrollment; Name is descriptive and may change.
 type WorkerConfig struct {
+	// ConfigFile is the local source path, retained for raw file access policy.
+	ConfigFile            string           `json:"-"`
 	AgentKind             string           `json:"agent_kind,omitempty"`
 	WorkerID              string           `json:"worker_id"`
 	Name                  string           `json:"name"`
@@ -209,6 +211,7 @@ func LoadWorker(path string) (WorkerConfig, error) {
 		}
 		return filepath.Join(base, p)
 	}
+	cfg.ConfigFile = filepath.Join(base, filepath.Base(path))
 	cfg.StateFile = resolve(cfg.StateFile)
 	cfg.TokenFile = resolve(cfg.TokenFile)
 	if err := CheckSecretFilePermissions(cfg.TokenFile); err != nil {

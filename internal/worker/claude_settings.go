@@ -55,8 +55,8 @@ func readClaudeSettings(path string) (claudeSettingsFile, error) {
 		return s, errors.New("Claude runtime settings are invalid")
 	}
 	check := protocol.WorkerRuntimeSettingsUpdate{Model: s.Model, BaseURL: s.BaseURL, AuthMode: s.AuthMode, PermissionMode: s.PermissionMode, APIKey: &s.Credential}
-	if check.Validate() != nil {
-		return s, errors.New("Claude runtime settings are invalid")
+	if err := check.Validate(); err != nil {
+		return s, errors.New("Claude runtime settings are invalid; the API endpoint must use HTTPS without credentials, query or fragment")
 	}
 	return s, nil
 }

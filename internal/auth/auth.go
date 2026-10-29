@@ -186,6 +186,7 @@ func (r *Redactor) Redact(text string) string {
 	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	text = redactInvisibleSeparators(text, r)
 	for _, expression := range r.expressions {
 		text = expression.ReplaceAllString(text, r.replacement)
 	}

@@ -18,6 +18,7 @@ import (
 	"github.com/iaia/telegramgw/internal/codexadapter"
 	"github.com/iaia/telegramgw/internal/config"
 	"github.com/iaia/telegramgw/internal/worker"
+	"github.com/iaia/telegramgw/internal/workerupdate"
 )
 
 func main() {
@@ -55,7 +56,7 @@ func run(args []string, logger *slog.Logger) error {
 		return nil
 	}
 	if args[0] == "help" || args[0] == "--help" {
-		fmt.Println("codex-worker [--config PATH] run|status|doctor|attach [SESSION|--latest]|config export|update prepare|update abort --token TOKEN")
+		fmt.Println("codex-worker [--config PATH] run|status|doctor|attach [SESSION|--latest]|config export|update prepare|update abort --token-stdin")
 		return nil
 	}
 	cfg, err := config.LoadWorker(path)
@@ -83,10 +84,14 @@ func run(args []string, logger *slog.Logger) error {
 		action, token := "", ""
 		if len(args) == 2 && args[1] == "prepare" {
 			action = "prepare"
-		} else if len(args) == 4 && args[1] == "abort" && args[2] == "--token" && args[3] != "" {
-			action, token = "abort", args[3]
+		} else if len(args) == 3 && args[1] == "abort" && args[2] == "--token-stdin" {
+			action = "abort"
+			token, err = workerupdate.ReadAbortToken(os.Stdin)
+			if err != nil {
+				return err
+			}
 		} else {
-			return errors.New("usage: codex-worker [--config PATH] update prepare|update abort --token TOKEN")
+			return errors.New("usage: codex-worker [--config PATH] update prepare|update abort --token-stdin")
 		}
 		return requestUpdate(ctx, cfg, action, token, os.Stdout)
 	case "run":

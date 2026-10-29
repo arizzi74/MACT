@@ -73,6 +73,7 @@ func TestRequestedWorkerAppliesOnlyAfterBusyTurnEnds(t *testing.T) {
 	m := New(nil)
 	busy := true
 	prepared := false
+	m.abortWorkerUpdate = func(context.Context, *Layout, string) error { prepared = false; return nil }
 	var actions []string
 	m.Run = func(_ context.Context, args ...string) (CommandResult, error) {
 		if len(args) == 2 && args[0] == l.Binary && args[1] == "version" {

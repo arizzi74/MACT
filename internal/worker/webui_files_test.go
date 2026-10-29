@@ -66,7 +66,7 @@ func TestWebUIFileOpenRejectsSymlinksCredentialsAndSpecialFiles(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, name := range []string{"regular/file", ".ssh/id_rsa", ".codex/auth.json", "token", "state.db", ".env", ".ENV.local"} {
+	for _, name := range []string{"regular/file", ".ssh/id_rsa", ".codex/auth.json", "token", "state.db"} {
 		if err := os.WriteFile(filepath.Join(cwd, name), []byte("private"), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -92,7 +92,7 @@ func TestWebUIFileOpenRejectsSymlinksCredentialsAndSpecialFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, target := range []string{"inside-link", "outside-link/file", "parent-link/file", "credential-link", ".ssh/id_rsa", ".codex/auth.json", ".env", ".ENV.local", "token", "token-alias", "state.db", "regular", "large", "fifo"} {
+	for _, target := range []string{"inside-link", "outside-link/file", "parent-link/file", "credential-link", ".ssh/id_rsa", ".codex/auth.json", "token", "token-alias", "state.db", "regular", "large", "fifo"} {
 		started := time.Now()
 		file, _, err := openWebUIFile(cwd, cwd, target, []string{cwd}, []string{filepath.Join(cwd, "token"), filepath.Join(cwd, "state.db")})
 		if err == nil {

@@ -61,6 +61,7 @@ type Server struct {
 	passwordLogins  *httpguard.Limiter
 	passwordSlots   chan struct{}
 	enrollments     *httpguard.Limiter
+	shellReads      *httpguard.Limiter
 	webui           *gateway.Hub
 	audio           *audio.Manager
 	runtimeSettings WorkerRuntimeSettingsManager
@@ -87,6 +88,7 @@ func New(store *registry.Store, cfg Config) (*Server, error) {
 	s.passwordLogins = httpguard.NewLimiter(5, 30, time.Minute)
 	s.passwordSlots = make(chan struct{}, 2)
 	s.enrollments = httpguard.NewLimiter(20, 240, time.Minute)
+	s.shellReads = httpguard.NewLimiter(60, 600, time.Minute)
 	s.bot = newBotMonitor(cfg)
 	s.telegramBots = cfg.TelegramBots
 	s.redactor = cfg.Redactor
@@ -705,13 +707,24 @@ func (s *Server) setCSRF(w http.ResponseWriter, expires ...time.Time) {
 	}
 }
 func (s *Server) setRequestCSRF(w http.ResponseWriter, r *http.Request) {
-	if c, err := r.Cookie(adminCookie); err == nil {
+	// The shell is public. A supplied cookie is not proof of authentication;
+	// bound the optional lookup used only to preserve trusted-device expiry.
+	// Authentication remains independently enforced on every private route.
+	if c, err := r.Cookie(adminCookie); err == nil && plausibleSessionToken(c.Value) && s.shellReads.Allow(httpguard.ClientIP(r), time.Now()) {
 		if info, err := s.store.AdminSessionInfo(r.Context(), c.Value); err == nil && info.TrustedDevice {
 			s.setCSRF(w, info.ExpiresAt)
 			return
 		}
 	}
 	s.setCSRF(w)
+}
+
+func plausibleSessionToken(value string) bool {
+	if len(value) != 43 {
+		return false
+	}
+	b, err := base64.RawURLEncoding.Strict().DecodeString(value)
+	return err == nil && len(b) == 32
 }
 func (s *Server) clearSession(w http.ResponseWriter) {
 	for _, name := range []string{adminCookie, csrfCookie} {

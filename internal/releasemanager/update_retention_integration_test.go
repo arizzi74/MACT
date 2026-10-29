@@ -210,6 +210,7 @@ func TestUpdateRetentionSnapshotFailureAbortsPreparedLease(t *testing.T) {
 		t.Fatalf("snapshot failure changed worker: %v", args)
 		return CommandResult{}, nil
 	}}
+	m.abortWorkerUpdate = func(context.Context, *Layout, string) error { aborted++; return nil }
 	if err := m.ApplyUpdate(t.Context(), l, packages, release, false); err == nil {
 		t.Fatal("snapshot failure was ignored")
 	}
