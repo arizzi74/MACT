@@ -93,6 +93,12 @@ all downloaded target packages before installation. GitHub CLI is not required.
 For a separately authenticated first executable, use the
 [optional advanced procedure](#download-and-authenticate-the-installer).
 
+If the system temporary directory blocks execution (for example, `/tmp` mounted
+with `noexec`), the bootstrap automatically uses a private temporary directory
+in your home for the installer and its package checks. It removes that directory
+when installation exits. If execution is also blocked in your home, set `TMPDIR`
+on the `sh` command to a writable directory where execution is permitted.
+
 ## Install a gateway
 
 Run on the Linux gateway host:

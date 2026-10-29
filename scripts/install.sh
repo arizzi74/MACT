@@ -54,7 +54,7 @@ for argument do
   esac
 done
 [ -z "$expect" ] || fail "--$expect requires a value"
-for utility in curl uname mktemp chmod rm; do
+for utility in curl uname mktemp chmod mv rm; do
   command -v "$utility" >/dev/null 2>&1 || fail "$utility is required"
 done
 if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
@@ -103,19 +103,52 @@ if [ "$repository" = arizzi74/MACT ]; then
   esac
 fi
 
-temporary=$(mktemp -d "${TMPDIR:-/tmp}/codex-telegramgw-install.XXXXXXXX")
-trap 'rm -rf -- "$temporary"' EXIT
+temporary=
+fallback=
+cleanup() {
+  [ -z "$temporary" ] || rm -rf -- "$temporary"
+  [ -z "$fallback" ] || rm -rf -- "$fallback"
+}
+trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
+temporary=$(mktemp -d "${TMPDIR:-/tmp}/codex-telegramgw-install.XXXXXXXX") || fail 'could not create a private temporary directory; set TMPDIR to a writable directory and retry'
 base="https://github.com/arizzi74/MACT/releases/download/$bootstrap_version"
 printf 'Downloading and verifying installer %s for release %s...\n' "$bootstrap_version" "$release_tag"
 download --max-filesize 67108864 --output "$temporary/$asset" "$base/$asset" || fail 'could not download the release manager'
 printf '%s  %s\n' "$expected" "$asset" > "$temporary/manager.sha256"
-if command -v sha256sum >/dev/null 2>&1; then
-  (cd "$temporary" && sha256sum -c manager.sha256) >/dev/null 2>&1 || fail 'installer checksum verification failed; no installer code was executed'
-else
-  (cd "$temporary" && shasum -a 256 -c manager.sha256) >/dev/null 2>&1 || fail 'installer checksum verification failed; no installer code was executed'
-fi
+verify_installer() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    (cd "$temporary" && sha256sum -c manager.sha256) >/dev/null 2>&1 || fail 'installer checksum verification failed; no installer code was executed'
+  else
+    (cd "$temporary" && shasum -a 256 -c manager.sha256) >/dev/null 2>&1 || fail 'installer checksum verification failed; no installer code was executed'
+  fi
+}
+verify_installer
 chmod 0700 "$temporary/$asset"
+# chmod cannot override a noexec mount. Probe only the verified manager's
+# side-effect-free version command, so setup itself is never retried.
+if "$temporary/$asset" version >/dev/null 2>&1; then
+  :
+else
+  startup_status=$?
+  [ "$startup_status" -eq 126 ] || fail "verified installer startup failed (exit $startup_status)"
+  case "${HOME:-}" in
+    /*) [ "$HOME" != / ] || fail 'the temporary directory blocks execution; set TMPDIR to a writable directory that permits execution and retry' ;;
+    *) fail 'the temporary directory blocks execution and HOME is unavailable; set TMPDIR to a writable directory that permits execution and retry' ;;
+  esac
+  printf 'The temporary directory blocks execution; trying a private directory in your home...\n'
+  fallback=$(mktemp -d "${HOME%/}/.mact-install.XXXXXXXX") || fail 'could not create a private directory in HOME; set TMPDIR to a writable directory that permits execution and retry'
+  mv "$temporary/$asset" "$temporary/manager.sha256" "$fallback/" || fail 'could not relocate the verified installer'
+  rm -rf -- "$temporary"
+  temporary=$fallback
+  fallback=
+  verify_installer
+  # Native setup also executes downloaded packages and runtime preflights from
+  # its temporary directories. Keep those on the same executable filesystem.
+  TMPDIR=$temporary
+  export TMPDIR
+  "$temporary/$asset" version >/dev/null 2>&1 || fail 'cannot execute the verified installer from HOME; execution may be blocked by mount options or a security policy. Set TMPDIR to a writable directory that permits execution and retry'
+fi
 CODEX_TELEGRAMGW_BOOTSTRAP_RELEASE=$release_tag
 export CODEX_TELEGRAMGW_BOOTSTRAP_RELEASE
 printf 'Pinned installer checksum verified. Follow the terminal prompts; press Enter to accept defaults.\n'

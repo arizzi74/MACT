@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -15,9 +16,9 @@ import (
 )
 
 type bootstrapFixture struct {
-	root, bin, manager, checksum, provenance, script string
-	environment                                      []string
-	key                                              ed25519.PrivateKey
+	root, bin, home, manager, checksum, provenance, script string
+	environment                                            []string
+	key                                                    ed25519.PrivateKey
 }
 
 // Independently checked against the published v0.7.10 SHA256SUMS manifest, whose
@@ -36,7 +37,11 @@ func bootstrapTestFixture(t *testing.T) bootstrapFixture {
 	}
 	root := t.TempDir()
 	bin := filepath.Join(root, "bin")
+	home := filepath.Join(root, "home")
 	if err := os.Mkdir(bin, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(home, 0700); err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"uname", "mktemp", "chmod", "rm", "grep", "wc", "mv", "sha256sum"} {
@@ -64,7 +69,19 @@ func bootstrapTestFixture(t *testing.T) bootstrapFixture {
 	}
 	// This manager records the shell's forwarding contract. It does not emulate
 	// the native CLI or execute installation; use supported invocation shapes.
-	manager := []byte("#!/bin/sh\nprintf '%s\\n' \"$0\" \"$CODEX_TELEGRAMGW_BOOTSTRAP_RELEASE\" \"$@\" > \"$TEST_RECORD\"\nexit 17\n")
+	manager := []byte(`#!/bin/sh
+if [ "$#" -eq 1 ] && [ "$1" = version ] && [ -z "${CODEX_TELEGRAMGW_BOOTSTRAP_RELEASE:-}" ]; then
+  printf '%s\n' "$0" >> "$TEST_PROBES"
+  if [ -n "${HOME:-}" ]; then
+    case "$0" in "$HOME"/*) exit "${TEST_HOME_PROBE_STATUS:-0}" ;; esac
+  fi
+  exit "${TEST_PROBE_STATUS:-0}"
+fi
+printf '%s\n' "$0" >> "$TEST_INVOCATIONS"
+printf '%s\n' "$TMPDIR" > "$TEST_TMPDIR_RECORD"
+printf '%s\n' "$0" "$CODEX_TELEGRAMGW_BOOTSTRAP_RELEASE" "$@" > "$TEST_RECORD"
+exit "${TEST_MANAGER_STATUS:-17}"
+`)
 	managerPath := filepath.Join(root, "manager")
 	writeTestFile(t, managerPath, manager)
 	manifestPath := filepath.Join(root, "manifest")
@@ -147,8 +164,9 @@ esac
 	}
 	scriptPath := filepath.Join(root, "install.sh")
 	writeTestFile(t, scriptPath, script)
-	fixture := bootstrapFixture{root: root, bin: bin, manager: managerPath, checksum: manifestPath, provenance: provenancePath, script: scriptPath, environment: []string{
-		"PATH=" + bin, "TMPDIR=" + root, "TEST_RECORD=" + filepath.Join(root, "record"), "TEST_REQUESTS=" + filepath.Join(root, "requests"),
+	fixture := bootstrapFixture{root: root, bin: bin, home: home, manager: managerPath, checksum: manifestPath, provenance: provenancePath, script: scriptPath, environment: []string{
+		"PATH=" + bin, "TMPDIR=" + root, "HOME=" + home, "TEST_RECORD=" + filepath.Join(root, "record"), "TEST_REQUESTS=" + filepath.Join(root, "requests"),
+		"TEST_PROBES=" + filepath.Join(root, "probes"), "TEST_INVOCATIONS=" + filepath.Join(root, "invocations"), "TEST_TMPDIR_RECORD=" + filepath.Join(root, "manager-tmpdir"),
 		"TEST_MANIFEST=" + manifestPath, "TEST_MANAGER=" + managerPath,
 		"TEST_PROVENANCE=" + provenancePath, "TEST_REAL_CHMOD=" + chmod, "TEST_CHMODS=" + filepath.Join(root, "chmods"),
 		"TEST_RELEASE_URL=https://github.com/arizzi74/MACT/releases/tag/v1.2.3",
@@ -184,7 +202,7 @@ func TestBootstrapProductionPinsRejectSubstitutedManagersOnEveryPlatform(t *test
 			if err == nil || !strings.Contains(string(output), "installer checksum verification failed") {
 				t.Fatalf("production pin did not reject substituted bytes: %v %s", err, output)
 			}
-			for _, name := range []string{"record", "chmods"} {
+			for _, name := range []string{"record", "chmods", "probes", "invocations"} {
 				if _, err := os.Stat(filepath.Join(fixture.root, name)); !os.IsNotExist(err) {
 					t.Fatalf("used substituted manager (%s): %v", name, err)
 				}
@@ -279,6 +297,230 @@ func TestBootstrapPreservesLiteralShellArgumentsAndCleansTemporaryDirectory(t *t
 	if err != nil || len(remaining) != 0 {
 		t.Fatalf("temporary manager directory not removed: %v %v", remaining, err)
 	}
+}
+
+func bootstrapRecordLines(t *testing.T, fixture bootstrapFixture, name string) []string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(fixture.root, name))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.Split(strings.TrimSpace(string(data)), "\n")
+}
+
+func assertBootstrapTemporaryCleanup(t *testing.T, directories ...string) {
+	t.Helper()
+	for _, directory := range directories {
+		for _, pattern := range []string{"codex-telegramgw-install.*", ".mact-install.*"} {
+			remaining, err := filepath.Glob(filepath.Join(directory, pattern))
+			if err != nil || len(remaining) != 0 {
+				t.Fatalf("temporary manager directories not removed: %v %v", remaining, err)
+			}
+		}
+	}
+}
+
+func TestBootstrapProbesExecutionWithoutRetryingSetup(t *testing.T) {
+	for _, tc := range []struct {
+		name, message                   string
+		probe, homeProbe, manager, exit int
+		probes, invocations             int
+		fallback                        bool
+	}{
+		{name: "executable temporary directory", manager: 17, exit: 17, probes: 1, invocations: 1},
+		{name: "execution denied in temporary directory", probe: 126, manager: 17, exit: 17, probes: 2, invocations: 1, fallback: true},
+		{name: "other startup failure", probe: 42, manager: 17, exit: 1, probes: 1, message: "startup failed (exit 42)"},
+		{name: "missing interpreter", probe: 127, manager: 17, exit: 1, probes: 1, message: "startup failed (exit 127)"},
+		{name: "home execution also denied", probe: 126, homeProbe: 126, manager: 17, exit: 1, probes: 2, message: "TMPDIR"},
+		{name: "setup returns 126", manager: 126, exit: 126, probes: 1, invocations: 1},
+		{name: "relocated setup returns 126", probe: 126, manager: 126, exit: 126, probes: 2, invocations: 1, fallback: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := bootstrapTestFixture(t)
+			fixture.environment = append(fixture.environment,
+				fmt.Sprintf("TEST_PROBE_STATUS=%d", tc.probe),
+				fmt.Sprintf("TEST_HOME_PROBE_STATUS=%d", tc.homeProbe),
+				fmt.Sprintf("TEST_MANAGER_STATUS=%d", tc.manager))
+			output, err := fixture.run("setup", "worker")
+			if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != tc.exit {
+				t.Fatalf("wrong exit status: want %d, got %v %s", tc.exit, err, output)
+			}
+			if !strings.Contains(string(output), tc.message) {
+				t.Fatalf("missing startup failure guidance %q: %s", tc.message, output)
+			}
+			if probes := bootstrapRecordLines(t, fixture, "probes"); len(probes) != tc.probes {
+				t.Fatalf("wrong version probe count: %q", probes)
+			}
+			invocations := bootstrapRecordLines(t, fixture, "invocations")
+			if len(invocations) != tc.invocations {
+				t.Fatalf("setup must execute once after a successful probe: %q", invocations)
+			}
+			if tc.invocations > 0 {
+				inHome := filepath.Dir(filepath.Dir(invocations[0])) == fixture.home
+				if inHome != tc.fallback {
+					t.Fatalf("manager executed from wrong directory: %q", invocations[0])
+				}
+				if tc.fallback {
+					tmpdir := bootstrapRecordLines(t, fixture, "manager-tmpdir")
+					if len(tmpdir) != 1 || tmpdir[0] != filepath.Dir(invocations[0]) {
+						t.Fatalf("relocated manager did not receive executable TMPDIR: %q", tmpdir)
+					}
+				}
+			}
+			assertBootstrapTemporaryCleanup(t, fixture.root, fixture.home)
+		})
+	}
+}
+
+func TestBootstrapForwardsExplicitVersionAfterItsExecutionProbe(t *testing.T) {
+	fixture := bootstrapTestFixture(t)
+	output, err := fixture.run("version")
+	if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 17 {
+		t.Fatalf("version status was not forwarded: %v %s", err, output)
+	}
+	if probes := bootstrapRecordLines(t, fixture, "probes"); len(probes) != 1 {
+		t.Fatalf("wrong version probe count: %q", probes)
+	}
+	record := bootstrapRecordLines(t, fixture, "record")
+	if len(record) != 3 || record[1] != "v1.2.3" || record[2] != "version" {
+		t.Fatalf("explicit version was not forwarded: %q", record)
+	}
+	assertBootstrapTemporaryCleanup(t, fixture.root, fixture.home)
+}
+
+// Use an existing writable noexec mount; the test never mounts or changes one.
+func bootstrapNoexecDirectory(t *testing.T) string {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		t.Skip("requires a writable existing Linux noexec mount")
+	}
+	for _, candidate := range []string{"/run/lock", "/run", "/dev/shm", "/tmp"} {
+		directory, err := os.MkdirTemp(candidate, "mact-bootstrap-noexec-")
+		if err != nil {
+			continue
+		}
+		probe := filepath.Join(directory, "probe")
+		if err = os.WriteFile(probe, []byte("#!/bin/sh\nexit 0\n"), 0700); err == nil {
+			err = exec.Command(probe).Run()
+		}
+		if errors.Is(err, os.ErrPermission) {
+			if err := os.Remove(probe); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.RemoveAll(directory) })
+			return directory
+		}
+		_ = os.RemoveAll(directory)
+	}
+	t.Skip("no writable existing noexec mount found")
+	return ""
+}
+
+func TestBootstrapRecoversFromRealNoexecTemporaryDirectory(t *testing.T) {
+	for _, symlinkHome := range []bool{false, true} {
+		t.Run(fmt.Sprintf("symlink HOME=%t", symlinkHome), func(t *testing.T) {
+			fixture := bootstrapTestFixture(t)
+			temporary := bootstrapNoexecDirectory(t)
+			home := fixture.home
+			if symlinkHome {
+				home = filepath.Join(fixture.root, "linked home")
+				if err := os.Symlink(fixture.home, home); err != nil {
+					t.Fatal(err)
+				}
+			}
+			fixture.environment = append(fixture.environment, "TMPDIR="+temporary, "HOME="+home, "TEST_ARCH=aarch64")
+			output, err := fixture.run("setup", "claude-worker")
+			if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 17 {
+				t.Fatalf("noexec recovery failed: %v %s", err, output)
+			}
+			invocations := bootstrapRecordLines(t, fixture, "invocations")
+			if len(invocations) != 1 || filepath.Dir(filepath.Dir(invocations[0])) != home {
+				t.Fatalf("verified manager did not run once from HOME: %q", invocations)
+			}
+			if probes := bootstrapRecordLines(t, fixture, "probes"); len(probes) != 1 || probes[0] != invocations[0] {
+				t.Fatalf("unexpected probes on executable HOME: %q", probes)
+			}
+			tmpdir := bootstrapRecordLines(t, fixture, "manager-tmpdir")
+			if len(tmpdir) != 1 || tmpdir[0] != filepath.Dir(invocations[0]) {
+				t.Fatalf("manager still received noexec TMPDIR: %q", tmpdir)
+			}
+			if record := bootstrapRecordLines(t, fixture, "record"); len(record) < 2 || strings.Join(record[1:], "\n") != "v1.2.3\nsetup\nclaude-worker" {
+				t.Fatalf("relocation changed setup arguments: %q", record)
+			}
+			if requests := bootstrapRecordLines(t, fixture, "requests"); len(requests) != 2 || !strings.HasSuffix(requests[1], "/codex-telegramgw-linux-arm64") {
+				t.Fatalf("recovery redownloaded or selected the wrong manager: %q", requests)
+			}
+			assertBootstrapTemporaryCleanup(t, temporary, fixture.home)
+			if symlinkHome {
+				if _, err := os.Readlink(home); err != nil {
+					t.Fatalf("cleanup changed the HOME symlink: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestBootstrapFailsClosedWhenTemporaryDirectoryAndHomeAreNoexec(t *testing.T) {
+	fixture := bootstrapTestFixture(t)
+	temporary := bootstrapNoexecDirectory(t)
+	home := filepath.Join(temporary, "home")
+	if err := os.Mkdir(home, 0700); err != nil {
+		t.Fatal(err)
+	}
+	fixture.environment = append(fixture.environment, "TMPDIR="+temporary, "HOME="+home)
+	output, err := fixture.run("setup", "worker")
+	if err == nil || !strings.Contains(string(output), "TMPDIR") || !strings.Contains(string(output), "permits execution") {
+		t.Fatalf("missing actionable noexec failure: %v %s", err, output)
+	}
+	for _, name := range []string{"probes", "invocations", "record"} {
+		if lines := bootstrapRecordLines(t, fixture, name); len(lines) != 0 {
+			t.Fatalf("executed manager from a noexec filesystem (%s): %q", name, lines)
+		}
+	}
+	assertBootstrapTemporaryCleanup(t, temporary, home)
+}
+
+func TestBootstrapFailsClosedWithoutHomeForNoexecRecovery(t *testing.T) {
+	fixture := bootstrapTestFixture(t)
+	fixture.environment = append(fixture.environment, "TEST_PROBE_STATUS=126", "HOME=")
+	output, err := fixture.run("setup", "worker")
+	if err == nil || !strings.Contains(string(output), "TMPDIR") || !strings.Contains(string(output), "permits execution") {
+		t.Fatalf("missing actionable recovery failure: %v %s", err, output)
+	}
+	if invocations := bootstrapRecordLines(t, fixture, "invocations"); len(invocations) != 0 {
+		t.Fatalf("setup executed without an executable location: %q", invocations)
+	}
+	assertBootstrapTemporaryCleanup(t, fixture.root, fixture.home)
+}
+
+func TestBootstrapRejectsManagerTamperedDuringNoexecRelocation(t *testing.T) {
+	fixture := bootstrapTestFixture(t)
+	mv, err := exec.LookPath("mv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(fixture.bin, "mv")); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(fixture.bin, "mv"), []byte("#!/bin/sh\n\"$TEST_REAL_MV\" \"$@\" || exit $?\nprintf corrupt > \"$3/${1##*/}\"\n"))
+	if err := os.Chmod(filepath.Join(fixture.bin, "mv"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	fixture.environment = append(fixture.environment, "TEST_PROBE_STATUS=126", "TEST_REAL_MV="+mv)
+	output, err := fixture.run("setup", "worker")
+	if err == nil || !strings.Contains(string(output), "installer checksum verification failed") {
+		t.Fatalf("accepted manager modified during relocation: %v %s", err, output)
+	}
+	if probes := bootstrapRecordLines(t, fixture, "probes"); len(probes) != 1 {
+		t.Fatalf("probed modified relocated manager: %q", probes)
+	}
+	if invocations := bootstrapRecordLines(t, fixture, "invocations"); len(invocations) != 0 {
+		t.Fatalf("executed setup after relocation changed manager bytes: %q", invocations)
+	}
+	assertBootstrapTemporaryCleanup(t, fixture.root, fixture.home)
 }
 
 func TestBootstrapSelectsTargetVersionAndRepositoryIndependentlyOfPinnedManager(t *testing.T) {
@@ -482,7 +724,7 @@ func TestBootstrapRejectsCorruptOrPartialManagerBeforeChmodAndExecution(t *testi
 				if !strings.Contains(string(output), message) {
 					t.Fatalf("wrong failure: %v %s", err, output)
 				}
-				for _, name := range []string{"record", "chmods"} {
+				for _, name := range []string{"record", "chmods", "probes", "invocations"} {
 					if _, err := os.Stat(filepath.Join(fixture.root, name)); !os.IsNotExist(err) {
 						t.Fatalf("used corrupt manager before rejection (%s): %v", name, err)
 					}
