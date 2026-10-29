@@ -6,12 +6,19 @@ on:
       version:
         type: string
         required: true
+      run-smoke-tests:
+        type: boolean
+        default: true
   workflow_dispatch:
     inputs:
       version:
         description: Gateway and Whisper release version
         default: dev
         required: true
+      run-smoke-tests:
+        description: Run native speech smoke tests
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -103,6 +110,7 @@ jobs:
           NATIVE_VERSION: ${{ steps.release-identity.outputs.version }}
         run: python3 scripts/native-build-cache.py verify whisper --os "$TARGET_OS" --arch "$TARGET_ARCH" --key "$CACHE_KEY" --version "$NATIVE_VERSION"
       - name: Verify real speech, warm model, protocol framing and EOF
+        if: inputs.run-smoke-tests
         env:
           TARGET_OS: ${{ matrix.os }}
           TARGET_ARCH: ${{ matrix.arch }}
@@ -110,7 +118,7 @@ jobs:
       # Never save PR outputs. Main seeds caches visible to other branches/tags.
       - name: Cache successfully validated compiled helper
         if: >-
-          steps.native-cache.outputs.cache-hit != 'true' &&
+          inputs.run-smoke-tests && steps.native-cache.outputs.cache-hit != 'true' &&
           (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
           github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0

@@ -6,6 +6,27 @@ permission mode. The protections below reduce accidental credential disclosure;
 they do not isolate the worker account from that operator or from code running
 with the same filesystem privileges.
 
+## Installation trust
+
+The default one-line setup trusts the shell bootstrap delivered from the
+canonical repository over HTTPS. The bootstrap checks a pinned v0.7.9 native
+manager against embedded SHA-256 hashes. That manager verifies signed release
+provenance and all target packages before installation. This does not
+independently authenticate the bootstrap script itself.
+
+Operators who want to authenticate the first executable separately can use the
+[optional GitHub CLI procedure](installation.md#download-and-authenticate-the-installer)
+with an independently trusted verifier. Subsequent native updates verify signed
+release provenance without requiring GitHub CLI.
+
+For maintainers: the pinned manager can install newer authenticated target
+payloads, while setup wizard and CLI logic run from that pinned manager. When
+wizard, CLI or security compatibility changes require a newer bootstrap
+manager, independently verify its signed release manifest, then refresh
+`bootstrap_version` and all four reviewed platform hashes together in
+`scripts/install.sh` and update the bootstrap tests. The pin can remain valid
+across multiple target releases.
+
 ## Outbound display text
 
 Worker display text is redacted before it enters the durable gateway event

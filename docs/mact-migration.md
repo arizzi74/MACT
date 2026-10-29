@@ -147,25 +147,26 @@ its uploaded draft before publication.
 
 ## Recovery when an update cannot run
 
-First [download and authenticate the installer](installation.md#download-and-authenticate-the-installer). Use a release whose provenance names the
-canonical repository, then pass an explicit `--repo arizzi74/MACT`. This sets
-`MACT_INSTALLER_DIR`; the bootstrap rejects canonical versions before v0.6.21. Run gateway commands with sudo and worker
-commands as the worker's existing account. Preserve the existing configuration
-and enrollment.
+Use the current bootstrap to recover the manager from the canonical repository.
+It checks a pinned native manager, which verifies signed release provenance for
+the latest stable target. Run gateway commands with sudo and worker commands as
+the worker's existing account. Preserve the existing configuration and enrollment.
+An [optional authenticated-first procedure](installation.md#download-and-authenticate-the-installer)
+is available for operators using a separately trusted GitHub CLI.
 
-For a worker, install the verified manager without restarting its runtime:
+For a worker, restore the manager without restarting its runtime:
 
 ```sh
-"$MACT_INSTALLER_DIR/install" adopt worker --repo arizzi74/MACT
+curl -fsSL https://raw.githubusercontent.com/arizzi74/MACT/main/scripts/install.sh | sh -s -- adopt worker --repo arizzi74/MACT
 ```
 
 For a gateway, use the corresponding supported adoption command:
 
 ```sh
-sudo "$MACT_INSTALLER_DIR/install" adopt gateway --repo arizzi74/MACT
+curl -fsSL https://raw.githubusercontent.com/arizzi74/MACT/main/scripts/install.sh | sudo sh -s -- adopt gateway --repo arizzi74/MACT
 ```
 
-For an active worker, install the verified manager with `adopt worker` first;
+For an active worker, restore the manager with `adopt worker` first;
 apply the worker update when its work is idle. The normal updater's busy check
 continues to protect running sessions. Existing `codex-telegramgw` commands are
 available when the `mact` alias cannot be installed because of a name collision.

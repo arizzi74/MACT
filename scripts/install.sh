@@ -1,6 +1,6 @@
 #!/bin/sh
-# Run only a previously authenticated copy of this script (see installation.md).
-# Authenticate the native manager with an already trusted GitHub CLI before use.
+# This HTTPS-fetched script is the initial trust root. Before execution, verify
+# the known v0.7.9 native manager against a checksum pinned in this script.
 set -eu
 
 # The native manager selects gateway setup under sudo, worker setup otherwise.
@@ -54,18 +54,26 @@ for argument do
   esac
 done
 [ -z "$expect" ] || fail "--$expect requires a value"
-for utility in curl gh uname mktemp chmod rm; do
+for utility in curl uname mktemp chmod rm; do
   command -v "$utility" >/dev/null 2>&1 || fail "$utility is required"
 done
-# Never fetch a verifier through the release channel we are about to verify.
-# Old CLIs, including versions without attestation support, fail closed here.
-gh attestation verify --help >/dev/null 2>&1 || fail 'a trusted GitHub CLI with attestation verification support is required; install it through your trusted package channel'
 if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
   fail 'sha256sum or shasum is required'
 fi
 case "$(uname -s)" in Linux) platform=linux ;; Darwin) platform=darwin ;; *) fail 'unsupported operating system' ;; esac
 case "$(uname -m)" in x86_64|amd64) architecture=amd64 ;; aarch64|arm64) architecture=arm64 ;; *) fail 'unsupported CPU architecture' ;; esac
 asset="codex-telegramgw-$platform-$architecture"
+# These pins come from the authenticated canonical v0.7.9 SHA256SUMS manifest
+# (SHA256 7ed8bdf540fb43db1f67d6feb4d9aff202c8aa69a290cc0b55d29984d8eea309).
+# The bootstrap version is independent of the release/repository being installed.
+# This manager verifies signed provenance and checksums for the target release.
+bootstrap_version=v0.7.9
+case "$platform-$architecture" in
+  linux-amd64) expected=c994d10109a0626d64a5209ca594534f2fa88ddd640650062f34df63c1739dd9 ;;
+  linux-arm64) expected=e9c8aaf0fa6e95f004d6921b4b6a39415416b17265f8363f621d5e222731fe95 ;;
+  darwin-amd64) expected=cdf9d3a74e3f534b237daba6b93417f344e1f11539fdda8fead20acd204ccecb ;;
+  darwin-arm64) expected=700a5839c8a6f6d5750f75e38182662439f308114496f7f19611e0788127eecd ;;
+esac
 printf 'Preparing the %s installer for %s/%s...\n' "$1" "$platform" "$architecture"
 download() {
   curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
@@ -98,39 +106,9 @@ fi
 temporary=$(mktemp -d "${TMPDIR:-/tmp}/codex-telegramgw-install.XXXXXXXX")
 trap 'rm -rf -- "$temporary"' EXIT
 trap 'exit 1' HUP INT TERM
-base="https://github.com/$repository/releases/download/$release_tag"
-printf 'Downloading and verifying installer %s...\n' "$release_tag"
-download --max-filesize 1048576 --output "$temporary/SHA256SUMS" "$base/SHA256SUMS" || fail 'could not download release checksums'
-download --max-filesize 4194304 --output "$temporary/SHA256SUMS.sigstore.json" "$base/SHA256SUMS.sigstore.json" || fail 'could not download signed release provenance; no installer code was executed'
-# Both the certificate SAN and source ref must name this exact release. A hash
-# obtained alongside the manager is trusted only after this independent check.
-# No downloaded trust roots, relaxed identity fallback, or unverified manager
-# can participate in verification. Unsupported flags also fail closed.
-gh attestation verify "$temporary/SHA256SUMS" \
-  --bundle "$temporary/SHA256SUMS.sigstore.json" \
-  --repo "$repository" \
-  --cert-identity "https://github.com/$repository/.github/workflows/release.yml@refs/tags/$release_tag" \
-  --cert-oidc-issuer https://token.actions.githubusercontent.com \
-  --source-ref "refs/tags/$release_tag" \
-  --predicate-type https://slsa.dev/provenance/v1 \
-  >/dev/null || fail 'release provenance verification failed; no installer code was executed'
-expected=
-seen=' '
-while IFS= read -r line || [ -n "$line" ]; do
-  hash=${line%% *}
-  [ "${#hash}" -eq 64 ] || fail 'malformed release checksum manifest'
-  case "$hash" in *[!0-9a-fA-F]*) fail 'malformed release checksum manifest' ;; esac
-  entry=${line#"$hash"}
-  case "$entry" in '  '*) entry=${entry#'  '} ;; ' *'*) entry=${entry#' *'} ;; *) fail 'malformed release checksum manifest' ;; esac
-  entry=${entry#./}
-  case "$entry" in ''|.|..|*[!A-Za-z0-9_.-]*) fail 'unsafe name in release checksum manifest' ;; esac
-  case "$seen" in *" $entry "*) fail 'duplicate name in release checksum manifest' ;; esac
-  seen="$seen$entry "
-  if [ "$entry" = "$asset" ]; then expected=$hash; fi
-done < "$temporary/SHA256SUMS"
-[ -n "$expected" ] || fail "release does not contain $asset; select a release with the native Go installer"
+base="https://github.com/arizzi74/MACT/releases/download/$bootstrap_version"
+printf 'Downloading and verifying installer %s for release %s...\n' "$bootstrap_version" "$release_tag"
 download --max-filesize 67108864 --output "$temporary/$asset" "$base/$asset" || fail 'could not download the release manager'
-# Let the platform checksum utility accept both uppercase and lowercase hashes.
 printf '%s  %s\n' "$expected" "$asset" > "$temporary/manager.sha256"
 if command -v sha256sum >/dev/null 2>&1; then
   (cd "$temporary" && sha256sum -c manager.sha256) >/dev/null 2>&1 || fail 'installer checksum verification failed; no installer code was executed'
@@ -140,5 +118,5 @@ fi
 chmod 0700 "$temporary/$asset"
 CODEX_TELEGRAMGW_BOOTSTRAP_RELEASE=$release_tag
 export CODEX_TELEGRAMGW_BOOTSTRAP_RELEASE
-printf 'Installer publisher and checksum verified. Follow the terminal prompts; press Enter to accept defaults.\n'
+printf 'Pinned installer checksum verified. Follow the terminal prompts; press Enter to accept defaults.\n'
 "$temporary/$asset" "$@"

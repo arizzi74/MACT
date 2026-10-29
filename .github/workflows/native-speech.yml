@@ -6,12 +6,19 @@ on:
       version:
         type: string
         required: true
+      run-smoke-tests:
+        type: boolean
+        default: true
   workflow_dispatch:
     inputs:
       version:
         description: Gateway release version (native helpers use source versions)
         default: dev
         required: true
+      run-smoke-tests:
+        description: Run native speech smoke tests
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -42,7 +49,7 @@ jobs:
         with:
           go-version: '1.26.x'
           check-latest: true
-      # Cache compilation only. Real inference checks below run on every restore.
+      # Cache compilation only. Full validation includes real inference on restore.
       - name: Identify native sources and resolved toolchains
         id: native-identity
         env:
@@ -94,6 +101,7 @@ jobs:
           NATIVE_VERSION: ${{ steps.native-identity.outputs.version }}
         run: python3 scripts/native-build-cache.py verify speech --os "$TARGET_OS" --arch "$TARGET_ARCH" --key "$CACHE_KEY" --version "$NATIVE_VERSION"
       - name: Download and verify pinned smoke models
+        if: inputs.run-smoke-tests
         shell: bash
         run: |
           set -euo pipefail
@@ -150,6 +158,7 @@ jobs:
           fetch_model "$qwen_url/$QWEN_TTS_MODEL_NAME?download=true" "$model_dir/qwen-tts/$QWEN_TTS_MODEL_NAME" "$QWEN_TTS_MODEL_SIZE" "$QWEN_TTS_MODEL_SHA256"
           fetch_model "$qwen_url/$QWEN_TTS_MMPROJ_NAME?download=true" "$model_dir/qwen-tts/$QWEN_TTS_MMPROJ_NAME" "$QWEN_TTS_MMPROJ_SIZE" "$QWEN_TTS_MMPROJ_SHA256"
       - name: Verify resident models, two replies, float32 PCM and clean EOF
+        if: inputs.run-smoke-tests
         env:
           TARGET_OS: ${{ matrix.os }}
           TARGET_ARCH: ${{ matrix.arch }}
@@ -161,6 +170,7 @@ jobs:
             python3 native/qwen-tts/smoke.py --helper "$PWD/dist/qwen-tts/$TARGET_OS-$TARGET_ARCH/codex-qwen-tts" --dir "$RUNNER_TEMP/native-speech-models/qwen-tts" --language "$language" --threads 2
           done
       - name: Verify optimized Qwen on CPUs accepted by the production selector
+        if: inputs.run-smoke-tests
         env:
           TELEGRAMGW_QWEN_OPTIMIZED_HELPER: ${{ github.workspace }}/dist/qwen-tts/${{ matrix.os }}-${{ matrix.arch }}/lib/codex-qwen-tts-optimized
           TELEGRAMGW_QWEN_OPTIMIZED_MODEL_DIR: ${{ runner.temp }}/native-speech-models/qwen-tts
@@ -173,7 +183,7 @@ jobs:
       # Never save PR outputs. Main seeds caches visible to other branches/tags.
       - name: Cache successfully validated compiled helpers
         if: >-
-          steps.native-cache.outputs.cache-hit != 'true' &&
+          inputs.run-smoke-tests && steps.native-cache.outputs.cache-hit != 'true' &&
           (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
           github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0

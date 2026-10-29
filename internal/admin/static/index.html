@@ -221,9 +221,8 @@
   <div class="row enrollment-heading"><h2 id="enrollment-heading">Enroll a worker</h2><button id="enrollment-close" class="secondary" aria-label="Close enrollment">Close</button></div>
   <p id="enrollment-description">Run the installer on the worker machine. Enter a display name there, then paste this one-use URL. It expires in 10 minutes. Opening it in a browser does not use it.</p>
   <details class="enrollment-install"><summary>Installer command</summary>
-    <p>First <a href="https://github.com/arizzi74/MACT/blob/main/docs/installation.md#download-and-authenticate-the-installer" target="_blank" rel="noopener noreferrer">download and authenticate the installer</a> in the same terminal. This sets <code>MACT_INSTALLER_DIR</code>.</p>
     <p class="muted">Run as the developer account that owns your projects, without sudo:</p>
-    <pre class="enrollment-command"><code>"$MACT_INSTALLER_DIR/install" setup worker</code></pre>
+    <pre class="enrollment-command"><code>curl -fsSL https://raw.githubusercontent.com/arizzi74/MACT/main/scripts/install.sh | sh -s -- setup worker</code></pre>
   </details>
   <label for="enrollment-access">Worker service access</label>
   <select id="enrollment-access" aria-describedby="enrollment-access-description">

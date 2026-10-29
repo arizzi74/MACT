@@ -23,7 +23,7 @@ It lacked full-history secret scanning and an audit of prebundled browser code.
 
 | Finding / assessment identifier | Disposition | Evidence and remaining scope |
 | --- | --- | --- |
-| First executable trust, MACT-02 / L-7 | **Fixed** | `scripts/install.sh` verifies manifest provenance with a preinstalled trusted `gh` before reading its hashes, downloading/executing the manager. Public commands instead authenticate the native manager directly, avoiding mutable `curl | sh`. Wrong identity, tag, source ref, issuer, predicate, signatures and interrupted downloads fail before execution. |
+| First executable trust, MACT-02 / L-7 | **Mitigated; HTTPS bootstrap trust accepted by default** | The one-line `curl` setup trusts the HTTPS-delivered shell script. It checks a pinned v0.7.9 native manager against embedded SHA-256 hashes; the manager verifies signed release provenance and all target packages before installation. The optional authenticated-first procedure uses a separately trusted `gh` to verify the native manager before execution. The script does not independently authenticate itself. |
 | Pathological Markdown, MACT-01 | **Fixed** | `webui-format.js` uses bounded scanners/work/DOM budgets and pre-parse size checks, with inert full-text fallback. The permanent production-renderer browser test covers 8–128 KiB hostile inputs and a usable composer. |
 | Third-party display credentials, M-1 / L-2 | **Fixed** | Shared `auth` defaults cover GitHub, AWS, Google, Slack and JWT shapes in addition to existing rules. Worker outbox writes and reconnect sanitization retain event identities; live projections and literal credential rotation are tested. Unknown encodings and secrets split across fields remain outside a per-field redactor's guarantee. |
 | Raw file credential access, MACT-03 / L-3 | **Fixed** | `workerPrivateFilePaths` excludes default/custom MACT and Claude config/state/credential paths before opening bytes. Symlink, hard-link and traversal restrictions remain; ordinary allowed project files retain exact-byte downloads. Existing `.env` restrictions remain. |
@@ -43,14 +43,17 @@ It lacked full-history secret scanning and an audit of prebundled browser code.
 
 ## Threat model and compatibility
 
-Initial installation trusts the operator's OS, terminal, independently installed
-GitHub CLI and its Sigstore trust roots, plus the exact selected repository,
-release workflow and stable tag. A checksum fetched beside an asset is not an
-authenticity check until that manifest's attestation is verified. The bootstrap
-does not protect a compromised trusted verifier, local root account, or an
-authorized publisher/workflow deliberately shipping malicious code. The initial
-canonical identity policy is strict; historical renamed signers are not silently
-accepted. Subsequent updates retain the native updater's separate explicit
+Default installation trusts the operator's OS, terminal and HTTPS-delivered
+bootstrap. Its embedded hashes pin a known-good native manager; they do not
+independently authenticate the shell script itself. The manager verifies the
+selected release's signed manifest and target packages before installation.
+The optional authenticated-first procedure instead trusts an independently
+installed GitHub CLI and its Sigstore trust roots for the first executable.
+Both paths retain the exact canonical repository, release workflow and tag
+policy. A checksum fetched beside an asset is not an authenticity check until
+its manifest is authenticated. Neither path protects a compromised local root
+account or an authorized publisher/workflow deliberately shipping malicious
+code. Subsequent updates retain the native updater's separate explicit
 repository migration and Sigstore identity policy.
 
 Workers keep API credentials local; display redaction and raw-file exclusions
@@ -68,14 +71,19 @@ can use host-account rights and sudo only where that account/service already
 permits them. HTTPS endpoint validation protects the configured transport but
 does not make a chosen provider trustworthy or control native Claude networking.
 
-No schema migration is needed. Initial installation now requires a sufficiently
-current trusted `gh`; saved HTTP Claude endpoints must be changed to HTTPS before
+No schema migration is needed. The default one-line installation needs no
+preinstalled `gh`; the optional authenticated-first procedure requires a current
+trusted verifier. Saved HTTP Claude endpoints must be changed to HTTPS before
 restart; state-at-project-root installations need a dedicated state directory for
 raw project downloads; large/dense Markdown becomes inert text; manual aborts
 read stdin. Uploaded evidence and local build/audit data remain ignored rather
 than entering source control. See [v0.7.9 behavior changes](releases/v0.7.9.md).
 
 ## Validation record
+
+The record below describes the original v0.7.9 security validation, including the
+GitHub CLI verification path now retained as an optional advanced procedure.
+The default bootstrap now uses a pinned native manager as described above.
 
 The implementation uses synthetic local credentials and test services; it does
 not submit test prompts or credentials to production MACT services. Additional
@@ -162,7 +170,7 @@ synthetic fixture follows the normal flow. Actual privileged gateway rejection
 through passwordless sudo passed without installing anything. Platform selection
 and the macOS `shasum` fallback are tested through local synthetic tools.
 
-The system `gh` is 2.4.0 and is correctly rejected by the new installer. An
+The system `gh` was 2.4.0 and was correctly rejected by the authenticated-first procedure. An
 additional integration check built official **gh 2.103.3** from checksum-verified
 Go modules with its required **Go 1.27.3** toolchain, in temporary directories.
 Under `env -i` with private config/cache and no credentials, this exact policy

@@ -35,14 +35,15 @@ worker enrollment. Claude must already be installed for the worker's OS account.
 MACT uses an existing Claude CLI installation. After setup, it checks the configured official
 release channel daily and updates supported native installations when the worker is idle.
 
-First [download and authenticate the installer](installation.md#download-and-authenticate-the-installer) in the same terminal; this sets
-`MACT_INSTALLER_DIR` for the commands below.
-
 In the gateway admin console choose **Enroll worker**, then on the worker host:
 
 ```sh
-"$MACT_INSTALLER_DIR/install" setup claude-worker
+curl -fsSL https://raw.githubusercontent.com/arizzi74/MACT/main/scripts/install.sh | sh -s -- setup claude-worker
 ```
+
+Setup installs the latest stable MACT release. See the
+[installation guide](installation.md) for requirements and the
+[optional authenticated-first procedure](installation.md#download-and-authenticate-the-installer).
 
 On an existing MACT installation:
 

@@ -80,18 +80,18 @@ flowchart TB
 
 ## Quick install
 
-Requires an independently trusted current GitHub CLI, curl, and `sha256sum` or
-`shasum`. Downloads are verified native Go
-binaries; Python and a Go compiler are not required. Installing Codex when it
-is missing also needs the standard `tar` and `gzip` utilities.
-
-First [download and authenticate the installer](installation.md#download-and-authenticate-the-installer) in the same terminal; this sets
-`MACT_INSTALLER_DIR` for the commands below.
+Requires curl and `sha256sum` or `shasum`; Python and a Go compiler are not
+required. Setup installs the latest stable MACT release. The HTTPS bootstrap
+checks a pinned native manager, which verifies signed release provenance and
+downloaded packages. Installing Codex when it is missing also needs the standard
+`tar` and `gzip` utilities. An
+[optional authenticated-first procedure](installation.md#download-and-authenticate-the-installer)
+uses a separately trusted GitHub CLI.
 
 **Gateway (Linux with systemd):** run on the gateway machine:
 
 ```sh
-sudo "$MACT_INSTALLER_DIR/install" setup gateway
+curl -fsSL https://raw.githubusercontent.com/arizzi74/MACT/main/scripts/install.sh | sudo sh -s -- setup gateway
 ```
 
 Have a domain pointing to this machine, your Telegram bot username and token,
@@ -109,7 +109,7 @@ console and copy the one-use URL, then run on its machine as the account that
 owns your projects, without sudo:
 
 ```sh
-"$MACT_INSTALLER_DIR/install" setup worker
+curl -fsSL https://raw.githubusercontent.com/arizzi74/MACT/main/scripts/install.sh | sh -s -- setup worker
 ```
 
 Enter a worker display name and the enrollment URL, which is visible as you
@@ -133,7 +133,7 @@ account is logged in.
 then enroll a separate worker identity and run without sudo:
 
 ```sh
-"$MACT_INSTALLER_DIR/install" setup claude-worker
+curl -fsSL https://raw.githubusercontent.com/arizzi74/MACT/main/scripts/install.sh | sh -s -- setup claude-worker
 ```
 
 Use an existing Claude login or configure the model, endpoint, authentication

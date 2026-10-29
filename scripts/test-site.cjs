@@ -82,10 +82,12 @@ const server = http.createServer((request, response) => {
       assert.equal(await page.evaluate(() => navigator.clipboard.readText()), expected.trim());
       assert.equal(await button.getAttribute('data-copied'), 'true');
     }
-    assert.equal(await page.locator('#gateway-command').innerText(), 'sudo "$MACT_INSTALLER_DIR/install" setup gateway');
-    assert.equal(await page.locator('#worker-command').innerText(), '"$MACT_INSTALLER_DIR/install" setup worker');
-    assert.equal(await page.locator('#claude-worker-command').innerText(), '"$MACT_INSTALLER_DIR/install" setup claude-worker');
-    assert.match(await page.locator('#install').textContent(), /does not install or update the Claude CLI/);
+    assert.equal(await page.locator('#gateway-command').innerText(), 'curl -fsSL https://raw.githubusercontent.com/arizzi74/MACT/main/scripts/install.sh | sudo sh -s -- setup gateway');
+    assert.equal(await page.locator('#worker-command').innerText(), 'curl -fsSL https://raw.githubusercontent.com/arizzi74/MACT/main/scripts/install.sh | sh -s -- setup worker');
+    assert.equal(await page.locator('#claude-worker-command').innerText(), 'curl -fsSL https://raw.githubusercontent.com/arizzi74/MACT/main/scripts/install.sh | sh -s -- setup claude-worker');
+    assert.match(await page.locator('#install').textContent(), /updates supported native Claude CLI installations through their configured official release channel when idle/);
+    assert.match(await page.locator('#install').textContent(), /optional authenticated-first procedure/);
+    assert.doesNotMatch(await page.locator('#install').textContent(), /MACT_INSTALLER_DIR|Requires a preinstalled trusted GitHub CLI/);
     assert.match(await page.locator('#install').textContent(), /checksums/);
     await page.evaluate(() => Object.defineProperty(navigator.clipboard, 'writeText', { configurable: true, value: () => Promise.reject(new Error('Clipboard unavailable')) }));
     await page.getByRole('button', { name: 'Copy worker install command', exact: true }).click();

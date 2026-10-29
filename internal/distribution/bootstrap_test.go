@@ -20,6 +20,15 @@ type bootstrapFixture struct {
 	key                                              ed25519.PrivateKey
 }
 
+// Independently checked against the published v0.7.9 SHA256SUMS manifest, whose
+// SHA256 is 7ed8bdf540fb43db1f67d6feb4d9aff202c8aa69a290cc0b55d29984d8eea309.
+var bootstrapPins = map[string]string{
+	"linux-amd64":  "c994d10109a0626d64a5209ca594534f2fa88ddd640650062f34df63c1739dd9",
+	"linux-arm64":  "e9c8aaf0fa6e95f004d6921b4b6a39415416b17265f8363f621d5e222731fe95",
+	"darwin-amd64": "cdf9d3a74e3f534b237daba6b93417f344e1f11539fdda8fead20acd204ccecb",
+	"darwin-arm64": "700a5839c8a6f6d5750f75e38182662439f308114496f7f19611e0788127eecd",
+}
+
 func bootstrapTestFixture(t *testing.T) bootstrapFixture {
 	t.Helper()
 	if runtime.GOOS == "windows" {
@@ -45,7 +54,7 @@ func bootstrapTestFixture(t *testing.T) bootstrapFixture {
 			t.Fatal(err)
 		}
 	}
-	// There is deliberately no Python (or Go) anywhere in this PATH.
+	// There is deliberately no gh, Python, or Go anywhere in this PATH.
 	if err := os.Remove(filepath.Join(bin, "uname")); err != nil {
 		t.Fatal(err)
 	}
@@ -53,28 +62,29 @@ func bootstrapTestFixture(t *testing.T) bootstrapFixture {
 	if err := os.Chmod(filepath.Join(bin, "uname"), 0755); err != nil {
 		t.Fatal(err)
 	}
+	// This manager records the shell's forwarding contract. It does not emulate
+	// the native CLI or execute installation; use supported invocation shapes.
 	manager := []byte("#!/bin/sh\nprintf '%s\\n' \"$0\" \"$CODEX_TELEGRAMGW_BOOTSTRAP_RELEASE\" \"$@\" > \"$TEST_RECORD\"\nexit 17\n")
 	managerPath := filepath.Join(root, "manager")
 	writeTestFile(t, managerPath, manager)
 	manifestPath := filepath.Join(root, "manifest")
 	provenancePath := filepath.Join(root, "provenance")
-	public, private, err := ed25519.GenerateKey(rand.Reader)
+	chmod, err := exec.LookPath("chmod")
 	if err != nil {
 		t.Fatal(err)
 	}
-	verifier, err := os.Executable()
-	if err != nil {
+	if err := os.Remove(filepath.Join(bin, "chmod")); err != nil {
 		t.Fatal(err)
 	}
-	writeTestFile(t, filepath.Join(bin, "gh"), []byte("#!/bin/sh\nexec \"$TEST_VERIFIER\" -test.run=^TestBootstrapTrustedVerifierProcess$ -- \"$@\"\n"))
-	if err := os.Chmod(filepath.Join(bin, "gh"), 0755); err != nil {
+	writeTestFile(t, filepath.Join(bin, "chmod"), []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"$TEST_CHMODS\"\nexec \"$TEST_REAL_CHMOD\" \"$@\"\n"))
+	if err := os.Chmod(filepath.Join(bin, "chmod"), 0755); err != nil {
 		t.Fatal(err)
 	}
 	writeTestFile(t, manifestPath, manifest(map[string][]byte{"codex-telegramgw-linux-amd64": manager}))
 	// Fake curl checks transport flags, records exact URLs and returns fixture bytes.
 	curl := `#!/bin/sh
 set -eu
-output= writeout= proto= redirect= tls=
+output= writeout= proto= redirect= tls= timeout= connect= retry= limit= fail= silent= errors= location=
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --output) output=$2; shift 2 ;;
@@ -82,13 +92,26 @@ while [ "$#" -gt 0 ]; do
     --proto) proto=$2; shift 2 ;;
     --proto-redir) redirect=$2; shift 2 ;;
     --tlsv1.2) tls=yes; shift ;;
-    --connect-timeout|--max-time|--retry|--max-filesize) shift 2 ;;
-    --fail|--silent|--show-error|--location) shift ;;
+    --connect-timeout) connect=$2; shift 2 ;;
+    --max-time) timeout=$2; shift 2 ;;
+    --retry) retry=$2; shift 2 ;;
+    --max-filesize) limit=$2; shift 2 ;;
+    --fail) fail=yes; shift ;;
+    --silent) silent=yes; shift ;;
+    --show-error) errors=yes; shift ;;
+    --location) location=yes; shift ;;
     https://*) url=$1; shift ;;
     *) exit 99 ;;
   esac
 done
 [ "$proto" = '=https' ] && [ "$redirect" = '=https' ] && [ "$tls" = yes ] || exit 98
+[ "$connect" = 15 ] && [ "$timeout" = 180 ] && [ "$retry" = 2 ] || exit 96
+[ "$fail$silent$errors$location" = yesyesyesyes ] || exit 95
+case "$url" in
+  */codex-telegramgw-*) [ "$limit" = 67108864 ] ;;
+  */SHA256SUMS.sigstore.json) [ "$limit" = 4194304 ] ;;
+  *) [ "$limit" = 1048576 ] ;;
+esac || exit 94
 printf '%s\n' "$url" >> "$TEST_REQUESTS"
 if [ "${TEST_INTERRUPT:-}" = "${url##*/}" ]; then
   printf partial > "$output"
@@ -107,17 +130,29 @@ esac
 	if err := os.Chmod(filepath.Join(bin, "curl"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	script, err := filepath.Abs("../../scripts/install.sh")
+	script, err := os.ReadFile("../../scripts/install.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
-	fixture := bootstrapFixture{root: root, bin: bin, manager: managerPath, checksum: manifestPath, provenance: provenancePath, script: script, key: private, environment: []string{
+	// Substitute only the reviewed pins in a private script copy, so synthetic
+	// manager bytes exercise actual checksum verification without network access
+	// or a production runtime override for the trust root. Production pins and
+	// rejection of these fixture bytes are checked separately below.
+	for target, pin := range bootstrapPins {
+		needle := target + ") expected=" + pin + " ;;"
+		if strings.Count(string(script), needle) != 1 {
+			t.Fatalf("missing or duplicate production pin for %s", target)
+		}
+		script = []byte(strings.Replace(string(script), needle, target+") expected="+digest(manager)+" ;;", 1))
+	}
+	scriptPath := filepath.Join(root, "install.sh")
+	writeTestFile(t, scriptPath, script)
+	fixture := bootstrapFixture{root: root, bin: bin, manager: managerPath, checksum: manifestPath, provenance: provenancePath, script: scriptPath, environment: []string{
 		"PATH=" + bin, "TMPDIR=" + root, "TEST_RECORD=" + filepath.Join(root, "record"), "TEST_REQUESTS=" + filepath.Join(root, "requests"),
 		"TEST_MANIFEST=" + manifestPath, "TEST_MANAGER=" + managerPath,
-		"TEST_PROVENANCE=" + provenancePath, "TEST_VERIFIER=" + verifier, "TEST_TRUSTED_VERIFIER=1", "TEST_VERIFIER_PUBLIC=" + base64.StdEncoding.EncodeToString(public),
+		"TEST_PROVENANCE=" + provenancePath, "TEST_REAL_CHMOD=" + chmod, "TEST_CHMODS=" + filepath.Join(root, "chmods"),
 		"TEST_RELEASE_URL=https://github.com/arizzi74/MACT/releases/tag/v1.2.3",
 	}}
-	fixture.sign(t, "arizzi74/MACT", "v1.2.3")
 	return fixture
 }
 
@@ -127,8 +162,44 @@ func (fixture bootstrapFixture) run(arguments ...string) ([]byte, error) {
 	return command.CombinedOutput()
 }
 
-func TestBootstrapWorksWithoutPythonAndPreservesArguments(t *testing.T) {
+func TestBootstrapProductionPinsRejectSubstitutedManagersOnEveryPlatform(t *testing.T) {
+	script, err := os.ReadFile("../../scripts/install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(script), "bootstrap_version=v0.7.9\n") || len(bootstrapPins) != len(Targets()) {
+		t.Fatal("bootstrap version or supported target pins changed")
+	}
+	for _, target := range Targets() {
+		t.Run(target.Suffix(), func(t *testing.T) {
+			fixture := bootstrapTestFixture(t)
+			// Run the unmodified production pins against substituted fixture bytes.
+			writeTestFile(t, fixture.script, script)
+			osName := "Linux"
+			if target.OS == "darwin" {
+				osName = "Darwin"
+			}
+			fixture.environment = append(fixture.environment, "TEST_OS="+osName, "TEST_ARCH="+target.Arch)
+			output, err := fixture.run("setup", "worker")
+			if err == nil || !strings.Contains(string(output), "installer checksum verification failed") {
+				t.Fatalf("production pin did not reject substituted bytes: %v %s", err, output)
+			}
+			for _, name := range []string{"record", "chmods"} {
+				if _, err := os.Stat(filepath.Join(fixture.root, name)); !os.IsNotExist(err) {
+					t.Fatalf("used substituted manager (%s): %v", name, err)
+				}
+			}
+		})
+	}
+}
+
+func TestBootstrapWorksWithoutGhPythonOrGoAndPreservesArguments(t *testing.T) {
 	fixture := bootstrapTestFixture(t)
+	for _, name := range []string{"gh", "python", "python3", "go"} {
+		if _, err := os.Stat(filepath.Join(fixture.bin, name)); !os.IsNotExist(err) {
+			t.Fatalf("unexpected %s dependency in test PATH: %v", name, err)
+		}
+	}
 	output, err := fixture.run("install", "worker", "--config", "/tmp/a config.json", "--auto-update")
 	if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 17 {
 		t.Fatalf("manager status was not propagated: %v %s", err, output)
@@ -148,7 +219,7 @@ func TestBootstrapWorksWithoutPythonAndPreservesArguments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "https://github.com/arizzi74/MACT/releases/latest\nhttps://github.com/arizzi74/MACT/releases/download/v1.2.3/SHA256SUMS\nhttps://github.com/arizzi74/MACT/releases/download/v1.2.3/SHA256SUMS.sigstore.json\nhttps://github.com/arizzi74/MACT/releases/download/v1.2.3/codex-telegramgw-linux-amd64\n"
+	want := "https://github.com/arizzi74/MACT/releases/latest\nhttps://github.com/arizzi74/MACT/releases/download/v0.7.9/codex-telegramgw-linux-amd64\n"
 	if string(requests) != want {
 		t.Fatalf("wrong release requests: %s", requests)
 	}
@@ -181,14 +252,44 @@ func TestBootstrapWithoutArgumentsStartsGuidedSetup(t *testing.T) {
 	}
 }
 
-func TestBootstrapPinnedVersionAndRepository(t *testing.T) {
+func TestBootstrapPreservesLiteralShellArgumentsAndCleansTemporaryDirectory(t *testing.T) {
+	fixture := bootstrapTestFixture(t)
+	marker := filepath.Join(fixture.root, "injected")
+	arguments := []string{"install", "worker", "--config", "$(printf injected > " + marker + ") `printf injected > " + marker + "` a; b & 'c' \"d\" *"}
+	temporary := filepath.Join(fixture.root, "temporary with spaces")
+	if err := os.Mkdir(temporary, 0700); err != nil {
+		t.Fatal(err)
+	}
+	fixture.environment = append(fixture.environment, "TMPDIR="+temporary)
+	output, err := fixture.run(arguments...)
+	if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 17 {
+		t.Fatalf("manager failed: %v %s", err, output)
+	}
+	data, err := os.ReadFile(filepath.Join(fixture.root, "record"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(string(data), "\nv1.2.3\n"+strings.Join(arguments, "\n")+"\n") {
+		t.Fatalf("shell arguments changed: %s", data)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("shell argument executed: %v", err)
+	}
+	remaining, err := os.ReadDir(temporary)
+	if err != nil || len(remaining) != 0 {
+		t.Fatalf("temporary manager directory not removed: %v %v", remaining, err)
+	}
+}
+
+func TestBootstrapSelectsTargetVersionAndRepositoryIndependentlyOfPinnedManager(t *testing.T) {
 	for _, args := range [][]string{
-		{"install", "worker", "--version", "v2.3.4", "--repo", "owner/repository"},
-		{"install", "worker", "--version=v2.3.4", "--repo=owner/repository"},
+		{"install", "worker", "--config", "/tmp/worker.json", "--version", "v2.3.4", "--repo", "owner/repository"},
+		{"install", "worker", "--config", "/tmp/worker.json", "--version=v2.3.4", "--repo=owner/repository"},
+		{"install", "worker", "--config", "/tmp/worker.json", "--repo=owner/repository"},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			fixture := bootstrapTestFixture(t)
-			fixture.sign(t, "owner/repository", "v2.3.4")
+			fixture.environment = append(fixture.environment, "TEST_RELEASE_URL=https://github.com/owner/repository/releases/tag/v2.3.4")
 			output, err := fixture.run(args...)
 			if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 17 {
 				t.Fatalf("manager failed: %v %s", err, output)
@@ -197,10 +298,17 @@ func TestBootstrapPinnedVersionAndRepository(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, request := range strings.Fields(string(requests)) {
-				if request != "https://github.com/owner/repository/releases/tag/v2.3.4" && !strings.HasPrefix(request, "https://github.com/owner/repository/releases/download/v2.3.4/") {
-					t.Fatalf("wrong repository or version: %s", request)
-				}
+			selection := "tag/v2.3.4"
+			if !strings.Contains(strings.Join(args, " "), "--version") {
+				selection = "latest"
+			}
+			want := "https://github.com/owner/repository/releases/" + selection + "\nhttps://github.com/arizzi74/MACT/releases/download/v0.7.9/codex-telegramgw-linux-amd64\n"
+			if string(requests) != want {
+				t.Fatalf("target selection changed bootstrap repository/version: %s", requests)
+			}
+			record, err := os.ReadFile(filepath.Join(fixture.root, "record"))
+			if err != nil || !strings.Contains(string(record), "\nv2.3.4\n"+strings.Join(args, "\n")+"\n") {
+				t.Fatalf("target release or arguments not forwarded: %s %v", record, err)
 			}
 		})
 	}
@@ -251,7 +359,7 @@ func TestBootstrapFollowsOnlyOfficialRenameForLatestAndPinnedReleases(t *testing
 			fixture := bootstrapTestFixture(t)
 			resolved := "https://github.com/arizzi74/MACT/releases/tag/v1.2.3"
 			fixture.environment[len(fixture.environment)-1] = "TEST_RELEASE_URL=" + resolved
-			arguments := []string{"install", "worker", "--repo", "arizzi74/Codex-Telegram-Gateway"}
+			arguments := []string{"install", "worker", "--config", "/tmp/worker.json", "--repo", "arizzi74/Codex-Telegram-Gateway"}
 			if pinned {
 				fixture.environment = append(fixture.environment, "TEST_PINNED_RELEASE_URL="+resolved)
 				arguments = append(arguments, "--version", "v1.2.3")
@@ -265,14 +373,14 @@ func TestBootstrapFollowsOnlyOfficialRenameForLatestAndPinnedReleases(t *testing
 				t.Fatal(err)
 			}
 			requests := strings.Fields(string(data))
-			if len(requests) != 4 {
+			if len(requests) != 2 {
 				t.Fatalf("unexpected requests: %s", data)
 			}
 			if !strings.HasPrefix(requests[0], "https://github.com/arizzi74/Codex-Telegram-Gateway/releases/") {
 				t.Fatalf("legacy selection did not resolve through its original URL: %s", requests[0])
 			}
 			for _, request := range requests[1:] {
-				if !strings.HasPrefix(request, "https://github.com/arizzi74/MACT/releases/download/v1.2.3/") {
+				if !strings.HasPrefix(request, "https://github.com/arizzi74/MACT/releases/download/v0.7.9/") {
 					t.Fatalf("asset did not use canonical renamed repository: %s", request)
 				}
 			}
@@ -300,13 +408,12 @@ func TestBootstrapRenameDoesNotChangeForkSelectionOrPinnedTag(t *testing.T) {
 	}
 }
 
-func TestBootstrapRejectsPrebridgeManagersOnlyAfterOfficialRename(t *testing.T) {
+func TestBootstrapRejectsPrebridgeReleasesOnlyAfterOfficialRename(t *testing.T) {
 	for _, tag := range []string{"v0.0.0", "v0.5.99", "v0.6.0", "v0.6.9", "v0.6.19", "v0.6.20", "v0.6.21", "v0.6.100", "v0.7.0", "v1.0.0"} {
 		t.Run(tag, func(t *testing.T) {
 			fixture := bootstrapTestFixture(t)
 			fixture.environment = append(fixture.environment, "TEST_PINNED_RELEASE_URL=https://github.com/arizzi74/MACT/releases/tag/"+tag)
-			fixture.sign(t, "arizzi74/MACT", tag)
-			output, err := fixture.run("install", "worker", "--version", tag)
+			output, err := fixture.run("install", "worker", "--config", "/tmp/worker.json", "--version", tag)
 			allowed := tag == "v0.6.21" || tag == "v0.6.100" || tag == "v0.7.0" || tag == "v1.0.0"
 			if allowed {
 				if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 17 {
@@ -326,61 +433,66 @@ func TestBootstrapRejectsPrebridgeManagersOnlyAfterOfficialRename(t *testing.T) 
 			}
 		})
 	}
-	// Before the actual rename the old historical installer remains usable.
+	// The guard is specific to canonical target releases, including renamed URLs.
 	fixture := bootstrapTestFixture(t)
-	fixture.sign(t, "arizzi74/Codex-Telegram-Gateway", "v0.6.20")
-	output, err := fixture.run("install", "worker", "--repo", "arizzi74/Codex-Telegram-Gateway", "--version", "v0.6.20")
+	output, err := fixture.run("install", "worker", "--config", "/tmp/worker.json", "--repo", "arizzi74/Codex-Telegram-Gateway", "--version", "v0.6.20")
 	if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 17 {
 		t.Fatalf("unrenamed legacy repository rejected: %v %s", err, output)
 	}
 	fixture = bootstrapTestFixture(t)
-	output, err = fixture.run("install", "worker", "--repo", "arizzi74/MACT", "--version", "v0.6.20")
+	output, err = fixture.run("install", "worker", "--config", "/tmp/worker.json", "--repo", "arizzi74/MACT", "--version", "v0.6.20")
 	if err == nil || !strings.Contains(string(output), "install v0.6.21 or newer") {
 		t.Fatalf("explicit canonical repository executed prebridge manager: %v %s", err, output)
 	}
 	fixture = bootstrapTestFixture(t)
-	fixture.sign(t, "owner/fork", "v0.6.20")
-	output, err = fixture.run("install", "worker", "--repo", "owner/fork", "--version", "v0.6.20")
+	output, err = fixture.run("install", "worker", "--config", "/tmp/worker.json", "--repo", "owner/fork", "--version", "v0.6.20")
 	if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 17 {
 		t.Fatalf("official prebridge guard affected a fork: %v %s", err, output)
 	}
 }
 
-func TestBootstrapRejectsCorruptionAndMalformedManifests(t *testing.T) {
-	for _, scenario := range []string{"corrupt manager", "duplicate", "alias duplicate", "unsafe name", "missing", "bad hash", "malformed", "empty"} {
-		t.Run(scenario, func(t *testing.T) {
-			fixture := bootstrapTestFixture(t)
-			data, err := os.ReadFile(fixture.checksum)
-			if err != nil {
-				t.Fatal(err)
-			}
-			switch scenario {
-			case "corrupt manager":
-				writeTestFile(t, fixture.manager, []byte("malicious code"))
-			case "duplicate":
-				data = append(data, data...)
-			case "alias duplicate":
-				data = append(data, []byte(strings.Replace(string(data), "  codex-", "  ./codex-", 1))...)
-			case "unsafe name":
-				data = []byte(strings.Replace(string(data), "  codex-", "  ../codex-", 1))
-			case "missing":
-				data = []byte(strings.Replace(string(data), "codex-telegramgw-linux-amd64", "other", 1))
-			case "bad hash":
-				data[0] = 'z'
-			case "malformed":
-				data = []byte("invalid\n")
-			case "empty":
-				data = nil
-			}
-			writeTestFile(t, fixture.checksum, data)
-			fixture.sign(t, "arizzi74/MACT", "v1.2.3")
-			if output, err := fixture.run("install", "worker"); err == nil {
-				t.Fatalf("accepted tampered release: %s", output)
-			}
-			if _, err := os.Stat(filepath.Join(fixture.root, "record")); !os.IsNotExist(err) {
-				t.Fatal("executed unverified manager")
-			}
-		})
+func TestBootstrapRejectsCorruptOrPartialManagerBeforeChmodAndExecution(t *testing.T) {
+	for _, component := range []string{"worker", "gateway"} {
+		for _, scenario := range []string{"corrupt", "empty", "truncated", "interrupted", "matching manifest and environment override"} {
+			t.Run(component+"/"+scenario, func(t *testing.T) {
+				fixture := bootstrapTestFixture(t)
+				switch scenario {
+				case "corrupt":
+					writeTestFile(t, fixture.manager, []byte("#!/bin/sh\nprintf compromised > \"$TEST_RECORD\"\n"))
+				case "matching manifest and environment override":
+					malicious := []byte("#!/bin/sh\nprintf compromised > \"$TEST_RECORD\"\n")
+					writeTestFile(t, fixture.manager, malicious)
+					writeTestFile(t, fixture.checksum, manifest(map[string][]byte{"codex-telegramgw-linux-amd64": malicious}))
+					fixture.environment = append(fixture.environment, "expected="+digest(malicious), "CODEX_TELEGRAMGW_BOOTSTRAP_SHA256="+digest(malicious))
+				case "empty":
+					writeTestFile(t, fixture.manager, nil)
+				case "truncated":
+					writeTestFile(t, fixture.manager, []byte("#!/bin/sh\n"))
+				case "interrupted":
+					fixture.environment = append(fixture.environment, "TEST_INTERRUPT=codex-telegramgw-linux-amd64")
+				}
+				output, err := fixture.run("setup", component)
+				if err == nil {
+					t.Fatalf("accepted corrupt manager: %s", output)
+				}
+				message := "installer checksum verification failed; no installer code was executed"
+				if scenario == "interrupted" {
+					message = "could not download the release manager"
+				}
+				if !strings.Contains(string(output), message) {
+					t.Fatalf("wrong failure: %v %s", err, output)
+				}
+				for _, name := range []string{"record", "chmods"} {
+					if _, err := os.Stat(filepath.Join(fixture.root, name)); !os.IsNotExist(err) {
+						t.Fatalf("used corrupt manager before rejection (%s): %v", name, err)
+					}
+				}
+				remaining, err := filepath.Glob(filepath.Join(fixture.root, "codex-telegramgw-install.*"))
+				if err != nil || len(remaining) != 0 {
+					t.Fatalf("left partial installation: %v %v", remaining, err)
+				}
+			})
+		}
 	}
 }
 
@@ -396,22 +508,46 @@ func TestBootstrapSelectsEverySupportedPlatform(t *testing.T) {
 				arch = "arm64"
 			}
 			fixture.environment = append(fixture.environment, "TEST_OS="+osName, "TEST_ARCH="+arch)
-			data, err := os.ReadFile(fixture.manager)
-			if err != nil {
-				t.Fatal(err)
-			}
-			writeTestFile(t, fixture.checksum, []byte(fmt.Sprintf("%s  %s\n", digest(data), target.ManagerAsset())))
-			fixture.sign(t, "arizzi74/MACT", "v1.2.3")
-			output, err := fixture.run("install", "worker")
+			output, err := fixture.run("setup", "worker")
 			if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 17 {
 				t.Fatalf("platform selection failed: %v %s", err, output)
+			}
+			requests, err := os.ReadFile(filepath.Join(fixture.root, "requests"))
+			if err != nil || !strings.HasSuffix(string(requests), "https://github.com/arizzi74/MACT/releases/download/v0.7.9/"+target.ManagerAsset()+"\n") {
+				t.Fatalf("wrong manager asset: %s %v", requests, err)
 			}
 		})
 	}
 }
 
-// This verifier is installed by the trusted test harness before the bootstrap
-// starts. It cryptographically authenticates synthetic, local release fixtures
+func TestBootstrapRejectsUnsupportedPlatformAndMissingChecksumUtility(t *testing.T) {
+	for _, scenario := range []string{"unsupported OS", "unsupported CPU", "missing checksum utility"} {
+		t.Run(scenario, func(t *testing.T) {
+			fixture := bootstrapTestFixture(t)
+			switch scenario {
+			case "unsupported OS":
+				fixture.environment = append(fixture.environment, "TEST_OS=FreeBSD")
+			case "unsupported CPU":
+				fixture.environment = append(fixture.environment, "TEST_ARCH=riscv64")
+			case "missing checksum utility":
+				for _, name := range []string{"sha256sum", "shasum"} {
+					if err := os.Remove(filepath.Join(fixture.bin, name)); err != nil && !os.IsNotExist(err) {
+						t.Fatal(err)
+					}
+				}
+			}
+			if output, err := fixture.run("setup", "worker"); err == nil {
+				t.Fatalf("accepted unavailable platform/verification: %s", output)
+			}
+			if _, err := os.Stat(filepath.Join(fixture.root, "requests")); !os.IsNotExist(err) {
+				t.Fatalf("downloaded before requirements were checked: %v", err)
+			}
+		})
+	}
+}
+
+// This verifier is installed by the trusted test harness before the optional
+// manual procedure. It cryptographically authenticates local release fixtures
 // with a separately held public key, while enforcing the gh invocation contract.
 // It does not claim to replace integration testing of GitHub CLI's Sigstore code.
 type bootstrapClaim struct {
@@ -421,6 +557,27 @@ type bootstrapClaim struct {
 type bootstrapEnvelope struct {
 	Claim     json.RawMessage
 	Signature []byte
+}
+
+// Only the optional manual guide uses a separately provisioned verifier. Its
+// fixture authenticates local provenance with an independent test signing key.
+func (fixture *bootstrapFixture) trustManualVerifier(t *testing.T) {
+	t.Helper()
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(fixture.bin, "gh"), []byte("#!/bin/sh\nexec \"$TEST_VERIFIER\" -test.run=^TestBootstrapTrustedVerifierProcess$ -- \"$@\"\n"))
+	if err := os.Chmod(filepath.Join(fixture.bin, "gh"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	fixture.key = private
+	fixture.environment = append(fixture.environment, "TEST_VERIFIER="+verifier, "TEST_TRUSTED_VERIFIER=1", "TEST_VERIFIER_PUBLIC="+base64.StdEncoding.EncodeToString(public))
+	fixture.sign(t, "arizzi74/MACT", "v1.2.3")
 }
 
 func (fixture bootstrapFixture) sign(t *testing.T, repository, tag string) {
@@ -501,11 +658,13 @@ func TestBootstrapTrustedVerifierProcess(t *testing.T) {
 	}
 }
 
-func TestBootstrapRejectsUnauthenticatedManagerBeforeExecution(t *testing.T) {
+func TestDocumentedInstallerRejectsUnauthenticatedManagerBeforeExecution(t *testing.T) {
+	command := documentedInstallerCommand(t)
 	for _, component := range []string{"worker", "gateway"} {
 		for _, scenario := range []string{"matching malicious checksums", "wrong repository", "wrong workflow", "wrong tag", "wrong source ref", "wrong issuer", "wrong predicate", "bad signature", "missing provenance", "malformed provenance", "interrupted manifest", "interrupted provenance", "interrupted manager", "missing verifier", "old verifier"} {
 			t.Run(component+"/"+scenario, func(t *testing.T) {
 				fixture := bootstrapTestFixture(t)
+				fixture.trustManualVerifier(t)
 				data, err := os.ReadFile(fixture.checksum)
 				if err != nil {
 					t.Fatal(err)
@@ -553,13 +712,15 @@ func TestBootstrapRejectsUnauthenticatedManagerBeforeExecution(t *testing.T) {
 				if strings.HasPrefix(scenario, "wrong ") {
 					fixture.signClaim(t, claim)
 				}
-				if output, err := fixture.run("setup", component); err == nil {
+				cmd := exec.Command("/bin/sh", "-c", command+"\n[ -n \"$MACT_INSTALLER_DIR\" ] || exit 1\n\"$MACT_INSTALLER_DIR/install\" setup "+component)
+				cmd.Env = fixture.environment
+				if output, err := cmd.CombinedOutput(); err == nil {
 					t.Fatalf("accepted unauthenticated installer: %s", output)
 				}
 				if _, err := os.Stat(filepath.Join(fixture.root, "record")); !os.IsNotExist(err) {
 					t.Fatal("executed unauthenticated code")
 				}
-				remaining, err := filepath.Glob(filepath.Join(fixture.root, "codex-telegramgw-install.*"))
+				remaining, err := filepath.Glob(filepath.Join(fixture.root, "mact-installer.*"))
 				if err != nil || len(remaining) != 0 {
 					t.Fatalf("left partial installation: %v %v", remaining, err)
 				}
@@ -568,7 +729,8 @@ func TestBootstrapRejectsUnauthenticatedManagerBeforeExecution(t *testing.T) {
 	}
 }
 
-func TestDocumentedInstallerAuthenticatesBeforeExecution(t *testing.T) {
+func documentedInstallerCommand(t *testing.T) string {
+	t.Helper()
 	guide, err := os.ReadFile("../../docs/installation.md")
 	if err != nil {
 		t.Fatal(err)
@@ -586,9 +748,15 @@ func TestDocumentedInstallerAuthenticatesBeforeExecution(t *testing.T) {
 		t.Fatal("missing explicit stable installer version")
 	}
 	command = strings.Replace(command, "version=v0.7.9", "version=v1.2.3", 1)
+	return command
+}
+
+func TestDocumentedInstallerAuthenticatesBeforeExecution(t *testing.T) {
+	command := documentedInstallerCommand(t)
 	for _, scenario := range []string{"authenticated", "matching malicious checksums", "substituted manager", "wrong tag", "missing provenance", "interrupted download"} {
 		t.Run(scenario, func(t *testing.T) {
 			fixture := bootstrapTestFixture(t)
+			fixture.trustManualVerifier(t)
 			switch scenario {
 			case "matching malicious checksums", "substituted manager":
 				malicious := []byte("#!/bin/sh\nprintf compromised > \"$TEST_RECORD\"\n")
@@ -654,8 +822,8 @@ func TestBootstrapPrivilegedGatewayRejectsSubstitutedManager(t *testing.T) {
 		args = append(args, "/bin/sh", fixture.script, "setup", "gateway")
 		command = exec.Command(sudo, args...)
 	}
-	if output, err := command.CombinedOutput(); err == nil || !strings.Contains(string(output), "release provenance verification failed") {
-		t.Fatalf("privileged installer did not reject provenance: %v %s", err, output)
+	if output, err := command.CombinedOutput(); err == nil || !strings.Contains(string(output), "installer checksum verification failed") {
+		t.Fatalf("privileged installer did not reject substituted manager: %v %s", err, output)
 	}
 	if _, err := os.Stat(filepath.Join(fixture.root, "record")); !os.IsNotExist(err) {
 		t.Fatal("executed unauthenticated code as root")
@@ -683,11 +851,14 @@ func TestBootstrapUsesPortableShasumFallback(t *testing.T) {
 	}
 }
 
-func TestBootstrapRejectsVerifierWithoutRequiredPolicyFlags(t *testing.T) {
+func TestDocumentedInstallerRejectsVerifierWithoutRequiredPolicyFlags(t *testing.T) {
 	fixture := bootstrapTestFixture(t)
+	fixture.trustManualVerifier(t)
 	// Some old verifiers have the command but lack exact source-ref policy.
 	writeTestFile(t, filepath.Join(fixture.bin, "gh"), []byte("#!/bin/sh\n[ \"$3\" = --help ] && exit 0\nexit 1\n"))
-	if output, err := fixture.run("setup", "gateway"); err == nil {
+	cmd := exec.Command("/bin/sh", "-c", documentedInstallerCommand(t))
+	cmd.Env = fixture.environment
+	if output, err := cmd.CombinedOutput(); err == nil {
 		t.Fatalf("accepted unsupported verification policy: %s", output)
 	}
 	if _, err := os.Stat(filepath.Join(fixture.root, "record")); !os.IsNotExist(err) {

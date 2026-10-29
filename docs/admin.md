@@ -479,13 +479,10 @@ letters also work. Copy the URL or type it on the worker machine. The dialog
 includes the installer command and a countdown. Creation requires a passkey
 or password verification within the last five minutes.
 
-First [download and authenticate the installer](installation.md#download-and-authenticate-the-installer) in the same terminal; this sets
-`MACT_INSTALLER_DIR` for the commands below.
-
 Run the worker installer as the project account, without sudo:
 
 ```sh
-"$MACT_INSTALLER_DIR/install" setup worker
+curl -fsSL https://raw.githubusercontent.com/arizzi74/MACT/main/scripts/install.sh | sh -s -- setup worker
 ```
 
 A fresh setup asks for a worker display name and the enrollment URL, with the

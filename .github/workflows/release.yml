@@ -2,6 +2,15 @@ name: Release
 
 on:
   workflow_dispatch:
+    inputs:
+      installer_only:
+        description: Run only installer tests after proving the changed-file scope
+        type: boolean
+        default: false
+      baseline_tag:
+        description: Latest published stable release (required for installer-only mode)
+        type: string
+        default: ''
   push:
     tags:
       - 'v*.*.*'
@@ -14,26 +23,65 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  release-mode:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      installer_only: ${{ steps.scope.outputs.installer_only }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Prove the scope before selecting focused installer checks
+        id: scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_REF: ${{ github.ref }}
+          RELEASE_COMMIT: ${{ github.sha }}
+          BASELINE_TAG: ${{ inputs.baseline_tag }}
+          INSTALLER_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.installer_only }}
+        run: |
+          if [[ "$INSTALLER_ONLY" == 'true' ]]; then
+            test "$RELEASE_REF" = "refs/tags/$RELEASE_TAG"
+            python3 scripts/check-installer-release.py --repo "$RELEASE_REPO" --tag "$RELEASE_TAG" --baseline "$BASELINE_TAG" --commit "$RELEASE_COMMIT"
+            printf 'installer_only=true\n' >> "$GITHUB_OUTPUT"
+          else
+            printf 'installer_only=false\n' >> "$GITHUB_OUTPUT"
+          fi
+
   security:
+    needs: release-mode
     uses: ./.github/workflows/security.yml
 
   go-checks:
+    needs: release-mode
+    if: needs.release-mode.outputs.installer_only != 'true'
     uses: ./.github/workflows/go-checks.yml
 
   native-session-archive:
+    needs: release-mode
+    if: needs.release-mode.outputs.installer_only != 'true'
     uses: ./.github/workflows/native-session-archive.yml
 
   native-whisper:
+    needs: release-mode
     uses: ./.github/workflows/native-whisper.yml
     with:
       version: ${{ github.ref_name }}
+      run-smoke-tests: ${{ needs.release-mode.outputs.installer_only != 'true' }}
 
   native-speech:
+    needs: release-mode
     uses: ./.github/workflows/native-speech.yml
     with:
       version: ${{ github.ref_name }}
+      run-smoke-tests: ${{ needs.release-mode.outputs.installer_only != 'true' }}
 
   browser:
+    needs: release-mode
+    if: needs.release-mode.outputs.installer_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -46,6 +94,33 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - run: npm run test:browser
 
+  installer-tests:
+    needs: release-mode
+    if: needs.release-mode.outputs.installer_only == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.26.x'
+          check-latest: true
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Validate the installer-only scope guard
+        run: PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_ci_installer_release.py
+      - name: Test installer authentication, enrollment and setup guidance
+        run: |
+          go test ./internal/distribution -run 'Bootstrap|DocumentedInstaller' -count=1
+          go test ./internal/releasemanager -run '^TestFinishGateway' -count=1
+          go test ./internal/admin -run '^TestWorkerEnrollment' -count=1
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Test published website installation commands and copying
+        run: node scripts/test-site.cjs
+
   package:
     needs: [native-whisper, native-speech]
     uses: ./.github/workflows/package.yml
@@ -53,7 +128,14 @@ jobs:
       version: ${{ github.ref_name }}
 
   test-and-build:
-    needs: [go-checks, browser, package, native-session-archive, security]
+    needs: [release-mode, go-checks, browser, package, native-session-archive, security, installer-tests]
+    if: >-
+      always() && !cancelled() &&
+      needs.release-mode.result == 'success' && needs.package.result == 'success' && needs.security.result == 'success' &&
+      ((needs.release-mode.outputs.installer_only == 'true' && needs.installer-tests.result == 'success' &&
+        needs.go-checks.result == 'skipped' && needs.browser.result == 'skipped' && needs.native-session-archive.result == 'skipped') ||
+       (needs.release-mode.outputs.installer_only == 'false' && needs.installer-tests.result == 'skipped' &&
+        needs.go-checks.result == 'success' && needs.browser.result == 'success' && needs.native-session-archive.result == 'success'))
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

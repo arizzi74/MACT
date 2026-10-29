@@ -96,8 +96,8 @@ func TestWorkerEnrollmentHTTPCreateLandingRedeemAndPrivacy(t *testing.T) {
 		if w.Code != http.StatusOK || strings.Contains(w.Body.String(), u.Fragment) || !strings.Contains(w.Body.String(), "MACT Worker installer") || strings.Contains(w.Body.String(), "<script") || w.Header().Get("Cache-Control") != "no-store" || w.Header().Get("Referrer-Policy") != "no-referrer" {
 			t.Fatalf("landing page exposed the code or lacked safe instructions: status=%d path=%s", w.Code, u.Path)
 		}
-		if !strings.Contains(w.Body.String(), `"$MACT_INSTALLER_DIR/install" setup worker`) {
-			t.Fatal("enrollment landing page does not use the authenticated installer")
+		if !strings.Contains(w.Body.String(), `curl -fsSL https://raw.githubusercontent.com/arizzi74/MACT/main/scripts/install.sh | sh -s -- setup worker`) || strings.Contains(w.Body.String(), "MACT_INSTALLER_DIR") || strings.Contains(w.Body.String(), "download and authenticate the installer") {
+			t.Fatal("enrollment landing page does not offer the single-line installer command")
 		}
 	}
 	var consumed *string
