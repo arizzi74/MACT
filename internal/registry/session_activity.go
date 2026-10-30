@@ -18,20 +18,25 @@ var ErrSessionActivityLimit = errors.New("registry: session activity subscriber 
 // public terminal error projected when a turn fails. It never reads histories
 // or event payloads when producing an activity snapshot.
 type SessionActivity struct {
-	SessionID          string `json:"session_id"`
-	State              string `json:"state"`
-	ActiveTurnID       string `json:"active_turn_id"`
-	PendingQuestions   int    `json:"pending_questions"`
-	PendingRevision    string `json:"pending_revision"`
-	WorkerConnectivity string `json:"worker_connectivity"`
-	RuntimeState       string `json:"runtime_state"`
-	Model              string `json:"model"`
-	ReasoningEffort    string `json:"reasoning_effort"`
-	SettingsRevision   string `json:"settings_revision"`
-	ErrorTurnID        string `json:"error_turn_id,omitempty"`
-	ErrorMessage       string `json:"error_message,omitempty"`
-	ErrorCode          string `json:"error_code,omitempty"`
-	ErrorRevision      string `json:"error_revision,omitempty"`
+	SessionID             string `json:"session_id"`
+	State                 string `json:"state"`
+	ActiveTurnID          string `json:"active_turn_id"`
+	PendingQuestions      int    `json:"pending_questions"`
+	PendingRevision       string `json:"pending_revision"`
+	WorkerConnectivity    string `json:"worker_connectivity"`
+	RuntimeState          string `json:"runtime_state"`
+	Model                 string `json:"model"`
+	ReasoningEffort       string `json:"reasoning_effort"`
+	SettingsRevision      string `json:"settings_revision"`
+	ErrorTurnID           string `json:"error_turn_id,omitempty"`
+	ErrorMessage          string `json:"error_message,omitempty"`
+	ErrorCode             string `json:"error_code,omitempty"`
+	ErrorRevision         string `json:"error_revision,omitempty"`
+	CapacityError         bool   `json:"capacity_error,omitempty"`
+	CapacityRetryState    string `json:"capacity_retry_state,omitempty"`
+	CapacityRetryRevision string `json:"capacity_retry_revision,omitempty"`
+	CapacityRetryTurnID   string `json:"capacity_retry_turn_id,omitempty"`
+	CapacityRetryAtMs     int64  `json:"capacity_retry_at_ms,omitempty"`
 }
 
 type SessionActivitySnapshot struct {
@@ -284,6 +289,10 @@ const sessionActivityColumns = `SELECT session.session_id,session.state,COALESCE
     COALESCE(json_extract(session.metadata,'$.terminal_error.message'),''),
     COALESCE(json_extract(session.metadata,'$.terminal_error.code'),''),
     COALESCE(json_extract(session.metadata,'$.terminal_error.revision'),''),
+    COALESCE(json_extract(session.metadata,'$.capacity_retry.state'),''),
+    COALESCE(json_extract(session.metadata,'$.capacity_retry.error_revision'),''),
+    COALESCE(json_extract(session.metadata,'$.capacity_retry.turn_id'),''),
+    COALESCE(json_extract(session.metadata,'$.capacity_retry.due_at_ms'),0),
     (SELECT json_group_array(json_object('id',approval.approval_id,'answered',json((
         SELECT json_group_array(answer.key) FROM json_each(approval.input_answers) answer
         WHERE json_array_length(answer.value)>0))))
@@ -310,10 +319,12 @@ func scanSessionActivity(row interface{ Scan(...any) error }) (SessionActivity, 
 	var pending []byte
 	if err := row.Scan(&session.SessionID, &session.State, &session.ActiveTurnID, &session.WorkerConnectivity, &session.RuntimeState,
 		&session.Model, &session.ReasoningEffort, &session.SettingsRevision,
-		&session.ErrorTurnID, &session.ErrorMessage, &session.ErrorCode, &session.ErrorRevision, &pending); err != nil {
+		&session.ErrorTurnID, &session.ErrorMessage, &session.ErrorCode, &session.ErrorRevision,
+		&session.CapacityRetryState, &session.CapacityRetryRevision, &session.CapacityRetryTurnID, &session.CapacityRetryAtMs, &pending); err != nil {
 		return session, err
 	}
 	var err error
+	session.CapacityError = session.ErrorMessage != "" && isModelCapacityError(session.ErrorCode, session.ErrorMessage)
 	session.PendingQuestions, session.PendingRevision, err = pendingActivitySignature(pending)
 	return session, err
 }

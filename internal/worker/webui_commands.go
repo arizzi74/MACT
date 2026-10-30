@@ -65,7 +65,7 @@ func webUICommandParams(params map[string]json.RawMessage) (map[string]json.RawM
 
 func webUICommandSupported(name string) bool {
 	switch name {
-	case "status", "usage", "model", "reasoning", "permissions", "approvals", "fast", "plan", "personality", "compact", "review", "rename", "fork", "goal", "diff", "init", "mcp", "apps", "skills", "plugins", "hooks", "memories", "ps", "stop", "clean", "archive", "debug-config", "copy", "new", "delete", "pwd", "cwd":
+	case "status", "usage", "model", "reasoning", "effort", "permissions", "approvals", "fast", "plan", "personality", "compact", "review", "rename", "fork", "goal", "diff", "init", "mcp", "apps", "skills", "plugins", "hooks", "memories", "ps", "stop", "clean", "archive", "debug-config", "copy", "new", "delete", "pwd", "cwd":
 		return true
 	// These names are recognized by Codex, but belong to its terminal/local
 	// integrations. Keep an explicit explanation rather than sending a prompt.

@@ -106,7 +106,7 @@ func TestRecoverNativeHistoryPreservesTurnAndItems(t *testing.T) {
 	if *turn.CompletedAt != want.Unix() || turn.Items[5]["recordedAtMs"] != want.UnixMilli() || thread.UpdatedAt != want.Unix() {
 		t.Fatalf("completion timing = %#v", turn)
 	}
-	if !thread.ClaudeStatus.Cost.Incomplete || thread.statusSnapshot(nil, nil).Cost.SessionUSD != nil || thread.statusSnapshot(nil, nil).Cost.LastTurnUSD != nil {
+	if !thread.ClaudeStatus.Cost.Incomplete || thread.statusSnapshot(nil, nil, nil).Cost.SessionUSD != nil || thread.statusSnapshot(nil, nil, nil).Cost.LastTurnUSD != nil {
 		t.Fatal("stale cost was presented as complete")
 	}
 	encoded, _ := json.Marshal(thread)

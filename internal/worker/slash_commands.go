@@ -74,16 +74,25 @@ func (s *sessionActor) executeCodexCommand(ctx context.Context, client *codexada
 			if json.Unmarshal(s.runtime.Metadata, &metadata) == nil && metadata.Version != "" {
 				version = metadata.Version
 			}
-			lines := []string{"Claude Code session", "Claude Code runtime: " + version, "Workspace: " + s.session.CWD, "Authentication: " + settings.AuthMode}
+			lines := []string{"Claude Code session", "Claude Code runtime: " + version, "Workspace: " + s.session.CWD, "Authentication: " + claudeAuthenticationLabel(settings.AuthMode)}
 			status, statusErr := client.ReadClaudeStatus(ctx, s.session.ThreadID)
 			if statusErr != nil {
 				status.Model, status.PermissionMode, status.ReasoningEffort = &settings.Model, &settings.PermissionMode, &settings.ReasoningEffort
 			}
 			lines = append(lines, claudeStatusLines(status)...)
 			return protocol.Result{Text: strings.Join(lines, "\n")}, nil
+		case "usage":
+			if args != "" {
+				return protocol.Result{}, validationError("usage: /usage")
+			}
+			status, err := client.ReadClaudeStatus(ctx, s.session.ThreadID)
+			if err != nil {
+				return protocol.Result{}, err
+			}
+			return protocol.Result{Text: strings.Join(claudeStatusLines(status), "\n")}, nil
 		case "model":
 			return s.codexModelMenu(ctx, client, args)
-		case "reasoning":
+		case "reasoning", "effort":
 			text, err := s.claudeReasoning(ctx, client, args)
 			return protocol.Result{Text: text}, err
 		case "permissions":

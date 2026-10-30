@@ -103,6 +103,7 @@ func (m *RuntimeManager) pollClaudeAccountStatus(ctx context.Context, bridge *cl
 	if err != nil {
 		_ = bridge.SetBalanceAt(generation, nil)
 		_ = bridge.SetEnterpriseBudgetAt(generation, nil)
+		_ = bridge.SetNativeUsageAt(generation, nil)
 		return
 	}
 	var balance *claudeadapter.CreditBalance
@@ -113,11 +114,17 @@ func (m *RuntimeManager) pollClaudeAccountStatus(ctx context.Context, bridge *cl
 	if supportsClaudeEnterpriseBudget(settings) {
 		budget, _ = fetchClaudeEnterpriseBudget(ctx, settings, client)
 	}
+	var usage *claudeadapter.NativeUsage
+	if settings.AuthMode == "login" && settings.BaseURL == "" {
+		usage, _ = bridge.ReadNativeUsage(ctx)
+	}
 	latest, settingsErr := readClaudeSettings(claudeSettingsPath(m.cfg))
 	if settingsErr != nil || latest != settings {
 		balance = nil
 		budget = nil
+		usage = nil
 	}
 	_ = bridge.SetBalanceAt(generation, balance)
 	_ = bridge.SetEnterpriseBudgetAt(generation, budget)
+	_ = bridge.SetNativeUsageAt(generation, usage)
 }

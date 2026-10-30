@@ -1,7 +1,6 @@
 package claudeadapter
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -9,8 +8,6 @@ import (
 	"os/exec"
 	"strings"
 	"time"
-
-	"github.com/google/uuid"
 )
 
 // Native ModelInfo and initialize.models are documented by the Agent SDK:
@@ -136,68 +133,9 @@ func (s *server) discoverCapabilities(parent context.Context, settings LaunchSet
 	if ctx.Err() != nil {
 		return capabilities
 	}
-	args := []string{"--print", "--verbose", "--input-format=stream-json", "--output-format=stream-json", "--permission-prompt-tool=stdio", "--no-session-persistence", "--session-id=" + uuid.NewString()}
-	if settings.SettingsFile != "" {
-		args = append(args, "--settings="+settings.SettingsFile)
-	}
-	cmd := exec.Command(s.cfg.Command, args...)
-	cmd.Dir, cmd.Env, cmd.Stderr = s.cfg.WorkingDirectory, env, io.Discard
-	configureProcess(cmd)
-	in, err := cmd.StdinPipe()
-	if err != nil {
-		return capabilities
-	}
-	out, err := cmd.StdoutPipe()
-	if err != nil {
-		_ = in.Close()
-		return capabilities
-	}
-	if cmd.Start() != nil {
-		_ = in.Close()
-		_ = out.Close()
-		return capabilities
-	}
-	defer func() { stopProcess(cmd); _ = in.Close(); _ = out.Close(); _ = cmd.Wait() }()
-	response := make(chan json.RawMessage, 1)
-	go func() {
-		scanner := bufio.NewScanner(out)
-		scanner.Buffer(make([]byte, 64<<10), 4<<20)
-		for scanner.Scan() {
-			var frame struct {
-				Type     string `json:"type"`
-				Response struct {
-					Subtype   string          `json:"subtype"`
-					RequestID string          `json:"request_id"`
-					Response  json.RawMessage `json:"response"`
-				} `json:"response"`
-			}
-			if json.Unmarshal(scanner.Bytes(), &frame) == nil && frame.Type == "control_response" && frame.Response.RequestID == "telegramgw-capabilities" {
-				if frame.Response.Subtype == "success" {
-					response <- frame.Response.Response
-				} else {
-					response <- nil
-				}
-				return
-			}
-		}
-		response <- nil
-	}()
-	written := make(chan error, 1)
-	go func() {
-		written <- json.NewEncoder(in).Encode(map[string]any{"type": "control_request", "request_id": "telegramgw-capabilities", "request": map[string]any{"subtype": "initialize", "hooks": map[string]any{}}})
-	}()
-	select {
-	case err := <-written:
-		if err != nil {
-			return capabilities
-		}
-	case <-ctx.Done():
-		return capabilities
-	}
-	select {
-	case raw := <-response:
-		capabilities.models = decodeNativeModels(raw)
-	case <-ctx.Done():
+	initialized, _, err := s.metadataProbe(ctx, settings, false)
+	if err == nil {
+		capabilities.models = decodeNativeModels(initialized)
 	}
 	return capabilities
 }
@@ -289,7 +227,7 @@ func (s *server) modelList(settings LaunchSettings) map[string]any {
 	for _, model := range models {
 		efforts := make([]any, 0, len(model.SupportedEffortLevels))
 		for _, effort := range model.SupportedEffortLevels {
-			efforts = append(efforts, map[string]any{"reasoningEffort": effort, "description": effort})
+			efforts = append(efforts, map[string]any{"reasoningEffort": effort, "description": EffortLabel(effort)})
 		}
 		data = append(data, map[string]any{"id": model.Value, "model": model.Value, "resolvedModel": model.ResolvedModel, "displayName": model.DisplayName, "description": model.Description, "isDefault": model.Value == defaultModel, "supportedReasoningEfforts": efforts, "supportsPersonality": false})
 	}

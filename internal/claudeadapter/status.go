@@ -13,11 +13,13 @@ import (
 type ClaudeStatus struct {
 	Provider         string            `json:"provider"`
 	Model            *string           `json:"model"`
+	ModelDisplayName *string           `json:"modelDisplayName,omitempty"`
 	ReasoningEffort  *string           `json:"reasoningEffort"`
 	PermissionMode   *string           `json:"permissionMode"`
 	Context          ContextUsage      `json:"context"`
 	Cost             ReportedCost      `json:"cost"`
 	Balance          *CreditBalance    `json:"balance"`
+	Usage            *NativeUsage      `json:"usage,omitempty"`
 	EnterpriseBudget *EnterpriseBudget `json:"enterpriseBudget,omitempty"`
 }
 
@@ -103,9 +105,10 @@ func (t *savedThread) ensureStatus() *ClaudeStatus {
 	return t.ClaudeStatus
 }
 
-func (t *savedThread) statusSnapshot(balance *CreditBalance, budget *EnterpriseBudget) *ClaudeStatus {
+func (t *savedThread) statusSnapshot(balance *CreditBalance, budget *EnterpriseBudget, usage *NativeUsage) *ClaudeStatus {
 	copy := *t.ensureStatus()
 	copy.Provider = "claude"
+	copy.Usage = cloneNativeUsage(usage)
 	copy.Balance = cloneBalance(balance)
 	copy.EnterpriseBudget = cloneEnterpriseBudget(budget)
 	if copy.Cost.Incomplete {
@@ -117,16 +120,36 @@ func (t *savedThread) statusSnapshot(balance *CreditBalance, budget *EnterpriseB
 
 func (s *server) threadMetadata(t *savedThread, includeTurns bool) map[string]any {
 	value := t.metadata(includeTurns)
-	value["claudeStatus"] = t.statusSnapshot(s.balance, s.enterpriseBudget)
+	value["claudeStatus"] = s.statusSnapshot(t)
 	value["threadSettings"] = t.settingsSnapshot()
 	return value
+}
+
+func (s *server) statusSnapshot(t *savedThread) *ClaudeStatus {
+	status := t.statusSnapshot(s.balance, s.enterpriseBudget, s.nativeUsage)
+	status.ModelDisplayName = nil
+	if status.Model != nil {
+		for _, model := range s.capabilities.models {
+			if model.Value == *status.Model {
+				status.ModelDisplayName = optionalString(model.DisplayName)
+				return status
+			}
+		}
+		for _, model := range s.capabilities.models {
+			if model.Value != "default" && model.ResolvedModel == *status.Model {
+				status.ModelDisplayName = optionalString(model.DisplayName)
+				break
+			}
+		}
+	}
+	return status
 }
 
 func (s *server) broadcastStatus(t *savedThread) {
 	if s.deletions[t.ID] != nil {
 		return
 	}
-	s.broadcast("thread/claudeStatus/updated", map[string]any{"threadId": t.ID, "claudeStatus": t.statusSnapshot(s.balance, s.enterpriseBudget)})
+	s.broadcast("thread/claudeStatus/updated", map[string]any{"threadId": t.ID, "claudeStatus": s.statusSnapshot(t)})
 }
 
 func (p *process) publishStatus(t *savedThread) {
@@ -189,6 +212,8 @@ func (s *server) applyStatusSettings(t *savedThread, settings LaunchSettings, re
 	t.StatusConfigPermission = mode
 	status.Balance = nil
 	status.EnterpriseBudget = nil
+	status.Usage = nil
+	status.ModelDisplayName = nil
 }
 
 func validUSD(value float64) bool { return !math.IsNaN(value) && !math.IsInf(value, 0) && value >= 0 }
@@ -307,6 +332,7 @@ func sanitizeSavedStatus(t *savedThread) {
 	status.Provider = "claude"
 	status.Balance = nil
 	status.EnterpriseBudget = nil
+	status.Usage = nil
 	if status.Model != nil && validateModel(*status.Model) != nil {
 		status.Model = nil
 	}

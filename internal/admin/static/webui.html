@@ -63,6 +63,7 @@
       </div>
       <button id="jump-latest" class="quiet" hidden>↓ Latest messages</button>
       <div id="notice" role="alert" hidden></div>
+      <div id="capacity-retry" role="group" aria-label="Model capacity retry" hidden><span id="capacity-retry-countdown" role="status" aria-live="polite"></span><button id="capacity-retry-cancel" type="button">Cancel</button></div>
       <section id="questions" aria-label="Questions and approvals" hidden></section>
       <section id="command-panel" aria-label="Command menu" hidden>
         <div class="command-heading"><strong id="command-title">Commands</strong><button id="close-commands" class="quiet" type="button" aria-label="Close command menu">×</button></div>
@@ -79,7 +80,7 @@
         <div class="input-row"><button id="attach-image" type="button" class="quiet" aria-label="Attach file or image" title="Attach one file up to 20 MiB or image up to 10 MiB">＋</button><span class="prompt-mark" aria-hidden="true">›</span><label for="prompt" class="sr-only">Message Codex</label><textarea id="prompt" rows="1" placeholder="Ask Codex to do anything" maxlength="200000" spellcheck="true"></textarea><div class="send-controls"><button id="stop" type="button" class="quiet" hidden>Stop</button><button id="send" type="submit" class="primary" disabled>Send ↑</button></div></div>
         <div id="session-status" class="statusline">
           <div class="model-controls"><button id="model" class="status-control" type="button" aria-label="Model" aria-controls="command-panel" title="Choose the model" disabled>Session model</button><span aria-hidden="true">·</span><button id="effort" class="status-control" type="button" aria-label="Reasoning effort" aria-controls="command-panel" title="Choose reasoning effort" disabled>Session effort</button><span aria-hidden="true">·</span><button id="permissions" class="status-control" type="button" aria-label="Session permissions" aria-controls="command-panel" title="Permissions unavailable until the session connects" disabled>Permissions ?</button></div>
-          <span id="turn-state">Disconnected</span><span id="usage"></span><span id="rate-limits" aria-label="Codex usage limits"></span><span id="claude-spend" hidden><span id="claude-cost">Session —</span><span id="claude-balance">Credits —</span><span id="claude-budget">Budget —</span></span><span id="workspace-path"></span>
+          <span id="turn-state">Disconnected</span><span id="usage"></span><span id="rate-limits" aria-label="Codex usage limits"></span><span id="claude-spend" hidden><span id="claude-cost">Session —</span><span id="claude-balance">Credits —</span><span id="claude-budget">API spend —</span><span id="claude-limits" hidden></span></span><span id="workspace-path"></span>
           <span class="keyboard-hint"><kbd>Enter</kbd> send · <kbd>Shift Enter</kbd> newline</span>
         </div>
       </form>

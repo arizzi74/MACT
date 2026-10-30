@@ -7,6 +7,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/iaia/telegramgw/internal/claudeadapter"
 	"github.com/iaia/telegramgw/internal/codexadapter"
 	"github.com/iaia/telegramgw/internal/protocol"
 )
@@ -71,7 +72,7 @@ func (s *sessionActor) codexModelMenu(ctx context.Context, client *codexadapter.
 		if s.agent.cfg.AgentKind == "claude" && model.ResolvedModel != "" && model.ResolvedModel != model.ID {
 			label += " → " + model.ResolvedModel
 		}
-		if model.Default {
+		if model.Default && s.agent.cfg.AgentKind != "claude" {
 			label += " (default)"
 		}
 		result.ModelMenu.Options = append(result.ModelMenu.Options, protocol.ModelOption{Args: "--menu " + model.ID, Label: permissionText(s.agent.redactor.Redact(label), 120)})
@@ -83,6 +84,9 @@ func (s *sessionActor) codexModelMenu(ctx context.Context, client *codexadapter.
 		result.ModelMenu.Options = append(result.ModelMenu.Options, protocol.ModelOption{Args: fmt.Sprintf("--page %d", page+1), Label: "Next models"})
 	}
 	result.ModelMenu.Options = append(result.ModelMenu.Options, protocol.ModelOption{Args: "--cancel", Label: "Cancel"})
+	if s.agent.cfg.AgentKind == "claude" {
+		result.Text = strings.ReplaceAll(result.Text, "reasoning effort", "effort level")
+	}
 	return result, result.ModelMenu.Validate()
 }
 
@@ -105,18 +109,24 @@ func (s *sessionActor) modelReasoningMenu(model codexadapter.ModelInfo) (protoco
 		runes := []rune(effort)
 		runes[0] = unicode.ToUpper(runes[0])
 		label := string(runes)
+		if s.agent.cfg.AgentKind == "claude" {
+			label = claudeadapter.EffortLabel(effort)
+		}
 		if effort == model.DefaultReasoningEffort {
 			label += " (default)"
 		}
 		result.ModelMenu.Options = append(result.ModelMenu.Options, protocol.ModelOption{Args: model.ID + " " + effort, Label: permissionText(s.agent.redactor.Redact(label), 120)})
 	}
 	if s.agent.cfg.AgentKind == "claude" && len(result.ModelMenu.Options) > 0 {
-		result.ModelMenu.Options = append([]protocol.ModelOption{{Args: model.ID, Label: "Claude Code default"}}, result.ModelMenu.Options...)
+		result.ModelMenu.Options = append([]protocol.ModelOption{{Args: model.ID, Label: "Auto (model default)"}}, result.ModelMenu.Options...)
 	}
 	if len(result.ModelMenu.Options) == 0 {
 		result.Text = "This model does not advertise reasoning effort choices. Apply " + name + " to subsequent turns?"
 		result.ModelMenu.Options = append(result.ModelMenu.Options, protocol.ModelOption{Args: model.ID, Label: "Apply model"})
 	}
 	result.ModelMenu.Options = append(result.ModelMenu.Options, protocol.ModelOption{Args: "--menu", Label: "Back to models"}, protocol.ModelOption{Args: "--cancel", Label: "Cancel"})
+	if s.agent.cfg.AgentKind == "claude" {
+		result.Text = strings.ReplaceAll(result.Text, "reasoning effort", "effort level")
+	}
 	return result, result.ModelMenu.Validate()
 }

@@ -78,11 +78,11 @@ configuration button, and set:
 - **Model:** the default Claude model alias or custom endpoint's model identifier.
   For custom endpoints, the chosen model also populates the Opus, Sonnet and
   Haiku model aliases. Official Claude accounts retain the distinct native aliases.
-- **Reasoning effort:** inherit the Claude default or choose an effort supported
+- **Effort level:** inherit the Claude default or choose an effort supported
   by the selected model. Available session choices come from the installed CLI;
   support for higher effort levels depends on the model and runtime version.
   When changing the endpoint or authentication account, first save with
-  **Claude Code default** reasoning, then choose an effort after the worker has
+  **Auto (model default)** effort, then choose an effort after the worker has
   refreshed that account's model capabilities. Unadvertised combinations are
   rejected rather than silently downgraded.
 - **API endpoint:** leave empty for Claude's normal endpoint, or provide the
@@ -112,9 +112,13 @@ conversation context is retained when you change account or model.
 
 ### Select settings for one session
 
-Click the model, reasoning effort, or permissions in the Web UI status bar,
-or use `/model`, `/reasoning`, and `/permissions` in the Web UI or Telegram.
-The model picker lists the native CLI's advertised models and reasoning levels;
+Click the model, effort level, or permission mode in the Web UI status bar,
+or use `/model`, `/effort`, and `/permissions` in the Web UI or Telegram.
+`/reasoning` remains a compatible alias for `/effort`. `/effort auto` restores
+the native model default. The controls use **Low**, **Medium**, **High**,
+**Extra high**, and **Max**, offering only the levels the installed CLI advertises
+for that model. Model display names also come from the native CLI.
+The model picker lists the native CLI's advertised models and effort levels;
 custom model identifiers can also be entered. Model and effort changes apply
 after the final selection. Cancelling a picker keeps the existing settings.
 
@@ -219,13 +223,13 @@ The repaired turn ends at the final native reply. When the additional activity
 has no trustworthy cumulative cost result, consumption is shown as unknown.
 Refresh an open conversation to load the repaired history.
 
-## Status line and account credit
+## Status line, usage and API spend
 
 Claude sessions show the model, actual Claude permission mode, turn activity,
 current context, and cumulative session consumption in USD. Context and cost
 appear when the CLI reports them; an unknown value is shown as a dash rather
 than zero. The last turn's reported cost is available in the session cost
-indicator's tooltip. `/status` reports the same observations in text.
+indicator's tooltip. `/status` and `/usage` report the same observations in text.
 
 The CLI's USD figure is a reported estimate, not a provider invoice. Custom
 endpoints can bill at different rates. Session cost is retained across worker
@@ -234,6 +238,23 @@ that were never reported to MACT remain unavailable until the native CLI
 reports them; a crashed process can leave unreported spending unknown.
 If a native counter resets below its saved total, MACT marks session cost as
 unavailable instead of presenting the old subtotal as current spending.
+
+For an existing Claude Code account on the default endpoint, the worker reads
+Claude Code’s structured `/usage` control automatically on startup and about
+every minute. **API spend** shows the reported monthly allowance, spending and
+remaining amount. Available subscription windows use Claude’s **Current session**
+and **Current week** labels, with reset times in their tooltip and text report.
+This read uses the native login; no Enterprise Admin API key is required.
+
+The query runs in an isolated, non-persistent CLI process and sends no model
+prompt. It requests `skip_behaviors` to avoid scanning local transcripts. A
+failed or unsupported usage query clears the last observation without stopping
+an active conversation. Native API spend amounts are currency minor units; MACT
+converts explicit USD to dollars. Missing amounts or currencies stay unknown,
+and a missing limit is not presented as unlimited. Dollar allowances are kept
+separate from estimated session cost and provider credit balances. The native
+control is experimental, so older or incompatible runtimes can omit this data.
+See the [Claude Agent SDK usage report](https://code.claude.com/docs/en/agent-sdk/typescript#sdkusagereport).
 
 For `https://api.abliteration.ai`, the worker also reads the documented
 [`GET /v1/credits`](https://docs.abliteration.ai/api-reference/credits/get-the-credit-balance-for-the-api-keys-organization)
@@ -248,9 +269,11 @@ are never sent to the browser or gateway. Account changes clear the old balance,
 and an in-flight response from the old account is discarded. Failed checks show
 an unavailable value. Other providers show no invented account balance.
 
-### Claude Enterprise monthly budget
+### Optional Enterprise Admin API fallback
 
-In **Workers → Claude Code settings**, enable **Enterprise budget** for an
+The native `/usage` budget takes precedence when it is available. For accounts
+that need the separate Admin API, in **Workers → Claude Code settings**, enable
+**Use Enterprise Admin API budget fallback** for an
 official Claude login, enter the Enterprise member's `user_...` identifier,
 and save an Enterprise Admin API key with the **`read:spend_limits`** scope.
 The organization's Primary Owner creates this separate key in Claude's

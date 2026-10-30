@@ -105,11 +105,23 @@
     const field = $(id);
     field.textContent = value; field.title = description; field.setAttribute('aria-label', description);
   }
+  function claudeEffortLabel(value) { return ({ '': 'Auto', auto: 'Auto', default: 'Auto', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max' })[value] || statusText(value); }
+  function nativeClaudeUsage(value) {
+    if (!value || statusNumber(value.observedAt) === null) return null;
+    const spend = value.apiSpend;
+    const money = spend?.currency === 'USD' && spend?.period === 'monthly';
+    const limit = money ? statusNumber(spend.limit) : null, spent = money ? statusNumber(spend.spent) : null;
+    const remaining = limit !== null && spent !== null ? Math.max(0, limit - spent) : null;
+    return { plan: ['pro', 'max', 'team', 'enterprise'].includes(value.plan) ? value.plan : '', observedAt: value.observedAt,
+      windows: Array.isArray(value.windows) ? value.windows.slice(0, 32).filter(row => statusText(row?.name) && statusNumber(row.usedPercent) !== null).map(row => ({ name: statusText(row.name), usedPercent: row.usedPercent, resetsAt: statusNumber(row.resetsAt) })) : [],
+      apiSpend: money && typeof spend.enabled === 'boolean' ? { enabled: spend.enabled, limit, spent, remaining, currency: 'USD', period: 'monthly' } : null };
+  }
   function clearClaudeStatus() {
     claudeStatus = null; claudeStatusRevision++;
     statusField('claude-cost', 'Session —', 'Claude Code has not reported this session’s consumption in USD.');
     statusField('claude-balance', 'Credits —', 'The API provider has not reported a remaining account credit balance.');
-    statusField('claude-budget', 'Budget —', 'The Claude Enterprise monthly member budget has not been reported. Configure an Enterprise Admin API key in the worker settings to read it.');
+    statusField('claude-budget', 'API spend —', 'Claude Code has not reported the account’s spending allowance.');
+    $('claude-limits').textContent = ''; $('claude-limits').hidden = true;
     if (isClaude()) renderClaudeStatus();
   }
   function applyClaudeStatus(raw, threadId) {
@@ -117,7 +129,7 @@
     const value = raw && typeof raw === 'object' && (!raw.provider || raw.provider === 'claude') ? raw : {};
     const balance = value.balance, budget = value.enterpriseBudget;
     claudeStatus = {
-      model: statusText(value.model), reasoningEffort: typeof value.reasoningEffort === 'string' ? statusText(value.reasoningEffort) : null, permissionMode: statusText(value.permissionMode),
+      model: statusText(value.model), modelDisplayName: statusText(value.modelDisplayName), usage: nativeClaudeUsage(value.usage), reasoningEffort: typeof value.reasoningEffort === 'string' ? statusText(value.reasoningEffort) : null, permissionMode: statusText(value.permissionMode),
       context: { usedTokens: statusNumber(value.context?.usedTokens), maxTokens: statusNumber(value.context?.maxTokens) },
       cost: { sessionUSD: statusNumber(value.cost?.sessionUSD), lastTurnUSD: statusNumber(value.cost?.lastTurnUSD) },
       balance: balance && ['USD', 'credits'].includes(balance.unit) && statusNumber(balance.remaining) !== null
@@ -132,7 +144,7 @@
   function applyClaudeSettings(settings) {
     if (!isClaude() || !settings || !state.connected) return;
     const next = { ...(claudeStatus || {}), provider: 'claude' };
-    if (Object.hasOwn(settings, 'model')) next.model = settings.model;
+    if (Object.hasOwn(settings, 'model')) { next.model = settings.model; if (settings.model !== claudeStatus?.model) next.modelDisplayName = ''; }
     if (Object.hasOwn(settings, 'effort')) next.reasoningEffort = settings.effort;
     if (Object.hasOwn(settings, 'reasoningEffort')) next.reasoningEffort = settings.reasoningEffort;
     if (Object.hasOwn(settings, 'permissionMode')) next.permissionMode = settings.permissionMode;
@@ -146,9 +158,9 @@
   function renderClaudeStatus() {
     if (!isClaude()) return;
     const status = claudeStatus;
-    statusField('model', status?.model || 'Model —', status?.model ? 'Claude Code reported model: ' + status.model + '. Choose model.' : 'The current Claude Code model has not been reported. Choose model.');
-    statusField('effort', status?.reasoningEffort || (status?.reasoningEffort === '' ? 'Default' : 'Effort —'), status?.reasoningEffort ? 'Claude Code reported reasoning effort: ' + status.reasoningEffort + '. Choose reasoning effort.' : status?.reasoningEffort === '' ? 'Claude Code default reasoning effort. Choose reasoning effort.' : 'The current Claude Code reasoning effort has not been reported. Choose reasoning effort.');
-    const permissions = { default: 'Ask', acceptEdits: 'Allow edits', plan: 'Plan only', bypassPermissions: 'Bypass', dontAsk: 'Don’t ask', auto: 'Auto' };
+    statusField('model', status?.modelDisplayName || currentModelInfo()?.displayName || status?.model || 'Model —', status?.model ? 'Claude Code reported model: ' + status.model + '. Choose model.' : 'The current Claude Code model has not been reported. Choose model.');
+    statusField('effort', status?.reasoningEffort != null ? claudeEffortLabel(status.reasoningEffort) : 'Effort —', status?.reasoningEffort != null ? 'Claude Code effort: ' + claudeEffortLabel(status.reasoningEffort) + '. Choose effort level.' : 'Claude Code has not reported the effort level.');
+    const permissions = { default: 'Default', manual: 'Manual', acceptEdits: 'Accept edits', plan: 'Plan mode', bypassPermissions: 'Bypass permissions', dontAsk: 'Don’t ask', auto: 'Auto' };
     const permission = permissions[status?.permissionMode];
     statusField('permissions', permission || 'Permissions —', permission ? 'Claude Code reported permission mode: ' + status.permissionMode + '. Choose permissions.' : 'The current Claude Code permission mode has not been reported. Choose permissions.');
     $('permissions').dataset.mode = permission ? status.permissionMode : 'unknown';
@@ -166,12 +178,30 @@
     statusField('claude-balance', balance ? balance.unit === 'USD' ? 'Balance ' + usd(balance.remaining) : balance.remaining.toLocaleString('en-US', { maximumFractionDigits: 4 }) + ' credits left' : 'Credits —', balance
       ? 'API provider remaining account credit: ' + (balance.unit === 'USD' ? exactUSD(balance.remaining) + ' USD' : balance.remaining.toLocaleString('en-US', { maximumFractionDigits: 8 }) + ' credits') + '. Based on the latest provider totals; finalized usage can lag activity.' + (observed ? ' Updated ' + observed.toLocaleString() + '.' : '')
       : 'The API provider has not reported a remaining account credit balance. Session consumption does not establish an account balance.');
-    const budget = status?.enterpriseBudget;
-    const budgetObserved = budget?.observedAt > 0 ? timestamp(budget.observedAt) : null;
-    const budgetMoney = value => value.toLocaleString('en-US', { style: 'currency', currency: budget.currency, minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    statusField('claude-budget', budget ? budget.unlimited ? 'Budget unlimited' : 'Budget ' + budgetMoney(budget.remaining) + ' / ' + budgetMoney(budget.limit) + ' remaining' : 'Budget —', budget
-      ? 'Claude Enterprise effective monthly member spending limit: ' + (budget.unlimited ? 'unlimited' : budgetMoney(budget.limit)) + '. Spent this month: ' + budgetMoney(budget.spent) + (budget.unlimited ? '.' : '. Remaining: ' + budgetMoney(budget.remaining) + '.') + ' Includes applicable member, group or seat policies; this is not an organization credit balance.' + (budgetObserved ? ' Checked ' + budgetObserved.toLocaleString() + '.' : '')
-      : 'The Claude Enterprise monthly member budget has not been reported. Configure an Enterprise Admin API key in the worker settings to read it.');
+    const nativeUsage = status?.usage, nativeSpend = nativeUsage?.apiSpend;
+    const budget = nativeSpend || status?.enterpriseBudget;
+    const budgetObserved = (nativeSpend ? nativeUsage.observedAt : budget?.observedAt) > 0 ? timestamp(nativeSpend ? nativeUsage.observedAt : budget.observedAt) : null;
+    let budgetText = 'API spend —', budgetDescription = 'Claude Code has not reported the account’s spending allowance. Session cost does not establish a remaining allowance.';
+    if (nativeSpend) {
+      budgetText = nativeSpend.remaining !== null ? 'API spend ' + usd(nativeSpend.remaining) + ' / ' + usd(nativeSpend.limit) + ' left'
+        : nativeSpend.spent !== null ? 'API spend ' + usd(nativeSpend.spent) + ' spent' : 'API spend —';
+      budgetDescription = 'Claude Code /usage · Monthly API spend. ' + (nativeSpend.limit !== null ? 'Limit: ' + exactUSD(nativeSpend.limit) + '. ' : 'Limit not reported. ')
+        + (nativeSpend.spent !== null ? 'Spent: ' + exactUSD(nativeSpend.spent) + '. ' : '') + (nativeSpend.remaining !== null ? 'Remaining: ' + exactUSD(nativeSpend.remaining) + '. ' : '')
+        + (!nativeSpend.enabled ? 'Extra usage is disabled. ' : '');
+    } else if (budget) {
+      budgetText = budget.unlimited ? 'API spend unlimited' : 'API spend ' + usd(budget.remaining) + ' / ' + usd(budget.limit) + ' left';
+      budgetDescription = 'Enterprise Admin API monthly member limit: ' + (budget.unlimited ? 'unlimited' : exactUSD(budget.limit)) + '. Spent: ' + exactUSD(budget.spent) + '. Includes applicable member, group or seat policies.';
+    }
+    if (budgetObserved) budgetDescription += ' Checked ' + budgetObserved.toLocaleString() + '.';
+    statusField('claude-budget', budgetText, budgetDescription);
+    $('claude-balance').hidden = !balance;
+    $('claude-budget').hidden = !!balance && !budget;
+    const windows = nativeUsage?.windows || [];
+    $('claude-limits').hidden = !windows.length;
+    statusField('claude-limits', windows.map(row => row.name + ' ' + Math.round(row.usedPercent) + '% used').join(' · '), windows.map(row => {
+      const reset = row.resetsAt > 0 ? timestamp(row.resetsAt) : null;
+      return row.name + ': ' + row.usedPercent + '% used' + (reset ? '; resets ' + reset.toLocaleString() : '');
+    }).join('. '));
     settleBottom();
   }
   function title(session) { return session.name || session.title || session.codex_thread_id || 'Untitled session'; }
@@ -195,10 +225,12 @@
   let noticeRecovery = '', noticeText = '';
   let providerRetry = null, providerEventOrder = 0;
   let steerNoticeTimer = null, steerNoticeTurn = null;
+  let capacityRetryTask = null, capacityRetryTimer = null;
   function renderNotice() {
     const error = state.authenticated && state.selected ? sessionErrors.get(state.selected.session_id) : null;
     const text = [error?.message, noticeText].filter((value, index, values) => value && values.indexOf(value) === index).join('\n\n');
     $('notice').textContent = text; $('notice').hidden = !text;
+    renderCapacityRetry(error);
   }
   function notice(text = '', recovery = '') {
     noticeText = text;
@@ -208,13 +240,13 @@
   }
   function errorWasDismissed(id, value) {
     const dismissed = sessionErrorDismissals.get(id);
-    return dismissed && (value.revision && value.revision === dismissed.revision || value.turnID && value.turnID === dismissed.turnID);
+    return dismissed && (dismissed.cancelledMessage && !value.revision && !value.turnID && value.message === dismissed.cancelledMessage || value.revision && value.revision === dismissed.revision || value.turnID && value.turnID === dismissed.turnID);
   }
-  function rememberSessionError(id, message, turnID = '', revision = '', source = 'native') {
+  function rememberSessionError(id, message, turnID = '', revision = '', source = 'native', capacity = false) {
     if (!id || typeof message !== 'string') return;
     message = clean(message).trim().slice(0, 8192);
     if (!message) return;
-    const value = { message, turnID, revision, source };
+    const value = { message, turnID, revision, source, capacity };
     if (errorWasDismissed(id, value)) return;
     if (turnID && source === 'activity' && state.selected?.session_id === id && state.turn && state.turn !== turnID) return;
     const previous = sessionErrors.get(id);
@@ -236,15 +268,17 @@
   function startSessionTurn(id, turnID) {
     if (!id || !turnID) return;
     const previous = sessionErrors.get(id);
+    const dismissal = sessionErrorDismissals.get(id); if (dismissal) { delete dismissal.historySuppressed; delete dismissal.cancelledMessage; }
     if (previous && previous.turnID !== turnID) dismissSessionError(id);
     sessionErrorTurns.set(id, turnID);
   }
   function applyActivityError(row) {
     const id = row.session_id;
     if (row.active_turn_id) startSessionTurn(id, row.active_turn_id);
+    if (applyCapacityRetryState(row)) return;
     if (typeof row.error_message === 'string' && row.error_message.trim()) {
       rememberSessionError(id, row.error_message, typeof row.error_turn_id === 'string' ? row.error_turn_id : '',
-        typeof row.error_revision === 'string' ? row.error_revision : '', 'activity');
+        typeof row.error_revision === 'string' ? row.error_revision : '', 'activity', row.capacity_error === true);
     } else {
       // An empty activity row can race ahead of a just-received native error.
       // Only clear errors this feed has acknowledged; a new turn explicitly
@@ -258,10 +292,118 @@
     if (!id || !turn?.id) return;
     // A prompt can fail before a new native turn exists. Its durable error is
     // newer than the latest saved turn, even though it has no turn ID yet.
-    if (sessionErrors.has(id)) return;
+    if (sessionErrors.has(id) || sessionErrorDismissals.get(id)?.historySuppressed) return;
     if (!sessionErrorTurns.has(id)) sessionErrorTurns.set(id, turn.id);
     if (turn.error) rememberSessionError(id, turn.error.message || 'The turn failed.', turn.id);
   }
+  function clearCapacityRetryView() {
+    clearTimeout(capacityRetryTimer); capacityRetryTimer = null;
+    capacityRetryTask?.controller?.abort(); capacityRetryTask = null;
+    $('capacity-retry').hidden = true; $('notice').removeAttribute('data-capacity-retry');
+  }
+  function capacityRetryCurrent(task) {
+    return capacityRetryTask === task && state.authenticated && task.authGeneration === state.authGeneration &&
+      state.selected?.session_id === task.sessionID && sessionErrors.get(task.sessionID)?.revision === task.revision;
+  }
+  function capacityRetryHandled(id, revision, turnID, message = '', retryState = '') {
+    const previous = sessionErrors.get(id);
+    if (previous && previous.revision && previous.revision !== revision) return;
+    if (retryState === 'cancelled' && capacityRetryTask?.sessionID === id && capacityRetryTask?.revision === revision) capacityRetryTask.cancelled = true;
+    sessionErrorDismissals.set(id, { revision, turnID, historySuppressed: true, cancelledMessage: message || previous?.message || '' });
+    sessionErrors.delete(id);
+    if (state.selected?.session_id === id) renderNotice();
+  }
+  function applyCapacityRetryState(row) {
+    const id = row.session_id, revision = row.capacity_retry_revision;
+    const matches = typeof revision === 'string' && revision && (!row.error_revision || row.error_revision === revision);
+    if (matches && !row.active_turn_id && ['cancelled', 'submitted'].includes(row.capacity_retry_state)) {
+      capacityRetryHandled(id, revision, row.capacity_retry_turn_id || '', row.error_message || '', row.capacity_retry_state);
+      return true;
+    }
+    if (row.error_revision && row.error_revision !== revision) {
+      const dismissal = sessionErrorDismissals.get(id);
+      if (dismissal) sessionErrorDismissals.delete(id);
+    }
+    return false;
+  }
+  async function capacityRetryRequest(task, action) {
+    task.controller?.abort(); const controller = new AbortController(); task.controller = controller;
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    try {
+      const response = await fetch(api + '/sessions/capacity-retry', { method: 'POST', credentials: 'same-origin', cache: 'no-store', signal: controller.signal,
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': window.CodexSessionAuth.cookie('__Host-telegramgw-csrf') },
+        body: JSON.stringify({ session_id: task.sessionID, error_revision: task.revision, action }) });
+      if (response.status === 401) { expire(); throw new Error('Sign in to manage this retry.'); }
+      if (!response.ok) { const error = new Error('Capacity retry is no longer available.'); error.response = true; throw error; }
+      const value = await response.json(), retry = value.retry;
+      if (!retry || retry.error_revision !== task.revision || !['waiting', 'cancelled', 'submitted', 'superseded'].includes(retry.state) ||
+          !Number.isSafeInteger(retry.due_at_ms) || !Number.isSafeInteger(value.server_time_ms)) throw new Error('Invalid retry status.');
+      return value;
+    } finally { clearTimeout(timeout); }
+  }
+  function paintCapacityRetry(task) {
+    clearTimeout(capacityRetryTimer);
+    if (!capacityRetryCurrent(task)) return;
+    const seconds = Math.max(0, Math.ceil((task.deadline - Date.now()) / 1000));
+    const label = task.phase === 'cancelling' ? 'Cancelling…'
+      : task.phase === 'unknown' ? task.message || 'Retry status unavailable. You can still cancel.'
+      : seconds ? 'Retrying in ' + seconds + (seconds === 1 ? ' second' : ' seconds') : 'Retrying…';
+    if ($('capacity-retry-countdown').textContent !== label) $('capacity-retry-countdown').textContent = label;
+    $('capacity-retry-cancel').disabled = task.phase === 'cancelling' || task.phase === 'waiting' && seconds === 0;
+    if (!['unknown', 'cancelling'].includes(task.phase)) capacityRetryTimer = setTimeout(() => paintCapacityRetry(task), 250);
+  }
+  function acceptCapacityRetry(task, value) {
+    if (!capacityRetryCurrent(task)) return;
+    const retry = value.retry;
+    if (['cancelled', 'submitted'].includes(retry.state)) { capacityRetryHandled(task.sessionID, task.revision, retry.turn_id || '', task.messageText, retry.state); return; }
+    if (retry.state === 'superseded') { task.phase = 'stopped'; clearTimeout(capacityRetryTimer); $('capacity-retry').hidden = true; $('notice').removeAttribute('data-capacity-retry'); return; }
+    task.phase = 'waiting'; task.deadline = Date.now() + Math.max(0, retry.due_at_ms - value.server_time_ms);
+    paintCapacityRetry(task);
+  }
+  async function scheduleCapacityRetry(task) {
+    const operation = task.operation;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const value = await capacityRetryRequest(task, 'schedule');
+        if (capacityRetryCurrent(task) && task.operation === operation) acceptCapacityRetry(task, value);
+        return;
+      } catch (error) {
+        if (!capacityRetryCurrent(task) || task.operation !== operation) return;
+        if (attempt === 0 && !error.response) continue; // Same failure/deadline: idempotent, never a prompt replay.
+        task.phase = 'unknown'; task.message = 'Retry status unavailable. You can still cancel.'; paintCapacityRetry(task); return;
+      }
+    }
+  }
+  async function cancelCapacityRetry(task = capacityRetryTask) {
+    if (!task || !capacityRetryCurrent(task) || task.phase === 'cancelling') return false;
+    task.operation++; task.phase = 'cancelling'; paintCapacityRetry(task);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const value = await capacityRetryRequest(task, 'cancel');
+        if (capacityRetryCurrent(task)) acceptCapacityRetry(task, value);
+        return value.retry.state === 'cancelled';
+      } catch (error) {
+        if (!capacityRetryCurrent(task)) return task.cancelled === true;
+        if (attempt === 0 && !error.response) continue;
+        task.phase = 'unknown'; task.message = 'Cancellation was not confirmed. Try Cancel again.'; paintCapacityRetry(task); return false;
+      }
+    }
+  }
+  function renderCapacityRetry(error) {
+    const visible = state.authenticated && state.selected && error?.capacity && error.revision && !state.turn;
+    if (!visible) { clearCapacityRetryView(); return; }
+    const id = state.selected.session_id;
+    if (capacityRetryTask?.sessionID !== id || capacityRetryTask?.revision !== error.revision) {
+      clearCapacityRetryView();
+      if (!state.connected || state.loading) return;
+      capacityRetryTask = { sessionID: id, revision: error.revision, authGeneration: state.authGeneration, operation: 0,
+        phase: 'scheduling', deadline: Date.now() + 30000, messageText: error.message };
+      scheduleCapacityRetry(capacityRetryTask);
+    }
+    if (capacityRetryTask.phase === 'stopped') return;
+    $('capacity-retry').hidden = false; $('notice').dataset.capacityRetry = 'true'; paintCapacityRetry(capacityRetryTask);
+  }
+  $('capacity-retry-cancel').addEventListener('click', () => cancelCapacityRetry());
   function recoverNotice(...scopes) {
     // A recovered transport does not confirm an interrupted send or resolve
     // an unrelated Codex error. Clear only the operation that recovered.
@@ -845,6 +987,7 @@
     for (const id of ['model', 'effort', 'permissions']) $(id).disabled = !available || (id === 'permissions' && !!state.turn);
     $('session-status').classList.toggle('claude-status', claude);
     $('claude-spend').hidden = !claude;
+    renderNotice();
     $('rate-limits').hidden = claude;
     if (claude) renderClaudeStatus();
     $('stop').hidden = !state.turn;
@@ -1059,6 +1202,7 @@
     notificationUI?.setAuthenticated(false);
     closeActivity(); activity.sessions.clear(); activity.inventoryRevision = ''; activity.attempts = 0; activityStatus('disconnected', 'Sign in for live updates');
     sessionSettings.clear(); activitySettingsRevisions.clear();
+    clearCapacityRetryView();
     sessionErrors.clear(); sessionErrorDismissals.clear(); sessionErrorTurns.clear();
     state.selected = null;
     state.sessions = [];
@@ -2451,7 +2595,7 @@
     const isUser = type === 'userMessage';
     const isAssistant = type === 'agentMessage';
     const isReasoning = type === 'reasoning';
-    const reasoningLabel = item._turn && item._turn === state.turn && !item._complete ? 'Reasoning' : 'Reasoning complete';
+    const reasoningLabel = item._turn && item._turn === state.turn && !item._complete ? (isClaude() ? 'Thinking' : 'Reasoning') : (isClaude() ? 'Thinking complete' : 'Reasoning complete');
     const isTool = !isUser && !isAssistant;
     const article = node('article', 'message ' + (isUser ? 'user' : isTool ? 'tool' : item.phase === 'commentary' ? 'commentary' : 'assistant'));
     if (isReasoning) article.classList.add('reasoning');
@@ -2848,12 +2992,12 @@
     updateSessionIndicators();
   }
   function currentModel() { if (isClaude()) return claudeStatus?.model || ''; return sessionSettings.get(state.selected?.session_id)?.model ?? state.selected?.stats?.model ?? ''; }
-  function currentModelInfo() { const current = currentModel(); return state.models.find(model => model.model === current || model.id === current) || state.models.find(model => model.resolvedModel === current); }
+  function currentModelInfo() { const current = currentModel(); return state.models.find(model => model.model === current || model.id === current) || state.models.find(model => model.model !== 'default' && model.resolvedModel === current) || state.models.find(model => model.resolvedModel === current); }
   function currentEffort() { if (isClaude()) return claudeStatus?.reasoningEffort || ''; const settings = sessionSettings.get(state.selected?.session_id); return settings ? settings.effort : state.selected?.stats?.reasoning_effort || currentModelInfo()?.defaultReasoningEffort || ''; }
   function reasoningOptions() {
     return (currentModelInfo()?.supportedReasoningEfforts || []).map(option => {
       const value = typeof option === 'string' ? option : option.reasoningEffort;
-      return { value, label: value, description: typeof option === 'object' ? option.description : '' };
+      return { value, label: isClaude() ? claudeEffortLabel(value) : value, description: typeof option === 'object' ? option.description : '' };
     }).filter(option => option.value);
   }
   function renderModels() {
@@ -2905,6 +3049,10 @@
     let nativePromptDispatched = false;
     state.submitting = true; updateControls(); notice();
     try {
+      if (capacityRetryTask?.sessionID === sessionId) {
+        if (!await cancelCapacityRetry()) throw new Error('Cancel the pending capacity retry before sending this prompt. Your draft has been kept.');
+        if (!current()) return;
+      }
       if (file && !file.uploadedPath) {
         const dataURL = await attachmentDataURL(file);
         if (!current()) return;
@@ -3075,7 +3223,7 @@
         const canonical = state.models.find(value => value.model === model || value.id === model)?.model || model;
         applySessionSettings(state.selected.session_id, canonical, isClaude() ? effort || '' : effort || currentEffort(), 'command');
       }
-    } else if (state.selected && name === 'reasoning' && args) {
+    } else if (state.selected && ['reasoning', 'effort'].includes(name) && args) {
       if (isClaude() && args === 'default') args = '';
       if (commandSettingsCurrent()) applySessionSettings(state.selected.session_id, currentModel(), args, 'command');
     }
@@ -3116,7 +3264,7 @@
     lastResponse: () => itemText([...state.items.values()].reverse().find(item => item.type === 'agentMessage' && item.phase !== 'commentary') || {}),
     exportText: () => '# ' + title(state.selected) + '\n\n' + [...state.items.values()].filter(item => ['userMessage', 'agentMessage'].includes(item.type)).map(item => '## ' + (item.type === 'userMessage' ? 'You' : agentLabel()) + (itemDate(item) ? ' · ' + (itemTimeLabel(item) ? itemTimeLabel(item) + ': ' : '') + itemDate(item).toISOString() : '') + '\n\n' + clean(item.type === 'userMessage' ? promptText(itemText(item)) : itemText(item))).join('\n\n'),
   });
-  for (const [id, name] of [['model', 'model'], ['effort', 'reasoning'], ['permissions', 'permissions']]) $(id).addEventListener('click', () => commandUI.handle('/' + name));
+  for (const [id, name] of [['model', 'model'], ['effort', 'reasoning'], ['permissions', 'permissions']]) $(id).addEventListener('click', () => commandUI.handle('/' + (id === 'effort' && isClaude() ? 'effort' : name)));
   $('show-sessions').addEventListener('click', () => showSessions(true));
   $('empty-sessions').addEventListener('click', () => showSessions(true));
   $('close-sessions').addEventListener('click', () => showSessions(false));

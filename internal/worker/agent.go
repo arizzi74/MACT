@@ -1040,7 +1040,7 @@ func codexCommandNeedsIdle(name, args string) bool {
 		return choice != "" && choice != "cancel" && choice != "full-access" && choice != "danger-full-access" && choice != "bypasspermissions"
 	case "model":
 		return !modelMenuReadOnly(args)
-	case "rename", "reasoning", "approvals", "personality", "memories", "goal":
+	case "rename", "reasoning", "effort", "approvals", "personality", "memories", "goal":
 		return args != ""
 	case "fast":
 		return args != "" && args != "status"

@@ -97,6 +97,7 @@ type server struct {
 	socketInfo        os.FileInfo
 	closeOnce         sync.Once
 	balance           *CreditBalance
+	nativeUsage       *NativeUsage
 	enterpriseBudget  *EnterpriseBudget
 	capabilities      nativeCapabilities
 	balanceGeneration uint64
@@ -307,6 +308,7 @@ func (r *Runtime) WithIdleSettingsUpdate(update func() error) error {
 	s.balanceGeneration++
 	s.balance = nil
 	s.enterpriseBudget = nil
+	s.nativeUsage = nil
 	settings, err := s.settings()
 	if err != nil {
 		return err

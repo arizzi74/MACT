@@ -135,17 +135,18 @@
       if (prompt.value.trim() === original.trim()) { prompt.value = ''; ctx.saveDraft(); }
     }
     function unavailable(entry) {
+      if (entry.source === 'claude' && !ctx.isClaude?.()) return 'This command is available for Claude Code sessions.';
       if (ctx.isClaude?.()) {
         if (entry.name === 'approvals') return 'Use /permissions to choose Claude Code’s permission mode.';
         if (['delete', 'tgdeletesession'].includes(entry.name) && ctx.deletionUnavailable?.()) return ctx.deletionUnavailable();
         if (entry.name === 'tgsteer') return 'Claude Code cannot steer an active turn. Send a normal message to queue it after the current turn.';
-        if (entry.kind === 'unavailable' || entry.kind === 'worker' && !['model', 'permissions', 'status', 'pwd', 'rename', 'delete', 'diff', 'stop'].includes(entry.name)) return 'This command is unavailable for Claude Code workers.';
+        if (entry.kind === 'unavailable' || entry.kind === 'worker' && !['model', 'permissions', 'status', 'usage', 'pwd', 'rename', 'delete', 'diff', 'stop'].includes(entry.name)) return 'This command is unavailable for Claude Code workers.';
       }
       if (entry.kind === 'unavailable') return entry.reason;
       if (entry.kind === 'gateway' || ['help', 'tghelp', 'theme', 'title', 'tui', 'resume', 'agents', 'tgsessions'].includes(entry.name)) return state.authenticated ? '' : 'Sign in to use commands.';
       if (!state.selected) return 'Select a session first.';
       if (state.turn && !entry.busy) return 'Wait for the active turn to finish.';
-      if (entry.kind === 'worker' || ['model', 'reasoning', 'new', 'clear', 'delete', 'tgdeletesession', 'tghistory', 'tglastmessages', 'tgsteer', 'tginterrupt'].includes(entry.name)) return state.connected && !state.loading ? '' : 'Connect to a session first.';
+      if (entry.kind === 'worker' || ['model', 'reasoning', 'effort', 'new', 'clear', 'delete', 'tgdeletesession', 'tghistory', 'tglastmessages', 'tgsteer', 'tginterrupt'].includes(entry.name)) return state.connected && !state.loading ? '' : 'Connect to a session first.';
       return '';
     }
     function paintSuggestions() {
@@ -156,7 +157,7 @@
         const reason = unavailable(entry);
         const item = node('button', 'command-option' + (reason ? ' unavailable' : '')); item.type = 'button'; item.id = 'slash-option-' + i;
         item.setAttribute('role', 'option'); item.setAttribute('aria-selected', String(i === index));
-        item.append(node('span', 'command-name', '/' + entry.name), node('span', 'command-description', ctx.isClaude?.() && entry.name === 'copy' ? 'Copy the latest Claude Code response as Markdown' : entry.description));
+        item.append(node('span', 'command-name', '/' + entry.name), node('span', 'command-description', ctx.isClaude?.() ? ({ model: 'Choose the Claude Code model and effort level', permissions: 'Choose the Claude Code permission mode', usage: 'View API spend and Claude Code usage limits', copy: 'Copy the latest Claude Code response as Markdown', tgupdateworkers: 'Check worker and agent runtime versions; update when idle' })[entry.name] || entry.description : entry.description));
         if (reason) { item.title = reason; item.append(node('span', 'command-badge', entry.kind === 'unavailable' ? 'CLI only' : 'Unavailable')); }
         item.addEventListener('pointerdown', event => event.preventDefault());
         item.addEventListener('click', () => { if (!pending && generation === state.generation && ticket === epoch) choose(entry); }); list.append(item);
@@ -165,7 +166,11 @@
       field.setAttribute('aria-activedescendant', 'slash-option-' + index);
     }
     function suggestions(query) {
-      matches = catalog.search(query); index = Math.min(index, Math.max(0, matches.length - 1)); paintSuggestions();
+      matches = catalog.search(query).filter(entry => {
+        if (!ctx.isClaude?.()) return entry.source !== 'claude';
+        if (entry.source === 'gateway') return true;
+        return ['model', 'effort', 'permissions', 'status', 'usage', 'rename', 'new', 'clear', 'resume', 'delete', 'agents', 'copy', 'export', 'raw', 'diff', 'pwd', 'title', 'statusline', 'theme', 'tui', 'help', 'quit', 'stop'].includes(entry.name);
+      }); index = Math.min(index, Math.max(0, matches.length - 1)); paintSuggestions();
     }
     function open(query = '', fromPrompt = false) {
       if (pending) return;
@@ -278,7 +283,7 @@
       if (!args) return false;
       if (name === 'model') return !args.startsWith('--');
       if (name === 'fast') return args === 'on' || args === 'off';
-      return ['reasoning', 'permissions', 'approvals', 'plan', 'personality', 'memories', 'goal', 'rename'].includes(name);
+      return ['reasoning', 'effort', 'permissions', 'approvals', 'plan', 'personality', 'memories', 'goal', 'rename'].includes(name);
     }
     function worker(name, args = '', original = '') {
       const settingsCheckpoint = ctx.settingsCheckpoint?.();
@@ -382,15 +387,16 @@
         });
       }
       if (['model', 'permissions', 'status', 'usage'].includes(name)) return worker(name, args, original);
-      if (name === 'reasoning') {
-        if (args) return worker(name, args, original);
-        consume(original); show('/reasoning', 'reasoning'); text('Choose the reasoning effort for subsequent turns.');
+      if (name === 'reasoning' || name === 'effort') {
+        const effortCommand = ctx.isClaude?.() ? 'effort' : 'reasoning';
+        if (args) return worker(effortCommand, args, original);
+        consume(original); show('/' + effortCommand, 'reasoning'); text(ctx.isClaude?.() ? 'Choose the effort level for subsequent turns.' : 'Choose the reasoning effort for subsequent turns.');
         const options = ctx.reasoningOptions?.() || [];
-        if (ctx.isClaude?.()) button('Claude Code default', () => worker('reasoning', 'default'), 'Use the native reasoning setting.', { current: !ctx.currentEffort?.() });
-        for (const option of options.filter(option => option.value)) button(option.label, () => worker('reasoning', option.value), option.description || '', { current: option.value === ctx.currentEffort?.() });
+        if (ctx.isClaude?.()) button('Auto (model default)', () => worker('effort', 'auto'), 'Use Claude Code’s model default.', { current: !ctx.currentEffort?.() });
+        for (const option of options.filter(option => option.value)) button(option.label, () => worker(effortCommand, option.value), option.description || '', { current: option.value === ctx.currentEffort?.() });
         if (!options.length) {
-          if (ctx.isClaude?.()) text('This model has not advertised reasoning effort choices. Choose a listed model to see its supported efforts.');
-          button('Choose model and reasoning', () => worker('model'));
+          if (ctx.isClaude?.()) text('This model has not advertised effort levels. Choose a listed model to see its supported levels.');
+          button(ctx.isClaude?.() ? 'Choose model and effort' : 'Choose model and reasoning', () => worker('model'));
         }
         return;
       }

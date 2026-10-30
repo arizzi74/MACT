@@ -71,12 +71,40 @@ func applySessionTerminalError(ctx context.Context, tx *dbTx, event protocol.Eve
 		}
 		code = boundedTerminalErrorText(result.Error.Code, 256)
 	}
+	revision := event.ID
+	if isModelCapacityError(code, message) {
+		var saved []byte
+		if err := tx.QueryRow(ctx, `SELECT COALESCE(json_extract(metadata,'$.capacity_retry'),'{}') FROM sessions WHERE session_id=$1`, sessionID).Scan(&saved); err != nil {
+			return err
+		}
+		var retry CapacityRetry
+		if json.Unmarshal(saved, &retry) == nil && retry.Generation == event.RuntimeGeneration {
+			same := result.TurnID != "" && retry.TurnID == result.TurnID
+			if event.Kind == "session_prompt_failed" {
+				var prompt protocol.SessionPromptEvent
+				_ = json.Unmarshal(event.Data, &prompt)
+				same = retry.PromptID != "" && retry.PromptID == prompt.RequestID
+			}
+			if event.Kind == "command_failed" {
+				same = retry.FailureCommandID != "" && retry.FailureCommandID == result.CommandID
+			}
+			if same {
+				if retry.State == "cancelled" || retry.State == "submitted" {
+					return nil
+				}
+				if retry.State == "waiting" {
+					revision = retry.ErrorRevision
+				}
+			}
+		}
+	}
 	raw, err := json.Marshal(struct {
-		TurnID   string `json:"turn_id"`
-		Message  string `json:"message"`
-		Code     string `json:"code"`
-		Revision string `json:"revision"`
-	}{result.TurnID, message, code, event.ID})
+		TurnID    string `json:"turn_id"`
+		Message   string `json:"message"`
+		Code      string `json:"code"`
+		Revision  string `json:"revision"`
+		CommandID string `json:"command_id,omitempty"`
+	}{result.TurnID, message, code, revision, result.CommandID})
 	if err != nil {
 		return err
 	}

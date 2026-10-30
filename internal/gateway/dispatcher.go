@@ -40,6 +40,7 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 	var lastSweep time.Time
+	var lastCapacityCheck time.Time
 	for ctx.Err() == nil {
 		if time.Since(lastSweep) >= 5*time.Second {
 			sweep, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -48,6 +49,18 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 			}
 			cancel()
 			lastSweep = time.Now()
+		}
+		if time.Since(lastCapacityCheck) >= time.Second {
+			if retries, ok := d.store.(interface {
+				QueueDueCapacityRetries(context.Context, time.Time) error
+			}); ok {
+				retryContext, cancel := context.WithTimeout(ctx, 5*time.Second)
+				if err := retries.QueueDueCapacityRetries(retryContext, time.Now().UTC()); err != nil && ctx.Err() == nil {
+					d.log.Warn("capacity retry dispatch failed", "error", err)
+				}
+				cancel()
+			}
+			lastCapacityCheck = time.Now()
 		}
 		d.flush(ctx)
 		select {

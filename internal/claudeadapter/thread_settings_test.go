@@ -65,7 +65,7 @@ func TestSessionSettingsOverrideWorkerDefaultsAndSurviveResume(t *testing.T) {
 	runTurn(t, r, thread.ID, "first")
 	r.server.mu.Lock()
 	first := r.server.runners[thread.ID]
-	status := r.server.threads[thread.ID].statusSnapshot(nil, nil)
+	status := r.server.threads[thread.ID].statusSnapshot(nil, nil, nil)
 	r.server.mu.Unlock()
 	if status.Model == nil || *status.Model != "sonnet" || status.ReasoningEffort == nil || *status.ReasoningEffort != "medium" {
 		t.Fatalf("worker default replaced session preference: %+v", status)

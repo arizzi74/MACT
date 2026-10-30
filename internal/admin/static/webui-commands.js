@@ -51,6 +51,7 @@
     command('quit', 'Disconnect this browser from the session', 'local', '', { aliases: ['exit'] }),
     command('help', 'Show available commands and keyboard shortcuts', 'local', '', { source: 'extension' }),
     command('reasoning', 'View or change the reasoning effort', 'local', '[effort]', { source: 'extension' }),
+    command('effort', 'Set the Claude Code effort level', 'local', '[auto|low|medium|high|xhigh|max]', { source: 'claude' }),
     command('approvals', 'View or change the approval policy', 'worker', '[untrusted|on-request|never]', { busy: false, source: 'extension' }),
     command('fast', 'View or change the service tier', 'worker', '[status|on|off]', { busy: false, source: 'extension' }),
     command('personality', 'View or change the response style', 'worker', '[friendly|pragmatic|none]', { busy: false, source: 'extension' }),

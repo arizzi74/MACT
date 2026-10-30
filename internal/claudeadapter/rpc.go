@@ -286,7 +286,7 @@ func (s *server) handle(peer *peer, msg rpcMessage, p params) (any, error) {
 		s.broadcastStatus(t)
 		return nil, nil
 	case "thread/status/read":
-		return map[string]any{"threadId": t.ID, "claudeStatus": t.statusSnapshot(s.balance, s.enterpriseBudget), "threadSettings": t.settingsSnapshot()}, nil
+		return map[string]any{"threadId": t.ID, "claudeStatus": s.statusSnapshot(t), "threadSettings": t.settingsSnapshot()}, nil
 	case "thread/name/set":
 		if len(p.Name) > 512 {
 			return nil, errors.New("Session name is too long")

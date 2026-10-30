@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/iaia/telegramgw/internal/claudeadapter"
 	"github.com/iaia/telegramgw/internal/codexadapter"
 	"github.com/iaia/telegramgw/internal/protocol"
 )
@@ -57,9 +58,9 @@ func (s *sessionActor) claudeModel(ctx context.Context, client *codexadapter.Cli
 		return "", err
 	}
 	if effort != "" {
-		return fmt.Sprintf("Model set to %s with %s reasoning.", model, effort), nil
+		return fmt.Sprintf("Model set to %s with %s effort.", model, claudeadapter.EffortLabel(effort)), nil
 	}
-	return "Model set to " + model + " with default reasoning.", nil
+	return "Model set to " + model + " with Auto effort (model default).", nil
 }
 
 func (s *sessionActor) claudeReasoning(ctx context.Context, client *codexadapter.Client, args string) (string, error) {
@@ -72,17 +73,17 @@ func (s *sessionActor) claudeReasoning(ctx context.Context, client *codexadapter
 		if status.ReasoningEffort != nil {
 			effort = valueOr(*status.ReasoningEffort, "default")
 		}
-		return "Reasoning effort: " + effort, nil
+		return "Effort: " + claudeadapter.EffortLabel(effort), nil
 	}
 	if len(strings.Fields(args)) != 1 {
-		return "", validationError("usage: /reasoning EFFORT")
+		return "", validationError("usage: /effort [auto|low|medium|high|xhigh|max]")
 	}
 	effort := args
-	if args == "default" {
+	if args == "default" || args == "auto" {
 		effort = ""
 	}
 	if !protocol.ValidClaudeReasoningEffort(effort) {
-		return "", validationError("invalid Claude reasoning effort %q", args)
+		return "", validationError("invalid Claude effort level %q", args)
 	}
 	if effort != "" {
 		models, err := client.ListModels(ctx)
@@ -110,7 +111,7 @@ func (s *sessionActor) claudeReasoning(ctx context.Context, client *codexadapter
 	if err := client.UpdateClaudeThreadSettings(ctx, s.session.ThreadID, nil, &effort, nil); err != nil {
 		return "", err
 	}
-	return "Reasoning effort set to " + valueOr(effort, "default") + ".", nil
+	return "Effort set to " + claudeadapter.EffortLabel(effort) + ".", nil
 }
 
 func (s *sessionActor) ensureClaudeSettingsIdle(ctx context.Context, client *codexadapter.Client) error {
@@ -149,6 +150,7 @@ func claudePermissionOptions(modes []string) []protocol.PermissionOption {
 			option.Label = "Bypass permissions"
 			option.Description = "Skip native permission checks. Requires confirmation."
 		}
+		option.Label = claudeadapter.PermissionLabel(mode)
 		result = append(result, option)
 	}
 	return result

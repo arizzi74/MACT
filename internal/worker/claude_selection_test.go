@@ -80,7 +80,7 @@ func TestClaudeReasoningUsesCurrentModelAdvertisementAndNativeReset(t *testing.T
 	installClaudeSelectionCatalog(t, server, actor.session.ThreadID)
 	client, _, _ := a.manager.Client(runtime.ID)
 	result, err := actor.executeCodexCommand(t.Context(), client, "reasoning", "")
-	if err != nil || result.Text != "Reasoning effort: high" {
+	if err != nil || result.Text != "Effort: High" {
 		t.Fatalf("current effort: %#v %v", result, err)
 	}
 	for _, args := range []string{"low", "default"} {

@@ -117,8 +117,9 @@ func TestClaudeProcessHelper(t *testing.T) {
 			var id string
 			_ = json.Unmarshal(msg["request_id"], &id)
 			var request struct {
-				Subtype string         `json:"subtype"`
-				Hooks   map[string]any `json:"hooks"`
+				Subtype       string         `json:"subtype"`
+				Hooks         map[string]any `json:"hooks"`
+				SkipBehaviors bool           `json:"skip_behaviors"`
 			}
 			_ = json.Unmarshal(msg["request"], &request)
 			if request.Subtype == "initialize" {
@@ -137,6 +138,22 @@ func TestClaudeProcessHelper(t *testing.T) {
 			if request.Subtype == "interrupt" {
 				send(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": id, "response": map[string]any{}}})
 				send(map[string]any{"type": "result", "subtype": "error_during_execution", "is_error": true})
+			}
+			if request.Subtype == "get_usage" {
+				if !probe || !request.SkipBehaviors {
+					os.Exit(98)
+				}
+				if os.Getenv("MACT_CLAUDE_HELPER_HANG_USAGE") == "1" {
+					continue
+				}
+				log(map[string]any{"usageProbe": true, "skipBehaviors": true})
+				if os.Getenv("MACT_CLAUDE_HELPER_USAGE_ERROR") == "1" {
+					send(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "error", "request_id": id, "error": "PRIVATE NATIVE USAGE FAILURE"}})
+					continue
+				}
+				var usage map[string]any
+				_ = json.Unmarshal([]byte(os.Getenv("MACT_CLAUDE_HELPER_USAGE")), &usage)
+				send(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": id, "response": usage}})
 			}
 		case "user":
 			if probe {

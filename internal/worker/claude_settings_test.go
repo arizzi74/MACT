@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -45,7 +46,7 @@ func TestClaudeWorkerProcessHelper(t *testing.T) {
 			os.Exit(0)
 		}
 	}
-	if path := os.Getenv("MACT_WORKER_CLAUDE_START_LOG"); path != "" {
+	if path := os.Getenv("MACT_WORKER_CLAUDE_START_LOG"); path != "" && !slices.Contains(os.Args, "--no-session-persistence") {
 		_ = os.WriteFile(path, []byte("started"), 0o600)
 	}
 	send := func(value any) { _ = json.NewEncoder(os.Stdout).Encode(value) }
