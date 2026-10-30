@@ -25,6 +25,11 @@ Click a worker's name or its arrow to collapse or expand its sessions. The worke
 heading and **＋** stay visible, and the browser remembers which workers you
 collapsed. Searching temporarily reveals matching sessions; clearing the search
 restores your collapsed groups.
+Collapsed workers use the same activity colours as their sessions: green for
+running work and yellow when an answer is needed. Waiting questions take
+priority. A small active-session count appears immediately before the total
+session count; running sessions and sessions awaiting an answer count once.
+During a search, both counts reflect the matching sessions.
 Revoked workers and their sessions are hidden; offline workers that are still
 enabled remain visible. Revocation updates the sidebar through the live feed.
 The dialog asks for the session name first and fills the working-directory path

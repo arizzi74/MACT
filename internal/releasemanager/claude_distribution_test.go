@@ -36,6 +36,8 @@ func claudeDistributionFixture(t *testing.T) (*Manager, string, string, string) 
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
 	t.Setenv("DISABLE_UPDATES", "")
 	t.Setenv("DISABLE_AUTOUPDATER", "")
+	t.Setenv("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "")
+	clearClaudeProviderRoutingFixture(t)
 	launcher := filepath.Join(home, ".local", "bin", "claude")
 	target := filepath.Join(home, ".local", "share", "claude", "versions", "2.1.310")
 	for _, path := range []string{filepath.Dir(launcher), filepath.Dir(target)} {
@@ -70,6 +72,8 @@ func claudeDistributionFixture(t *testing.T) (*Manager, string, string, string) 
 		t.Fatal(err)
 	}
 	m := New(nil)
+	sources := claudePolicySourcesFixture(t)
+	m.claudePolicySources = &sources
 	m.Run = func(_ context.Context, args ...string) (CommandResult, error) {
 		if !slices.Equal(args, []string{launcher, "--version"}) {
 			t.Fatalf("unexpected Claude distribution command: %v", args)
@@ -232,7 +236,12 @@ func TestClaudeDistributionRejectsUnsafeMetadataAndRedirects(t *testing.T) {
 }
 
 func TestClaudeDistributionStagesVerifiedBinaryPrivatelyWithoutChangingLauncher(t *testing.T) {
-	m, binary, _, target := claudeDistributionFixture(t)
+	m, binary, home, target := claudeDistributionFixture(t)
+	remotePath := filepath.Join(home, ".claude", "remote-settings.json")
+	credentialPath := filepath.Join(home, ".claude", ".credentials.json")
+	writeClaudePolicyFixture(t, remotePath, unrelatedClaudeRemotePolicy)
+	writeClaudePolicyFixture(t, credentialPath, `{"oauthToken":"credential-must-remain-private"}`)
+	before := snapshotClaudePolicyFiles(t, remotePath, credentialPath)
 	distribution, err := m.inspectClaudeDistribution(t.Context(), binary)
 	if err != nil {
 		t.Fatal(err)
@@ -285,6 +294,7 @@ func TestClaudeDistributionStagesVerifiedBinaryPrivatelyWithoutChangingLauncher(
 	if _, err := os.Stat(filepath.Join(distribution.VersionsDir, "2.1.312")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("stage published a native release: %v", err)
 	}
+	assertClaudePolicyFilesUnchanged(t, before)
 }
 
 func TestClaudeDistributionRejectsBadManifestAndBinaryAndCleansStage(t *testing.T) {
@@ -367,17 +377,17 @@ func TestClaudeDistributionPolicyHonorsChannelAndVersionBounds(t *testing.T) {
 	for _, input := range []struct{ settings, channel, minimum, maximum string }{
 		{`{}`, "latest", "", ""},
 		{`{"autoUpdatesChannel":"stable","minimumVersion":"2.1.310"}`, "stable", "2.1.310", ""},
-		{`{"minimumVersion":"2.1.310","requiredMinimumVersion":"2.1.311","requiredMaximumVersion":"2.1.312"}`, "latest", "2.1.311", "2.1.312"},
+		{`{"minimumVersion":"2.1.310","requiredMinimumVersion":"2.1.311","requiredMaximumVersion":"2.1.312"}`, "latest", "2.1.310", ""},
 	} {
 		t.Run(input.settings, func(t *testing.T) {
-			_, _, home, _ := claudeDistributionFixture(t)
+			m, _, home, _ := claudeDistributionFixture(t)
 			if err := os.Mkdir(filepath.Join(home, ".claude"), 0700); err != nil {
 				t.Fatal(err)
 			}
 			if err := os.WriteFile(filepath.Join(home, ".claude", "settings.json"), []byte(input.settings), 0600); err != nil {
 				t.Fatal(err)
 			}
-			policy, err := readClaudeUpdatePolicy(home)
+			policy, err := readClaudeUpdatePolicyWithSources(home, *m.claudePolicySources)
 			if err != nil || policy.Channel != input.channel || policy.MinimumVersion != input.minimum || policy.MaximumVersion != input.maximum {
 				t.Fatalf("policy=%+v, %v", policy, err)
 			}
@@ -386,21 +396,18 @@ func TestClaudeDistributionPolicyHonorsChannelAndVersionBounds(t *testing.T) {
 }
 
 func TestClaudeDistributionPolicyFailsClosed(t *testing.T) {
-	for _, kind := range []string{"malformed", "prerelease", "channel", "conflicting", "disabled", "remote-policy", "symlink-settings", "oversize", "custom-config"} {
+	for _, kind := range []string{"malformed", "prerelease", "channel", "disabled", "symlink-settings", "oversize", "custom-config"} {
 		t.Run(kind, func(t *testing.T) {
-			_, _, home, _ := claudeDistributionFixture(t)
+			m, _, home, _ := claudeDistributionFixture(t)
 			dir := filepath.Join(home, ".claude")
 			if err := os.Mkdir(dir, 0700); err != nil {
 				t.Fatal(err)
 			}
-			settings := map[string]string{"malformed": "secret-token", "prerelease": `{"minimumVersion":"2.1.312-beta.1"}`, "channel": `{"autoUpdatesChannel":"custom"}`, "conflicting": `{"minimumVersion":"2.1.312","requiredMaximumVersion":"2.1.310"}`, "disabled": `{"env":{"DISABLE_UPDATES":"1"}}`}[kind]
+			settings := map[string]string{"malformed": "secret-token", "prerelease": `{"minimumVersion":"2.1.312-beta.1"}`, "channel": `{"autoUpdatesChannel":"custom"}`, "disabled": `{"env":{"DISABLE_UPDATES":"1"}}`}[kind]
 			if settings == "" {
 				settings = `{}`
 			}
 			path := filepath.Join(dir, "settings.json")
-			if kind == "remote-policy" {
-				path = filepath.Join(dir, "remote-settings.json")
-			}
 			if kind == "oversize" {
 				settings = strings.Repeat("x", claudeMetadataLimit+1)
 			}
@@ -418,7 +425,7 @@ func TestClaudeDistributionPolicyFailsClosed(t *testing.T) {
 			if kind == "custom-config" {
 				t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
 			}
-			if _, err := readClaudeUpdatePolicy(home); err == nil || strings.Contains(err.Error(), "secret-token") {
+			if _, err := readClaudeUpdatePolicyWithSources(home, *m.claudePolicySources); err == nil || strings.Contains(err.Error(), "secret-token") {
 				t.Fatalf("unsafe policy=%v", err)
 			}
 		})
@@ -474,9 +481,9 @@ func TestClaudeDistributionNativePlatformPreservesArchitectureAndLibc(t *testing
 func TestClaudeDistributionPolicyHonorsDisabledEnvironmentWithoutSettings(t *testing.T) {
 	for _, key := range []string{"DISABLE_UPDATES", "DISABLE_AUTOUPDATER"} {
 		t.Run(key, func(t *testing.T) {
-			_, _, home, _ := claudeDistributionFixture(t)
+			m, _, home, _ := claudeDistributionFixture(t)
 			t.Setenv(key, "1")
-			if _, err := readClaudeUpdatePolicy(home); err == nil {
+			if _, err := readClaudeUpdatePolicyWithSources(home, *m.claudePolicySources); err == nil {
 				t.Fatal("ignored native update disable environment")
 			}
 		})

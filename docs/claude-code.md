@@ -307,6 +307,14 @@ installation lock; `--check` inspects versions without installing or changing
 update state. Supported native installations use Claude Code's official configured
 release channel. npm, package-manager, wrapper, custom or otherwise unrecognized
 installations remain externally managed and are reported without modification.
+JSON managed settings do not by themselves prevent updates. MACT reads the
+native user settings and cached remote/machine policies to evaluate release
+channel, version bounds and update-disable environment settings, respecting
+managed-source precedence. Unrelated model, tool and permission policies remain
+in place. The CLI still fetches and enforces its own fresh startup policy;
+`forceRemoteSettingsRefresh` is not treated as an update-disable switch.
+Unreadable or ambiguous policy, computed helpers, unsupported MDM sources and
+unverifiable provider routing still require administrator-controlled updates.
 Failed validation restores the previous launcher and withholds the rejected
 release. Runtime replacement preserves configuration, credentials, workspaces
 and native conversation data. Claude and Codex maintenance keep separate state,

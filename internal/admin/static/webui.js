@@ -570,6 +570,7 @@
   function updateSessionIndicators() {
     let pending = 0, running = 0;
     const buttons = new Map([...$('session-list').querySelectorAll('.session-button')].map(button => [button.dataset.sessionId, button]));
+    const groups = new Map([...$('session-list').querySelectorAll('.session-worker')].map(element => [element.dataset.workerId, { element, active: 0, kind: 'idle' }]));
     for (const session of state.sessions) {
       if (session.archived || session.deleted) continue;
       const current = sessionActivity(session);
@@ -577,6 +578,11 @@
       if (current.running) running++;
       const button = buttons.get(session.session_id);
       if (!button) continue;
+      const group = groups.get(session.worker_id);
+      if (group && current.kind !== 'idle') {
+        group.active++;
+        if (current.kind === 'question' || group.kind === 'idle') group.kind = current.kind;
+      }
       button.dataset.activity = current.kind;
       const offline = current.worker_connectivity && !['connected', 'online'].includes(current.worker_connectivity);
       const status = current.pending ? '? Answer requested' : offline ? '○ Worker ' + current.worker_connectivity : current.running ? '● Working' : '○ ' + (isRunning(current.state) ? 'idle' : current.state || 'Saved');
@@ -590,6 +596,15 @@
       }
       detail.classList.toggle('running', current.running && !current.pending && !offline);
       button.setAttribute('aria-label', title(session) + ' · ' + status);
+    }
+    for (const { element, active, kind } of groups.values()) {
+      const heading = element.querySelector('.session-group'), toggle = element.querySelector('.session-group-toggle');
+      const badge = element.querySelector('.session-group-active-count'), count = element.querySelector('.session-group-count');
+      const description = active + (active === 1 ? ' active session' : ' active sessions');
+      heading.dataset.activity = kind;
+      badge.textContent = String(active); badge.hidden = !active; badge.title = description;
+      const action = toggle.getAttribute('aria-expanded') === 'true' ? 'Collapse' : 'Expand';
+      toggle.setAttribute('aria-label', action + ' sessions for ' + element.querySelector('.worker-name').textContent + ' · ' + count.title + (active ? ' · ' + description : ''));
     }
     const menu = $('show-sessions');
     menu.dataset.activity = pending ? 'question' : running ? 'running' : 'idle';
@@ -1106,7 +1121,7 @@
     const list = $('session-list');
     const focusedWorker = list.contains(document.activeElement) ? document.activeElement.dataset.toggleWorkerId : '';
     list.replaceChildren();
-    const sessions = state.sessions.filter(session => !session.archived && sessionMatchesSearch(session, query));
+    const sessions = state.sessions.filter(session => !session.archived && !session.deleted && sessionMatchesSearch(session, query));
     // Workers are independent of session inventory: a fresh worker remains
     // visible and can create its first conversation.
     const workers = new Map(state.workers.map(worker => [worker.ID, worker]));
@@ -1128,12 +1143,14 @@
       const unavailable = workerCreationUnavailable(worker);
       if (unavailable) label.append(node('span', 'session-group-status', unavailable));
       const count = node('span', 'session-group-count', String(values.length)); count.setAttribute('aria-hidden', 'true');
-      toggle.append(arrow, label, count);
+      const activeCount = node('span', 'session-group-active-count'); activeCount.hidden = true; activeCount.setAttribute('aria-hidden', 'true');
+      toggle.append(arrow, label, activeCount, count);
       const searching = !!query && values.length > 0;
       let expanded;
       const updateGroup = () => {
         expanded = query && workerGroupSearchCollapsed.has(worker.ID) ? workerGroupSearchCollapsed.get(worker.ID) !== true : searching || workerGroupCollapsed.get(worker.ID) !== true || workerGroupReveals.has(worker.ID);
         body.hidden = !expanded;
+        heading.dataset.collapsed = String(!expanded);
         toggle.setAttribute('aria-expanded', String(expanded));
         const action = expanded ? 'Collapse' : 'Expand';
         const description = values.length + (searching ? ' matching' : '') + (values.length === 1 ? ' session' : ' sessions');
@@ -1149,6 +1166,7 @@
           try { localStorage.setItem(workerGroupPreferenceKey, JSON.stringify(Object.fromEntries(workerGroupCollapsed))); } catch (_) { /* Optional preference only. */ }
         }
         updateGroup();
+        updateSessionIndicators();
       });
       const create = node('button', 'session-create'); create.type = 'button'; create.dataset.createWorkerId = worker.ID;
       create.setAttribute('aria-label', 'New session on ' + (worker.Name || worker.ID)); create.setAttribute('aria-haspopup', 'dialog'); create.setAttribute('aria-controls', 'new-session-dialog');

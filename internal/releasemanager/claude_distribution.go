@@ -138,98 +138,6 @@ func claudeOwnedPath(path string, directory bool) bool {
 	return codexOwnedPath(path, directory)
 }
 
-type claudeUpdatePolicy struct {
-	Channel, MinimumVersion, MaximumVersion string
-}
-
-func readClaudeUpdatePolicy(home string) (claudeUpdatePolicy, error) {
-	policy := claudeUpdatePolicy{Channel: "latest"}
-	if !filepath.IsAbs(home) {
-		return policy, errors.New("cannot inspect Claude runtime update policy without an absolute home directory")
-	}
-	for _, key := range []string{"DISABLE_UPDATES", "DISABLE_AUTOUPDATER"} {
-		if os.Getenv(key) == "1" {
-			return policy, errors.New("Claude runtime updates are disabled by native settings")
-		}
-	}
-	if config := os.Getenv("CLAUDE_CONFIG_DIR"); config != "" && filepath.Clean(config) != filepath.Join(home, ".claude") {
-		return policy, errors.New("custom Claude configuration directories require manual runtime updates")
-	}
-	settingsDir := filepath.Join(home, ".claude")
-	if _, err := os.Lstat(settingsDir); !errors.Is(err, os.ErrNotExist) && (err != nil || !claudeOwnedPath(settingsDir, true)) {
-		return policy, errors.New("cannot safely inspect Claude runtime update settings")
-	}
-	managedRoot := "/etc/claude-code"
-	if runtime.GOOS == "darwin" {
-		managedRoot = "/Library/Application Support/ClaudeCode"
-	}
-	// Native CLI policy can include remote, helper, drop-in and MDM precedence.
-	// Leave those installations to their administrator rather than approximating
-	// a policy or loading account credentials to refresh it.
-	managedPaths := []string{filepath.Join(managedRoot, "managed-settings.json"), filepath.Join(managedRoot, "managed-settings.d"), filepath.Join(managedRoot, "managed-mcp.json"), filepath.Join(home, ".claude", "remote-settings.json")}
-	if runtime.GOOS == "darwin" {
-		managedPaths = append(managedPaths, "/Library/Managed Preferences/com.anthropic.claudecode.plist", filepath.Join("/Library/Managed Preferences", filepath.Base(home), "com.anthropic.claudecode.plist"))
-	}
-	for _, path := range managedPaths {
-		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
-			return policy, errors.New("managed Claude settings require administrator-controlled runtime updates")
-		}
-	}
-	settingsPath := filepath.Join(settingsDir, "settings.json")
-	if _, err := os.Lstat(settingsPath); errors.Is(err, os.ErrNotExist) {
-		return policy, nil
-	} else if err != nil || !claudeOwnedPath(settingsDir, true) || !claudeOwnedPath(settingsPath, false) {
-		return policy, errors.New("cannot safely inspect Claude runtime update settings")
-	}
-	file, err := os.Open(settingsPath)
-	if err != nil {
-		return policy, errors.New("cannot read Claude runtime update settings")
-	}
-	defer file.Close()
-	data, err := io.ReadAll(io.LimitReader(file, claudeMetadataLimit+1))
-	var settings struct {
-		Channel         string            `json:"autoUpdatesChannel"`
-		Minimum         string            `json:"minimumVersion"`
-		RequiredMinimum string            `json:"requiredMinimumVersion"`
-		Maximum         string            `json:"requiredMaximumVersion"`
-		Env             map[string]string `json:"env"`
-	}
-	if err != nil || len(data) > claudeMetadataLimit || !bytes.HasPrefix(bytes.TrimSpace(data), []byte("{")) || json.Unmarshal(data, &settings) != nil {
-		return policy, errors.New("invalid Claude runtime update settings")
-	}
-	if settings.Channel != "" {
-		if settings.Channel != "stable" && settings.Channel != "latest" {
-			return policy, errors.New("unsupported Claude runtime update channel")
-		}
-		policy.Channel = settings.Channel
-	}
-	for _, key := range []string{"DISABLE_UPDATES", "DISABLE_AUTOUPDATER"} {
-		if os.Getenv(key) == "1" || settings.Env[key] == "1" {
-			return policy, errors.New("Claude runtime updates are disabled by native settings")
-		}
-	}
-	for _, version := range []string{settings.Minimum, settings.RequiredMinimum, settings.Maximum} {
-		if version != "" {
-			if parsed, err := parseClaudeVersion(version); err != nil || parsed != version {
-				return policy, errors.New("invalid Claude runtime version policy")
-			}
-		}
-	}
-	policy.MinimumVersion = settings.Minimum
-	if settings.RequiredMinimum != "" {
-		if comparison, _ := CompareVersions(settings.RequiredMinimum, policy.MinimumVersion); policy.MinimumVersion == "" || comparison > 0 {
-			policy.MinimumVersion = settings.RequiredMinimum
-		}
-	}
-	policy.MaximumVersion = settings.Maximum
-	if policy.MinimumVersion != "" && policy.MaximumVersion != "" {
-		if comparison, _ := CompareVersions(policy.MinimumVersion, policy.MaximumVersion); comparison > 0 {
-			return policy, errors.New("conflicting Claude runtime version policy")
-		}
-	}
-	return policy, nil
-}
-
 func claudeOwnedLink(path string) bool {
 	info, err := os.Lstat(path)
 	if err != nil || info.Mode()&os.ModeSymlink == 0 {
@@ -247,7 +155,7 @@ func (m *Manager) inspectClaudeDistribution(ctx context.Context, executable stri
 		return nil, ErrClaudeDistributionUnsupported
 	}
 	home = filepath.Clean(home)
-	policy, err := readClaudeUpdatePolicy(home)
+	policy, err := m.readClaudeUpdatePolicy(home)
 	if err != nil {
 		return nil, err
 	}

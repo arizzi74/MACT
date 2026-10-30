@@ -47,7 +47,7 @@ func (m *Manager) requestedClaudeDiscovery(ctx context.Context, l *Layout, plan 
 			return
 		}
 	}
-	policy, err := readClaudeUpdatePolicy(l.Home)
+	policy, err := m.readClaudeUpdatePolicy(l.Home)
 	latest := ""
 	if err == nil {
 		report.Channel = policy.Channel
@@ -94,7 +94,7 @@ func (m *Manager) requestedClaudeMaintenance(ctx context.Context, l *Layout, pla
 		report.State = "unsupported"
 		return result, nil
 	}
-	policy, policyErr := readClaudeUpdatePolicy(l.Home)
+	policy, policyErr := m.readClaudeUpdatePolicy(l.Home)
 	if policyErr != nil || report.Channel == "" || report.Channel != policy.Channel {
 		report.State, report.ErrorCode = "failed", "inspection_failed"
 		return result, nil
@@ -269,7 +269,7 @@ func (m *Manager) requestedClaudeWorkerStep(ctx context.Context, l *Layout, plan
 	journal, recoveryErr := loadClaudeRecovery(l)
 	if recoveryErr == nil && journal != nil {
 		override := plan.claudeReport.LatestVersion
-		policy, policyErr := readClaudeUpdatePolicy(l.Home)
+		policy, policyErr := m.readClaudeUpdatePolicy(l.Home)
 		if policyErr != nil || policy.Channel != plan.claudeReport.Channel {
 			override = ""
 		}

@@ -41,6 +41,7 @@ type Manager struct {
 	codexPreflight       func(context.Context, *codexDistribution) error
 	claudePreflight      func(context.Context, *claudeDistribution) error
 	claudeVerifyManifest func(manifest, signature []byte) error
+	claudePolicySources  *claudeUpdatePolicySources
 	abortWorkerUpdate    func(context.Context, *Layout, string) error
 }
 

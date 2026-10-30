@@ -166,7 +166,7 @@ func (m *Manager) updateClaudeRuntime(ctx context.Context, l *Layout, check bool
 	if err != nil {
 		return err
 	}
-	policy, err := readClaudeUpdatePolicy(l.Home)
+	policy, err := m.readClaudeUpdatePolicy(l.Home)
 	if err != nil {
 		return err
 	}
