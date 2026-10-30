@@ -15,6 +15,73 @@ import (
 
 func settingsString(value string) *string { return &value }
 
+func TestNativeDisabledPermissionModeDoesNotSaveOrRetireCurrentSession(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Env = append(cfg.Env, "MACT_CLAUDE_HELPER_DISABLE_BYPASS=1")
+	r := startTest(t, cfg)
+	thread := startThread(t, r)
+	runTurn(t, r, thread.ID, "original turn")
+	r.server.mu.Lock()
+	before := r.server.runners[thread.ID]
+	original, _ := json.Marshal(r.server.threads[thread.ID])
+	r.server.mu.Unlock()
+	err := r.UpdateClaudeThreadSettings(context.Background(), thread.ID, nil, nil, settingsString("bypassPermissions"))
+	if err == nil || !strings.Contains(err.Error(), "disabled by settings or organization policy") || strings.Contains(err.Error(), "PRIVATE") {
+		t.Fatalf("native permission rejection was lost or leaked: %v", err)
+	}
+	r.server.mu.Lock()
+	after, _ := json.Marshal(r.server.threads[thread.ID])
+	unchangedProcess := r.server.runners[thread.ID] == before
+	r.server.mu.Unlock()
+	if string(after) != string(original) || !unchangedProcess {
+		t.Fatal("rejected permission mode changed saved settings or retired the idle process")
+	}
+	runTurn(t, r, thread.ID, "same permissions")
+	log, err := os.ReadFile(filepath.Join(cfg.WorkingDirectory, "actions.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(log), `"permissionProbe":true`) || strings.Contains(string(log), `"user":"bypassPermissions"`) {
+		t.Fatalf("permission validation did not use a metadata-only control: %s", log)
+	}
+}
+
+func TestNativePermissionFallbackStopsBeforeSubmittingPrompt(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Env = append(cfg.Env, "MACT_CLAUDE_HELPER_EFFECTIVE_PERMISSION=default")
+	cfg.LoadSettings = func() (LaunchSettings, error) {
+		return LaunchSettings{PermissionMode: "bypassPermissions"}, nil
+	}
+	r := startTest(t, cfg)
+	thread := startThread(t, r)
+	if _, err := r.StartTurn(context.Background(), thread.ID, "must not be submitted under default permissions"); err != nil {
+		t.Fatal(err)
+	}
+	event := awaitEvent(t, r, "turn_failed")
+	var completed struct {
+		Turn struct {
+			Status string `json:"status"`
+			Error  struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		} `json:"turn"`
+	}
+	if json.Unmarshal(event.Params, &completed) != nil || completed.Turn.Status != "failed" || !strings.Contains(completed.Turn.Error.Message, "requested permission mode") {
+		t.Fatalf("native permission fallback was silent: %s", event.Params)
+	}
+	log, err := os.ReadFile(filepath.Join(cfg.WorkingDirectory, "actions.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(log), `"user":`) {
+		t.Fatalf("prompt was submitted under rejected permissions: %s", log)
+	}
+	status := readStatus(t, r, thread.ID)
+	if status.PermissionMode == nil || *status.PermissionMode != "default" {
+		t.Fatal("effective native permissions were hidden")
+	}
+}
+
 func TestNativeCatalogProbeAdvertisesExactCapabilitiesWithoutTurns(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.LoadSettings = func() (LaunchSettings, error) {

@@ -124,6 +124,7 @@ func TestClaudeProcessHelper(t *testing.T) {
 				Subtype       string         `json:"subtype"`
 				Hooks         map[string]any `json:"hooks"`
 				SkipBehaviors bool           `json:"skip_behaviors"`
+				Mode          string         `json:"mode"`
 			}
 			_ = json.Unmarshal(msg["request"], &request)
 			if request.Subtype == "initialize" {
@@ -136,6 +137,9 @@ func TestClaudeProcessHelper(t *testing.T) {
 				catalog := map[string]any{}
 				if os.Getenv("MACT_CLAUDE_HELPER_NO_CAPABILITIES") != "1" {
 					_ = json.Unmarshal([]byte(`{"models":[{"value":"default","resolvedModel":"claude-sonnet-4-6","displayName":"Default","supportedEffortLevels":["low","medium","high","max"]},{"value":"sonnet","resolvedModel":"claude-sonnet-4-6","displayName":"Sonnet","supportsEffort":true,"supportedEffortLevels":["low","medium","high","max"]},{"value":"opus","resolvedModel":"claude-opus-4-7","displayName":"Opus","supportsEffort":true,"supportedEffortLevels":["low","medium","high","xhigh","max"]},{"value":"haiku","displayName":"Haiku"}]}`), &catalog)
+				}
+				if effective := os.Getenv("MACT_CLAUDE_HELPER_EFFECTIVE_PERMISSION"); effective != "" && !probe {
+					catalog["current_permission_mode"] = effective
 				}
 				send(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": id, "response": catalog}})
 			}
@@ -158,6 +162,17 @@ func TestClaudeProcessHelper(t *testing.T) {
 				var usage map[string]any
 				_ = json.Unmarshal([]byte(os.Getenv("MACT_CLAUDE_HELPER_USAGE")), &usage)
 				send(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": id, "response": usage}})
+			}
+			if request.Subtype == "set_permission_mode" {
+				if !probe || request.Mode == "bypassPermissions" && !allowBypass {
+					os.Exit(97)
+				}
+				log(map[string]any{"permissionProbe": true, "mode": request.Mode})
+				if os.Getenv("MACT_CLAUDE_HELPER_DISABLE_BYPASS") == "1" && request.Mode == "bypassPermissions" {
+					send(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "error", "request_id": id, "error": "PRIVATE native settings disable bypass permissions"}})
+				} else {
+					send(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": id, "response": map[string]any{}}})
+				}
 			}
 		case "user":
 			if probe {

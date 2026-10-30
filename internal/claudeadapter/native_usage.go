@@ -39,6 +39,7 @@ type UsageSpend struct {
 }
 
 var errNativeUsageUnavailable = errors.New("Claude Code usage is unavailable")
+var errNativePermissionUnavailable = errors.New("Claude Code did not confirm the requested permission mode; it may be disabled by settings or organization policy. Existing session settings were kept")
 
 // ReadNativeUsage uses an isolated, non-persistent CLI process. A timeout or
 // unsupported experimental control can never stop a user's running turn.
@@ -210,10 +211,10 @@ func decodeNativeUsage(raw json.RawMessage, now time.Time) (*NativeUsage, error)
 	return usage, nil
 }
 
-// metadataProbe sends only initialize and (optionally) get_usage controls.
+// metadataProbe sends only initialize, get_usage, or a permission-mode check.
 // Administrator positional Args are excluded so this cannot submit a prompt.
 // skip_behaviors avoids Claude's scan of the last seven days of transcripts.
-func (s *server) metadataProbe(parent context.Context, settings LaunchSettings, usage bool) (json.RawMessage, json.RawMessage, error) {
+func (s *server) metadataProbe(parent context.Context, settings LaunchSettings, usage bool, permission ...string) (json.RawMessage, json.RawMessage, error) {
 	if parent == nil {
 		parent = context.Background()
 	}
@@ -228,6 +229,21 @@ func (s *server) metadataProbe(parent context.Context, settings LaunchSettings, 
 		return nil, nil, errNativeUsageUnavailable
 	}
 	args := []string{"--print", "--verbose", "--input-format=stream-json", "--output-format=stream-json", "--permission-prompt-tool=stdio", "--no-session-persistence", "--session-id=" + uuid.NewString()}
+	mode := ""
+	if len(permission) != 0 {
+		mode = permission[0]
+		if !permissionMode(mode) {
+			return nil, nil, errNativePermissionUnavailable
+		}
+		if mode == "bypassPermissions" {
+			// Make the mode available to the native control without activating
+			// it or bypassing any organization policy. No user query is sent.
+			args = append(args, "--allow-dangerously-skip-permissions")
+		}
+		if settings.Model != "" {
+			args = append(args, "--model="+settings.Model)
+		}
+	}
 	if settings.SettingsFile != "" {
 		args = append(args, "--settings="+settings.SettingsFile)
 	}
@@ -277,11 +293,17 @@ func (s *server) metadataProbe(parent context.Context, settings LaunchSettings, 
 	if usage {
 		requests = append(requests, map[string]any{"subtype": "get_usage", "skip_behaviors": true})
 	}
+	if mode != "" {
+		requests = append(requests, map[string]any{"subtype": "set_permission_mode", "mode": mode})
+	}
 	var initialized, report json.RawMessage
 	for index, request := range requests {
 		id := "telegramgw-capabilities"
 		if index > 0 {
 			id = "mact-native-usage"
+			if request["subtype"] == "set_permission_mode" {
+				id = "mact-native-permission"
+			}
 		}
 		written := make(chan error, 1)
 		go func() {
@@ -305,6 +327,9 @@ func (s *server) metadataProbe(parent context.Context, settings LaunchSettings, 
 					continue
 				}
 				if reply.Subtype != "success" {
+					if request["subtype"] == "set_permission_mode" {
+						return nil, nil, errNativePermissionUnavailable
+					}
 					return nil, nil, errNativeUsageUnavailable
 				}
 				if index == 0 {

@@ -131,7 +131,7 @@
     claudeStatus = {
       model: statusText(value.model), modelDisplayName: statusText(value.modelDisplayName), usage: nativeClaudeUsage(value.usage), reasoningEffort: typeof value.reasoningEffort === 'string' ? statusText(value.reasoningEffort) : null, permissionMode: statusText(value.permissionMode),
       context: { usedTokens: statusNumber(value.context?.usedTokens), maxTokens: statusNumber(value.context?.maxTokens) },
-      cost: { sessionUSD: statusNumber(value.cost?.sessionUSD), lastTurnUSD: statusNumber(value.cost?.lastTurnUSD) },
+      cost: { sessionUSD: statusNumber(value.cost?.sessionUSD), lastTurnUSD: statusNumber(value.cost?.lastTurnUSD), knownSessionUSD: statusNumber(value.cost?.knownSessionUSD), incomplete: value.cost?.incomplete === true },
       balance: balance && ['USD', 'credits'].includes(balance.unit) && statusNumber(balance.remaining) !== null
         ? { remaining: balance.remaining, unit: balance.unit, observedAt: statusNumber(balance.observedAt) } : null,
       enterpriseBudget: budget && budget.currency === 'USD' && budget.period === 'monthly' && statusNumber(budget.spent) !== null &&
@@ -170,7 +170,9 @@
     const contextDescription = used !== null ? 'Reported context: ' + used.toLocaleString('en-US') + ' tokens' + (maximum > 0 ? ' of ' + maximum.toLocaleString('en-US') + '.' : '; context window size unavailable.') : 'Claude Code has not reported the current context usage.';
     statusField('usage', context, contextDescription);
     const cost = status?.cost.sessionUSD ?? null, last = status?.cost.lastTurnUSD ?? null;
-    statusField('claude-cost', cost !== null ? 'Session ' + usd(cost) : 'Session —', cost !== null
+    const partial = status?.cost.incomplete === true, known = partial ? statusNumber(status.cost.knownSessionUSD) : null;
+    statusField('claude-cost', partial ? known !== null ? 'Session ≥' + usd(known) + ' (partial)' : 'Session incomplete' : cost !== null ? 'Session ' + usd(cost) : 'Session —', partial
+      ? 'Claude Code reset or lost part of its cumulative accounting. ' + (known !== null ? 'At least ' + exactUSD(known) + ' USD was previously reported for this session. ' : '') + 'A complete session total and last-turn cost are unavailable; this is separate from the account spending allowance.' : cost !== null
       ? 'Claude Code reported cumulative session consumption: ' + exactUSD(cost) + ' USD. Provider billing can differ.' + (last !== null ? ' Last reported turn: ' + exactUSD(last) + ' USD.' : '')
       : 'Claude Code has not reported this session’s consumption in USD.');
     const balance = status?.balance;
@@ -181,10 +183,10 @@
     const nativeUsage = status?.usage, nativeSpend = nativeUsage?.apiSpend;
     const budget = nativeSpend || status?.enterpriseBudget;
     const budgetObserved = (nativeSpend ? nativeUsage.observedAt : budget?.observedAt) > 0 ? timestamp(nativeSpend ? nativeUsage.observedAt : budget.observedAt) : null;
-    let budgetText = 'API spend —', budgetDescription = 'Claude Code has not reported the account’s spending allowance. Session cost does not establish a remaining allowance.';
+    let budgetText = status ? 'API spend unavailable' : 'API spend —', budgetDescription = 'Claude Code has not reported the account’s spending allowance. A usage refresh can fail or return no budget; MACT retries automatically and does not substitute a zero balance or infer it from session cost.';
     if (nativeSpend) {
       budgetText = nativeSpend.remaining !== null ? 'API spend ' + usd(nativeSpend.remaining) + ' / ' + usd(nativeSpend.limit) + ' left'
-        : nativeSpend.spent !== null ? 'API spend ' + usd(nativeSpend.spent) + ' spent' : 'API spend —';
+        : nativeSpend.spent !== null ? 'API spend ' + usd(nativeSpend.spent) + ' spent' : 'API spend unavailable';
       budgetDescription = 'Claude Code /usage · Monthly API spend. ' + (nativeSpend.limit !== null ? 'Limit: ' + exactUSD(nativeSpend.limit) + '. ' : 'Limit not reported. ')
         + (nativeSpend.spent !== null ? 'Spent: ' + exactUSD(nativeSpend.spent) + '. ' : '') + (nativeSpend.remaining !== null ? 'Remaining: ' + exactUSD(nativeSpend.remaining) + '. ' : '')
         + (!nativeSpend.enabled ? 'Extra usage is disabled. ' : '');

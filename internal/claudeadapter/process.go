@@ -152,6 +152,24 @@ func (s *server) startProcess(thread *savedThread) (*process, error) {
 			s.mu.Lock()
 			if !s.closed && s.runners[thread.ID] == p {
 				s.observeCapabilities(initialized)
+				var native struct {
+					PermissionMode string `json:"current_permission_mode"`
+				}
+				if json.Unmarshal(initialized, &native) == nil {
+					if native.PermissionMode == "manual" {
+						native.PermissionMode = "default"
+					}
+					if permissionMode(native.PermissionMode) {
+						thread.ensureStatus().PermissionMode = optionalString(native.PermissionMode)
+						p.publishStatus(thread)
+						if settings.PermissionMode != "" && settings.PermissionMode != native.PermissionMode {
+							p.initErr = errors.New("Claude Code did not accept the requested permission mode; native settings or organization policy may disable it. Choose an allowed mode before retrying")
+							// Initialization is local control traffic. Stop here,
+							// before submitting a model prompt under another mode.
+							p.finish(thread, "failed", p.initErr.Error())
+						}
+					}
+				}
 			}
 			s.mu.Unlock()
 		}

@@ -911,7 +911,7 @@ func applyApproval(ctx context.Context, tx *dbTx, workerID, runtimeID, sessionID
 	if ct.RowsAffected() == 0 {
 		return ErrEventTarget
 	}
-	return nil
+	return enqueueResolvedApprovalCleanup(ctx, tx, id, "", 0, 0)
 }
 
 func enqueueEventDeliveries(ctx context.Context, tx *dbTx, eventID uuid.UUID, event protocol.Event, sessionID, runtimeID, commandID *uuid.UUID) error {

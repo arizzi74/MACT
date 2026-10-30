@@ -14,6 +14,8 @@ func TestClaudeStatusKeepsUnknownDifferentFromZero(t *testing.T) {
 		{`{"cost":{"sessionUSD":0},"balance":{"remaining":0,"unit":"USD","observedAt":1770000000}}`, "Account credit remaining: $0.0000", "Weekly"},
 		{`{"context":{"usedTokens":25000,"maxTokens":100000},"cost":{"sessionUSD":0.125}}`, "Context: 25,000 / 100,000 tokens (25% used)", "Rate limits"},
 		{`{"cost":{"sessionUSD":-1}}`, "Session cost: unavailable", "$-1"},
+		{`{"cost":{"sessionUSD":null,"knownSessionUSD":0.75,"incomplete":true}}`, "Session cost: at least $0.750000 (incomplete native accounting)", "Session cost: $0.750000"},
+		{`{"cost":{"sessionUSD":100,"incomplete":true}}`, "Session cost: incomplete", "$100.000000"},
 	} {
 		var status codexadapter.ClaudeSessionStatus
 		if err := json.Unmarshal([]byte(test.wire), &status); err != nil {

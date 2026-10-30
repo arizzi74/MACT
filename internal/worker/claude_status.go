@@ -38,7 +38,15 @@ func claudeStatusLines(status codexadapter.ClaudeSessionStatus) []string {
 		}
 		return fmt.Sprintf("$%.6f", *value)
 	}
-	lines = append(lines, "Session cost: "+cost(status.Cost.SessionUSD), "Last turn cost: "+cost(status.Cost.LastTurnUSD))
+	if status.Cost.Incomplete {
+		line := "Session cost: incomplete (native accounting reset)"
+		if known := status.Cost.KnownSessionUSD; known != nil && validClaudeKnownCost(*known) {
+			line = fmt.Sprintf("Session cost: at least $%.6f (incomplete native accounting)", *known)
+		}
+		lines = append(lines, line, "Last turn cost: unavailable (incomplete native accounting)")
+	} else {
+		lines = append(lines, "Session cost: "+cost(status.Cost.SessionUSD), "Last turn cost: "+cost(status.Cost.LastTurnUSD))
+	}
 	lines = append(lines, claudeNativeUsageLines(status.Usage)...)
 	if balance := status.Balance; balance != nil && (balance.Unit == "USD" || balance.Unit == "credits") && balance.Remaining >= 0 && !math.IsNaN(balance.Remaining) && !math.IsInf(balance.Remaining, 0) {
 		value := fmt.Sprintf("%.4f credits", balance.Remaining)
@@ -63,6 +71,10 @@ func claudeStatusLines(status codexadapter.ClaudeSessionStatus) []string {
 		}
 	}
 	return lines
+}
+
+func validClaudeKnownCost(value float64) bool {
+	return value >= 0 && !math.IsNaN(value) && !math.IsInf(value, 0)
 }
 
 func claudeAuthenticationLabel(value string) string {

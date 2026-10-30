@@ -31,6 +31,9 @@ type ContextUsage struct {
 type ReportedCost struct {
 	SessionUSD  *float64 `json:"sessionUSD"`
 	LastTurnUSD *float64 `json:"lastTurnUSD"`
+	// Only snapshots expose this lower bound when a native accounting reset
+	// prevents presenting a complete session total.
+	KnownSessionUSD *float64 `json:"knownSessionUSD,omitempty"`
 	// Incomplete survives restarts after a native accounting reset or a
 	// zeroed crash report. The saved SessionUSD then retains only internal
 	// high-water evidence; snapshots must not present it as a current total.
@@ -111,7 +114,9 @@ func (t *savedThread) statusSnapshot(balance *CreditBalance, budget *EnterpriseB
 	copy.Usage = cloneNativeUsage(usage)
 	copy.Balance = cloneBalance(balance)
 	copy.EnterpriseBudget = cloneEnterpriseBudget(budget)
+	copy.Cost.KnownSessionUSD = nil
 	if copy.Cost.Incomplete {
+		copy.Cost.KnownSessionUSD = copy.Cost.SessionUSD
 		copy.Cost.SessionUSD = nil
 		copy.Cost.LastTurnUSD = nil
 	}
@@ -329,6 +334,7 @@ func (p *process) observeResult(t *savedThread, raw json.RawMessage, subtype str
 
 func sanitizeSavedStatus(t *savedThread) {
 	status := t.ensureStatus()
+	status.Cost.KnownSessionUSD = nil // Derived from validated accounting evidence.
 	status.Provider = "claude"
 	status.Balance = nil
 	status.EnterpriseBudget = nil

@@ -18,8 +18,10 @@ type ClaudeSessionStatus struct {
 		MaxTokens  *int64 `json:"maxTokens"`
 	} `json:"context"`
 	Cost struct {
-		SessionUSD  *float64 `json:"sessionUSD"`
-		LastTurnUSD *float64 `json:"lastTurnUSD"`
+		SessionUSD      *float64 `json:"sessionUSD"`
+		LastTurnUSD     *float64 `json:"lastTurnUSD"`
+		KnownSessionUSD *float64 `json:"knownSessionUSD,omitempty"`
+		Incomplete      bool     `json:"incomplete,omitempty"`
 	} `json:"cost"`
 	EnterpriseBudget *ClaudeEnterpriseBudget `json:"enterpriseBudget,omitempty"`
 	Usage            *ClaudeNativeUsage      `json:"usage,omitempty"`

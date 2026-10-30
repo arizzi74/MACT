@@ -130,7 +130,11 @@ resumes the same native conversation with the selected settings. A new session
 uses the worker defaults.
 
 The permissions menu describes Claude's native modes. Bypass permissions
-requires a separate confirmation. Plan mode limits Claude's workflow; it is
+requires a separate confirmation. MACT verifies a non-default mode with an
+isolated native control before saving it; modes disabled by Claude settings or
+organization policy return an error and preserve the existing session settings.
+If native startup reports a different mode from the requested one, the turn
+stops with an explanation before submitting a model prompt. Plan mode limits Claude's workflow; it is
 not a filesystem sandbox. The worker service and OS account continue to define
 which files, commands, and sudo privileges are actually available.
 
@@ -247,8 +251,10 @@ endpoints can bill at different rates. Session cost is retained across worker
 restarts, and cumulative CLI totals are not added repeatedly. Historical costs
 that were never reported to MACT remain unavailable until the native CLI
 reports them; a crashed process can leave unreported spending unknown.
-If a native counter resets below its saved total, MACT marks session cost as
-unavailable instead of presenting the old subtotal as current spending.
+If a native counter resets below its saved total, MACT marks the accounting as
+incomplete. A known subtotal appears as **Session ≥$… (partial)** with an
+explanation; a complete total and last-turn cost remain unavailable. This
+qualification survives restarts and never becomes an account balance.
 
 For an existing Claude Code account on the default endpoint, the worker reads
 Claude Code’s structured `/usage` control automatically on startup and about
@@ -259,8 +265,9 @@ This read uses the native login; no Enterprise Admin API key is required.
 
 The query runs in an isolated, non-persistent CLI process and sends no model
 prompt. It requests `skip_behaviors` to avoid scanning local transcripts. A
-failed or unsupported usage query clears the last observation without stopping
-an active conversation. Native API spend amounts are currency minor units; MACT
+failed or unsupported usage query clears the last observation and shows
+**API spend unavailable** without stopping an active conversation. The next
+scheduled read retries it. Native API spend amounts are currency minor units; MACT
 converts explicit USD to dollars. Missing amounts or currencies stay unknown,
 and a missing limit is not presented as unlimited. Dollar allowances are kept
 separate from estimated session cost and provider credit balances. The native

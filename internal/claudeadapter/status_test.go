@@ -210,6 +210,16 @@ func TestClaudeStatusDetectsSuccessfulNativeCostResetWithoutPriorCrash(t *testin
 	if status.Cost.SessionUSD != nil || status.Cost.LastTurnUSD != nil || !status.Cost.Incomplete {
 		t.Fatal("a successful lower native total exposed a stale session cost")
 	}
+	wantNumber(t, status.Cost.KnownSessionUSD, .75)
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	r = startTest(t, r.server.cfg)
+	restored := readStatus(t, r, thread.ID)
+	wantNumber(t, restored.Cost.KnownSessionUSD, .75)
+	if restored.Cost.SessionUSD != nil || !restored.Cost.Incomplete {
+		t.Fatal("partial accounting became an exact cost after restart")
+	}
 }
 
 func TestClaudeStatusBalanceIsClonedEphemeralAndFencedBySettings(t *testing.T) {

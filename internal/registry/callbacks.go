@@ -531,6 +531,10 @@ func (s *Store) recordBotMessageRoute(ctx context.Context, botID string, chatID,
 		if err := enqueueQuestionAnswerEdits(ctx, tx, approvalID, botID, chatID, messageID); err != nil {
 			return err
 		}
+	} else if approvalID != uuid.Nil {
+		if err := enqueueResolvedApprovalCleanup(ctx, tx, approvalID, botID, chatID, messageID); err != nil {
+			return err
+		}
 	}
 	return tx.Commit(ctx)
 }

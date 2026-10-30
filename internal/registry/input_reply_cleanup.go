@@ -9,8 +9,9 @@ import (
 	"github.com/google/uuid"
 )
 
-// InputReplyCleanup deletes the temporary composer helper, not the original
-// question or the user's answer. Ordinary delivery leases make deletion durable.
+// InputReplyCleanup deletes a temporary composer helper or a resolved tool
+// approval card. Original user-input questions and answers remain intact.
+// Ordinary delivery leases make deletion durable.
 type InputReplyCleanup struct {
 	MessageID int64 `json:"message_id"`
 }
@@ -128,6 +129,8 @@ func reconcileInputReplyHelper(ctx context.Context, tx *dbTx, id uuid.UUID) erro
 }
 
 func enqueueInputReplyCleanup(ctx context.Context, tx *dbTx, bot string, chat, topic, message int64) error {
+	// The same deletion checkpoint also retires resolved tool-approval cards.
+	// Its idempotency key is the frozen bot/chat/message, independent of kind.
 	key, err := json.Marshal([]any{"input_reply_cleanup", bot, chat, message})
 	if err != nil {
 		return err

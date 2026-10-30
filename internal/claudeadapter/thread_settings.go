@@ -123,6 +123,14 @@ func (s *server) updateThreadSettings(t *savedThread, raw json.RawMessage) error
 	if (changesModel || changesEffort) && effective.ReasoningEffort != "" && !s.supportsEffort(model, effective.ReasoningEffort) {
 		return errors.New("This effort level is not advertised for the selected Claude model; select a supported effort or reset effort to the model default")
 	}
+	if _, changed := update["permissionMode"]; changed && effective.PermissionMode != "" && effective.PermissionMode != "default" {
+		// CLI --help advertises modes even when native settings disable them.
+		// Confirm on an isolated, non-persistent native process before saving
+		// a choice or retiring this session's existing idle process.
+		if _, _, err := s.metadataProbe(s.ctx, effective, false, effective.PermissionMode); err != nil {
+			return errNativePermissionUnavailable
+		}
+	}
 	// Deep-copy mutable status before calculating the candidate's observation.
 	status := ClaudeStatus{Provider: "claude"}
 	if t.ClaudeStatus != nil {
