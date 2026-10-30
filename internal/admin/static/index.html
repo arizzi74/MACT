@@ -252,15 +252,25 @@
     <fieldset id="worker-runtime-fields" disabled>
       <div id="worker-runtime-claude">
         <label for="worker-runtime-model">Model<input id="worker-runtime-model" maxlength="256" autocomplete="off" spellcheck="false" placeholder="Claude Code default"></label>
-        <p class="muted">A custom model also replaces Claude’s Opus, Sonnet and Haiku model aliases.</p>
+        <p class="muted">With a custom API endpoint, a configured model also replaces Claude’s Opus, Sonnet and Haiku aliases.</p>
+        <label for="worker-runtime-reasoning">Reasoning effort<select id="worker-runtime-reasoning" aria-describedby="worker-runtime-reasoning-help"><option value="">Claude Code default</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra high</option><option value="max">Maximum</option></select></label>
+        <p id="worker-runtime-reasoning-help" class="muted">Choose an effort supported by the model. Claude Code default uses the native reasoning setting. When changing provider or authentication, save with Claude Code default first, then choose reasoning.</p>
         <label for="worker-runtime-url">API endpoint<input id="worker-runtime-url" type="url" maxlength="2048" autocomplete="off" spellcheck="false" placeholder="Anthropic default"></label>
         <label for="worker-runtime-auth">Authentication<select id="worker-runtime-auth"><option value="login">Existing Claude Code login</option><option value="api_key">API key</option><option value="auth_token">Auth token</option></select></label>
         <p class="muted">Existing login uses credentials already available to Claude Code on the worker. API key and auth token use their corresponding Anthropic authentication method.</p>
         <label for="worker-runtime-key">API key / auth token<input id="worker-runtime-key" type="password" maxlength="8192" autocomplete="new-password" spellcheck="false" aria-describedby="worker-runtime-key-help"></label>
         <p id="worker-runtime-key-help" class="muted">Leave blank to keep the saved credential. The saved value is never returned.</p>
         <label class="audio-toggle"><input id="worker-runtime-clear" type="checkbox"><span>Remove saved API key / auth token</span></label>
-        <label for="worker-runtime-permissions">Permissions<select id="worker-runtime-permissions"><option value="default">Ask before protected actions</option><option value="acceptEdits">Allow file edits</option><option value="plan">Plan only</option><option value="bypassPermissions">Bypass permission checks</option></select></label>
+        <label for="worker-runtime-permissions">Permissions<select id="worker-runtime-permissions"><option value="default">Ask before protected actions</option><option value="acceptEdits">Allow file edits</option><option value="plan">Plan only</option><option value="dontAsk">Do not ask; deny unapproved tools</option><option value="auto">Automatic permission checks</option><option value="bypassPermissions">Bypass permission checks</option></select></label>
         <p id="worker-runtime-bypass" class="notice" hidden>Bypass allows Claude Code to run tools and commands without permission prompts as the worker's OS account. It can read or change files accessible to that account and use sudo if the account and service already permit it. Use it only on a worker you have isolated and trust.</p>
+        <label class="audio-toggle"><input id="worker-runtime-budget-enabled" type="checkbox"><span>Read Claude Enterprise monthly member budget</span></label>
+        <p class="muted">For an official Claude Code login with the default endpoint. Reads this member’s effective monthly spending limit, including inherited policies. It does not report an organization credit balance. <a href="https://support.claude.com/en/articles/15330651-claude-enterprise-admin-api-reference-guide" target="_blank" rel="noopener noreferrer">Enterprise Admin API documentation</a>.</p>
+        <div id="worker-runtime-budget-fields" hidden>
+          <label for="worker-runtime-budget-user">Enterprise member ID<input id="worker-runtime-budget-user" maxlength="128" pattern="user_[A-Za-z0-9]+" autocomplete="off" spellcheck="false" placeholder="user_…"></label>
+          <label for="worker-runtime-budget-key">Enterprise Admin API key<input id="worker-runtime-budget-key" type="password" maxlength="8192" autocomplete="new-password" spellcheck="false" aria-describedby="worker-runtime-budget-key-help"></label>
+          <p id="worker-runtime-budget-key-help" class="muted">Use a separate Admin API key with read:spend_limits access. Leave blank to keep the saved key. The saved value is never returned.</p>
+        </div>
+        <label class="audio-toggle"><input id="worker-runtime-budget-clear" type="checkbox"><span>Remove saved Enterprise Admin API key</span></label>
       </div>
       <div id="worker-runtime-codex" hidden>
         <label for="worker-runtime-codex-model">Model<input id="worker-runtime-codex-model" maxlength="256" autocomplete="off" spellcheck="false" placeholder="Codex default" aria-describedby="worker-runtime-codex-model-help"></label>

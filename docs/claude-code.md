@@ -75,14 +75,24 @@ remain under the installed CLI's normal configuration directory.
 Expand **Workers** in the admin console, select the Claude worker's runtime
 configuration button, and set:
 
-- **Model:** the Claude model alias or custom endpoint's model identifier.
-  The chosen model also populates the Opus, Sonnet and Haiku model aliases.
+- **Model:** the default Claude model alias or custom endpoint's model identifier.
+  For custom endpoints, the chosen model also populates the Opus, Sonnet and
+  Haiku model aliases. Official Claude accounts retain the distinct native aliases.
+- **Reasoning effort:** inherit the Claude default or choose an effort supported
+  by the selected model. Available session choices come from the installed CLI;
+  support for higher effort levels depends on the model and runtime version.
+  When changing the endpoint or authentication account, first save with
+  **Claude Code default** reasoning, then choose an effort after the worker has
+  refreshed that account's model capabilities. Unadvertised combinations are
+  rejected rather than silently downgraded.
 - **API endpoint:** leave empty for Claude's normal endpoint, or provide the
   compatible endpoint used by your account.
 - **Authentication:** existing Claude login, API key (`ANTHROPIC_API_KEY`), or
   authentication token (`ANTHROPIC_AUTH_TOKEN`).
-- **Permissions:** normal approval requests, accept edits, plan mode, or an
-  explicit bypass-permissions choice.
+- **Permissions:** normal approval requests, accept edits, plan mode, don't ask,
+  automatic review, or an explicit bypass-permissions choice. MACT offers modes
+  supported by the installed CLI. Account or managed policies can further
+  restrict them. Permission modes do not grant operating-system privileges.
 
 The credential is write-only in the UI. An omitted credential preserves the
 existing value; **Remove saved credential** clears it. Switching to existing
@@ -99,6 +109,26 @@ Changes require all worker sessions and queues to be idle, including outstanding
 approval requests. Idle Claude processes are retired after a successful save;
 the next message resumes the native session using the new settings. Existing
 conversation context is retained when you change account or model.
+
+### Select settings for one session
+
+Click the model, reasoning effort, or permissions in the Web UI status bar,
+or use `/model`, `/reasoning`, and `/permissions` in the Web UI or Telegram.
+The model picker lists the native CLI's advertised models and reasoning levels;
+custom model identifiers can also be entered. Model and effort changes apply
+after the final selection. Cancelling a picker keeps the existing settings.
+
+Session overrides are saved on the worker and survive reconnects and worker
+restarts. They take precedence over worker defaults without changing other
+sessions. A session must have no active turn, queued input, pending approvals,
+questions, or background work before its settings can change. Its next prompt
+resumes the same native conversation with the selected settings. A new session
+uses the worker defaults.
+
+The permissions menu describes Claude's native modes. Bypass permissions
+requires a separate confirmation. Plan mode limits Claude's workflow; it is
+not a filesystem sandbox. The worker service and OS account continue to define
+which files, commands, and sudo privileges are actually available.
 
 ## Session behavior
 
@@ -217,6 +247,38 @@ The provider request runs on the worker. Credentials and raw billing responses
 are never sent to the browser or gateway. Account changes clear the old balance,
 and an in-flight response from the old account is discarded. Failed checks show
 an unavailable value. Other providers show no invented account balance.
+
+### Claude Enterprise monthly budget
+
+In **Workers → Claude Code settings**, enable **Enterprise budget** for an
+official Claude login, enter the Enterprise member's `user_...` identifier,
+and save an Enterprise Admin API key with the **`read:spend_limits`** scope.
+The organization's Primary Owner creates this separate key in Claude's
+**Organization settings → API**. A normal Claude login or inference API key
+cannot authenticate this documented Admin endpoint. See the official
+[Enterprise Admin API guide](https://support.claude.com/en/articles/15330651-claude-enterprise-admin-api-reference-guide).
+
+The worker reads only that member's effective spending limit and accrued usage
+using `GET /v1/organizations/spend_limits/effective`, at startup and approximately
+every minute. The status bar and `/status` show the maximum monthly budget and
+remaining amount, or an explicit unlimited limit. Reported amounts are converted
+from USD minor units; remaining budget is the limit minus period-to-date spend,
+clamped at zero. Zero is a disabled spending allowance, not unlimited. Other
+currencies and unsupported billing periods are shown as unavailable.
+
+This is the configured member's effective limit, which may be inherited from
+a group or seat policy. It is separate from session cost, an organization's
+shared consumption pool, and any additional organization-wide spending ceiling.
+The API does not report the next reset timestamp, so MACT does not invent one.
+API access requires an eligible Enterprise organization with usage credits
+enabled; unavailable or unauthorized responses clear the displayed observation.
+
+The Admin key is write-only, saved only in the worker's private runtime settings,
+and never passed to the Claude subprocess. It is independent of the inference
+credential. Requests use Anthropic's fixed HTTPS endpoint and reject redirects.
+Changing account settings clears the previous budget and discards older
+in-flight responses. Billing identities and the Admin key are excluded from
+conversation history and status notifications.
 
 ## Maintenance
 

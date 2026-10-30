@@ -81,21 +81,8 @@ func (m *RuntimeManager) claudeCreditsLoop(bridge *claudeadapter.Runtime) {
 	}()
 	client := &http.Client{Timeout: 5 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return errClaudeCreditsUnavailable }}
 	defer client.CloseIdleConnections()
-	poll := func() {
-		generation := bridge.BalanceGeneration()
-		settings, err := readClaudeSettings(claudeSettingsPath(m.cfg))
-		if err != nil || !supportsClaudeCredits(settings) {
-			_ = bridge.SetBalanceAt(generation, nil)
-			return
-		}
-		balance, err := fetchClaudeCredits(ctx, settings, client)
-		latest, settingsErr := readClaudeSettings(claudeSettingsPath(m.cfg))
-		if err != nil || settingsErr != nil || latest != settings {
-			balance = nil
-		}
-		_ = bridge.SetBalanceAt(generation, balance)
-	}
-	poll()
+
+	m.pollClaudeAccountStatus(ctx, bridge, client)
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 	for {
@@ -103,7 +90,34 @@ func (m *RuntimeManager) claudeCreditsLoop(bridge *claudeadapter.Runtime) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			poll()
+			m.pollClaudeAccountStatus(ctx, bridge, client)
 		}
 	}
+}
+
+// pollClaudeAccountStatus publishes one current account observation. Both the
+// private settings snapshot and bridge generation fence delayed HTTP replies.
+func (m *RuntimeManager) pollClaudeAccountStatus(ctx context.Context, bridge *claudeadapter.Runtime, client *http.Client) {
+	generation := bridge.BalanceGeneration()
+	settings, err := readClaudeSettings(claudeSettingsPath(m.cfg))
+	if err != nil {
+		_ = bridge.SetBalanceAt(generation, nil)
+		_ = bridge.SetEnterpriseBudgetAt(generation, nil)
+		return
+	}
+	var balance *claudeadapter.CreditBalance
+	if supportsClaudeCredits(settings) {
+		balance, _ = fetchClaudeCredits(ctx, settings, client)
+	}
+	var budget *claudeadapter.EnterpriseBudget
+	if supportsClaudeEnterpriseBudget(settings) {
+		budget, _ = fetchClaudeEnterpriseBudget(ctx, settings, client)
+	}
+	latest, settingsErr := readClaudeSettings(claudeSettingsPath(m.cfg))
+	if settingsErr != nil || latest != settings {
+		balance = nil
+		budget = nil
+	}
+	_ = bridge.SetBalanceAt(generation, balance)
+	_ = bridge.SetEnterpriseBudgetAt(generation, budget)
 }

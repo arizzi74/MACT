@@ -11,12 +11,14 @@ import (
 // mean unknown; a non-nil zero is an explicitly reported zero. Cost is the
 // CLI's reported USD estimate, not an account quota or billing statement.
 type ClaudeStatus struct {
-	Provider       string         `json:"provider"`
-	Model          *string        `json:"model"`
-	PermissionMode *string        `json:"permissionMode"`
-	Context        ContextUsage   `json:"context"`
-	Cost           ReportedCost   `json:"cost"`
-	Balance        *CreditBalance `json:"balance"`
+	Provider         string            `json:"provider"`
+	Model            *string           `json:"model"`
+	ReasoningEffort  *string           `json:"reasoningEffort"`
+	PermissionMode   *string           `json:"permissionMode"`
+	Context          ContextUsage      `json:"context"`
+	Cost             ReportedCost      `json:"cost"`
+	Balance          *CreditBalance    `json:"balance"`
+	EnterpriseBudget *EnterpriseBudget `json:"enterpriseBudget,omitempty"`
 }
 
 type ContextUsage struct {
@@ -101,10 +103,11 @@ func (t *savedThread) ensureStatus() *ClaudeStatus {
 	return t.ClaudeStatus
 }
 
-func (t *savedThread) statusSnapshot(balance *CreditBalance) *ClaudeStatus {
+func (t *savedThread) statusSnapshot(balance *CreditBalance, budget *EnterpriseBudget) *ClaudeStatus {
 	copy := *t.ensureStatus()
 	copy.Provider = "claude"
 	copy.Balance = cloneBalance(balance)
+	copy.EnterpriseBudget = cloneEnterpriseBudget(budget)
 	if copy.Cost.Incomplete {
 		copy.Cost.SessionUSD = nil
 		copy.Cost.LastTurnUSD = nil
@@ -114,7 +117,8 @@ func (t *savedThread) statusSnapshot(balance *CreditBalance) *ClaudeStatus {
 
 func (s *server) threadMetadata(t *savedThread, includeTurns bool) map[string]any {
 	value := t.metadata(includeTurns)
-	value["claudeStatus"] = t.statusSnapshot(s.balance)
+	value["claudeStatus"] = t.statusSnapshot(s.balance, s.enterpriseBudget)
+	value["threadSettings"] = t.settingsSnapshot()
 	return value
 }
 
@@ -122,7 +126,7 @@ func (s *server) broadcastStatus(t *savedThread) {
 	if s.deletions[t.ID] != nil {
 		return
 	}
-	s.broadcast("thread/claudeStatus/updated", map[string]any{"threadId": t.ID, "claudeStatus": t.statusSnapshot(s.balance)})
+	s.broadcast("thread/claudeStatus/updated", map[string]any{"threadId": t.ID, "claudeStatus": t.statusSnapshot(s.balance, s.enterpriseBudget)})
 }
 
 func (p *process) publishStatus(t *savedThread) {
@@ -155,10 +159,8 @@ func permissionMode(value string) bool {
 // stale native model/permission observations; unknown preferences remain nil.
 func (s *server) applyStatusSettings(t *savedThread, settings LaunchSettings, refresh bool) {
 	status := t.ensureStatus()
+	settings = t.effectiveSettings(settings)
 	model := settings.Model
-	if model == "" {
-		model = t.RequestedModel
-	}
 	if model != "" && validateModel(model) != nil {
 		model = ""
 	}
@@ -177,9 +179,16 @@ func (s *server) applyStatusSettings(t *savedThread, settings LaunchSettings, re
 	if refresh || t.StatusConfigPermission != mode || status.PermissionMode == nil {
 		status.PermissionMode = optionalString(mode)
 	}
+	status.ReasoningEffort = optionalString(settings.ReasoningEffort)
+	if t.RequestedEffort != nil && *t.RequestedEffort == "" {
+		value := ""
+		status.ReasoningEffort = &value
+	}
+	t.StatusConfigEffort = settings.ReasoningEffort
 	t.StatusConfigModel = model
 	t.StatusConfigPermission = mode
 	status.Balance = nil
+	status.EnterpriseBudget = nil
 }
 
 func validUSD(value float64) bool { return !math.IsNaN(value) && !math.IsInf(value, 0) && value >= 0 }
@@ -297,8 +306,19 @@ func sanitizeSavedStatus(t *savedThread) {
 	status := t.ensureStatus()
 	status.Provider = "claude"
 	status.Balance = nil
+	status.EnterpriseBudget = nil
 	if status.Model != nil && validateModel(*status.Model) != nil {
 		status.Model = nil
+	}
+	if status.ReasoningEffort != nil && !reasoningEffort(*status.ReasoningEffort) &&
+		!(*status.ReasoningEffort == "" && t.RequestedEffort != nil && *t.RequestedEffort == "") {
+		status.ReasoningEffort = nil
+	}
+	if t.RequestedEffort != nil && *t.RequestedEffort != "" && !reasoningEffort(*t.RequestedEffort) {
+		t.RequestedEffort = nil
+	}
+	if t.RequestedPermissionMode != "" && !permissionMode(t.RequestedPermissionMode) {
+		t.RequestedPermissionMode = ""
 	}
 	if status.PermissionMode != nil && !permissionMode(*status.PermissionMode) {
 		status.PermissionMode = nil
@@ -316,7 +336,7 @@ func sanitizeSavedStatus(t *savedThread) {
 			*value = nil
 		}
 	}
-	if strings.TrimSpace(t.RequestedModel) != t.RequestedModel || len(t.RequestedModel) > 512 {
+	if strings.TrimSpace(t.RequestedModel) != t.RequestedModel || (t.RequestedModel != "" && validateModel(t.RequestedModel) != nil) {
 		t.RequestedModel = ""
 	}
 }

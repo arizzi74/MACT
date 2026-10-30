@@ -77,10 +77,17 @@ func (s *sessionActor) executeCodexCommand(ctx context.Context, client *codexada
 			lines := []string{"Claude Code session", "Claude Code runtime: " + version, "Workspace: " + s.session.CWD, "Authentication: " + settings.AuthMode}
 			status, statusErr := client.ReadClaudeStatus(ctx, s.session.ThreadID)
 			if statusErr != nil {
-				status.Model, status.PermissionMode = &settings.Model, &settings.PermissionMode
+				status.Model, status.PermissionMode, status.ReasoningEffort = &settings.Model, &settings.PermissionMode, &settings.ReasoningEffort
 			}
 			lines = append(lines, claudeStatusLines(status)...)
 			return protocol.Result{Text: strings.Join(lines, "\n")}, nil
+		case "model":
+			return s.codexModelMenu(ctx, client, args)
+		case "reasoning":
+			text, err := s.claudeReasoning(ctx, client, args)
+			return protocol.Result{Text: text}, err
+		case "permissions":
+			return s.claudePermissions(ctx, client, args)
 		case "rename", "pwd", "cwd", "copy", "new", "delete", "diff", "stop":
 			// Shared session and workspace operations use the same actor fences.
 		default:
@@ -390,6 +397,9 @@ func threadReasoningEffort(thread codexadapter.Thread) string {
 }
 
 func (s *sessionActor) codexModel(ctx context.Context, client *codexadapter.Client, args string) (string, error) {
+	if s.agent.cfg.AgentKind == "claude" {
+		return s.claudeModel(ctx, client, args)
+	}
 	models, err := client.ListModels(ctx)
 	if err != nil {
 		return "", err

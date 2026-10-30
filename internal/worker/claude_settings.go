@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/iaia/telegramgw/internal/codexadapter"
 	"github.com/iaia/telegramgw/internal/config"
 	"github.com/iaia/telegramgw/internal/protocol"
 )
@@ -16,16 +17,26 @@ import (
 // This file belongs only to the dedicated worker. Credentials never enter
 // gateway storage, command records, events, or configuration responses.
 type claudeSettingsFile struct {
-	Model          string `json:"model"`
-	BaseURL        string `json:"base_url"`
-	AuthMode       string `json:"auth_mode"`
-	PermissionMode string `json:"permission_mode"`
-	Credential     string `json:"credential,omitempty"`
+	Model                   string `json:"model"`
+	ReasoningEffort         string `json:"reasoning_effort"`
+	BaseURL                 string `json:"base_url"`
+	AuthMode                string `json:"auth_mode"`
+	PermissionMode          string `json:"permission_mode"`
+	Credential              string `json:"credential,omitempty"`
+	EnterpriseBudgetEnabled bool   `json:"enterprise_budget_enabled,omitempty"`
+	EnterpriseBudgetUserID  string `json:"enterprise_budget_user_id,omitempty"`
+	EnterpriseBudgetAPIKey  string `json:"enterprise_budget_api_key,omitempty"`
 }
 
 func (s claudeSettingsFile) public() protocol.WorkerRuntimeSettings {
-	return protocol.WorkerRuntimeSettings{Provider: "claude", Model: s.Model, BaseURL: s.BaseURL, AuthMode: s.AuthMode, PermissionMode: s.PermissionMode, APIKeyConfigured: s.Credential != ""}
+	public := protocol.WorkerRuntimeSettings{Provider: "claude", Model: s.Model, ReasoningEffort: s.ReasoningEffort, BaseURL: s.BaseURL, AuthMode: s.AuthMode, PermissionMode: s.PermissionMode, APIKeyConfigured: s.Credential != ""}
+	if s.EnterpriseBudgetEnabled || s.EnterpriseBudgetUserID != "" || s.EnterpriseBudgetAPIKey != "" {
+		public.EnterpriseBudget = &protocol.ClaudeEnterpriseBudgetSettings{Enabled: s.EnterpriseBudgetEnabled, UserID: s.EnterpriseBudgetUserID, APIKeyConfigured: s.EnterpriseBudgetAPIKey != ""}
+	}
+	return public
 }
+
+const claudeSettingsMaxBytes = 32 << 10
 
 func readClaudeSettings(path string) (claudeSettingsFile, error) {
 	s := claudeSettingsFile{AuthMode: "login", PermissionMode: "default"}
@@ -33,7 +44,7 @@ func readClaudeSettings(path string) (claudeSettingsFile, error) {
 	if errors.Is(err, os.ErrNotExist) {
 		return s, nil
 	}
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 || info.Size() > 16<<10 {
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 || info.Size() > claudeSettingsMaxBytes {
 		return s, errors.New("Claude runtime settings file is unavailable or not private")
 	}
 	f, err := os.Open(path)
@@ -45,7 +56,7 @@ func readClaudeSettings(path string) (claudeSettingsFile, error) {
 	if err != nil || !os.SameFile(info, opened) {
 		return s, errors.New("Claude runtime settings changed while opening")
 	}
-	d := json.NewDecoder(io.LimitReader(f, (16<<10)+1))
+	d := json.NewDecoder(io.LimitReader(f, claudeSettingsMaxBytes+1))
 	d.DisallowUnknownFields()
 	if err := d.Decode(&s); err != nil {
 		return s, errors.New("Claude runtime settings are invalid")
@@ -54,14 +65,18 @@ func readClaudeSettings(path string) (claudeSettingsFile, error) {
 	if d.Decode(&trailing) != io.EOF {
 		return s, errors.New("Claude runtime settings are invalid")
 	}
-	check := protocol.WorkerRuntimeSettingsUpdate{Model: s.Model, BaseURL: s.BaseURL, AuthMode: s.AuthMode, PermissionMode: s.PermissionMode, APIKey: &s.Credential}
-	if err := check.Validate(); err != nil {
+	check := protocol.WorkerRuntimeSettingsUpdate{Model: s.Model, ReasoningEffort: s.ReasoningEffort, BaseURL: s.BaseURL, AuthMode: s.AuthMode, PermissionMode: s.PermissionMode, APIKey: &s.Credential, EnterpriseBudget: &protocol.ClaudeEnterpriseBudgetUpdate{Enabled: s.EnterpriseBudgetEnabled, UserID: s.EnterpriseBudgetUserID, APIKey: &s.EnterpriseBudgetAPIKey}}
+	if err := check.Validate(); err != nil || (s.EnterpriseBudgetEnabled && s.EnterpriseBudgetAPIKey == "") {
 		return s, errors.New("Claude runtime settings are invalid; the API endpoint must use HTTPS without credentials, query or fragment")
 	}
 	return s, nil
 }
 
 func saveClaudeSettings(path string, s claudeSettingsFile) error {
+	data, err := json.Marshal(s)
+	if err != nil || len(data)+1 > claudeSettingsMaxBytes {
+		return errors.New("Claude runtime settings exceed the private file size limit")
+	}
 	return savePrivateRuntimeSettings(path, s)
 }
 
@@ -144,8 +159,16 @@ func (a *Agent) runtimeSettings(ctx context.Context, request protocol.WorkerRunt
 		response.ErrorCode = "unavailable"
 		return response
 	}
+	a.manager.mu.RLock()
+	advertisedBridge := a.manager.claude[a.cfg.Runtimes[0].ID]
+	a.manager.mu.RUnlock()
+	var modes []string
+	if advertisedBridge != nil {
+		modes, _ = advertisedBridge.Client.ReadClaudePermissionModes(ctx, a.cfg.Runtimes[0].WorkingDirectory)
+	}
 	if request.Action == "get" {
 		public := settings.public()
+		public.SupportedPermissionModes = modes
 		response.Settings = &public
 		return response
 	}
@@ -154,13 +177,40 @@ func (a *Agent) runtimeSettings(ctx context.Context, request protocol.WorkerRunt
 		return response
 	}
 	update := request.Settings
-	next := claudeSettingsFile{Model: update.Model, BaseURL: update.BaseURL, AuthMode: update.AuthMode, PermissionMode: update.PermissionMode, Credential: settings.Credential}
+	if update.PermissionMode != "default" && !containsString(modes, update.PermissionMode) {
+		response.ErrorCode = "invalid_settings"
+		return response
+	}
+	next := claudeSettingsFile{Model: update.Model, ReasoningEffort: update.ReasoningEffort, BaseURL: update.BaseURL, AuthMode: update.AuthMode, PermissionMode: update.PermissionMode, Credential: settings.Credential, EnterpriseBudgetEnabled: settings.EnterpriseBudgetEnabled, EnterpriseBudgetUserID: settings.EnterpriseBudgetUserID, EnterpriseBudgetAPIKey: settings.EnterpriseBudgetAPIKey}
 	if update.APIKey != nil {
 		next.Credential = *update.APIKey
+	}
+	if budget := update.EnterpriseBudget; budget != nil {
+		next.EnterpriseBudgetEnabled, next.EnterpriseBudgetUserID = budget.Enabled, budget.UserID
+		if budget.APIKey != nil {
+			next.EnterpriseBudgetAPIKey = *budget.APIKey
+		}
+	}
+	if next.EnterpriseBudgetEnabled && (next.AuthMode != "login" || next.BaseURL != "" || next.EnterpriseBudgetAPIKey == "") {
+		response.ErrorCode = "invalid_settings"
+		return response
 	}
 	if next.AuthMode != "login" && next.Credential == "" {
 		response.ErrorCode = "invalid_settings"
 		return response
+	}
+	// An account switch invalidates the current catalog. Save that account with
+	// native default reasoning first, then choose a level it advertises.
+	if next.ReasoningEffort != "" {
+		if !sameClaudeInferenceAccount(settings, next) || advertisedBridge == nil {
+			response.ErrorCode = "invalid_settings"
+			return response
+		}
+		models, catalogErr := advertisedBridge.Client.ListModels(ctx)
+		if catalogErr != nil || !claudeDefaultEffortAdvertised(models, next.Model, next.ReasoningEffort) {
+			response.ErrorCode = "invalid_settings"
+			return response
+		}
 	}
 	// The bridge shares this admission fence with native browser turn starts.
 	// An active process is never silently switched to a different account.
@@ -181,7 +231,7 @@ func (a *Agent) runtimeSettings(ctx context.Context, request protocol.WorkerRunt
 		}
 		// Extend the atomic outbound redactor before any new process can use
 		// the credential. Keep the old value protected in already queued text.
-		for _, credential := range []string{settings.Credential, next.Credential} {
+		for _, credential := range []string{settings.Credential, next.Credential, settings.EnterpriseBudgetAPIKey, next.EnterpriseBudgetAPIKey} {
 			if credential != "" {
 				a.redactor.AddLiteral(credential)
 				a.manager.statsRedactor.AddLiteral(credential)
@@ -204,6 +254,30 @@ func (a *Agent) runtimeSettings(ctx context.Context, request protocol.WorkerRunt
 		return response
 	}
 	public := next.public()
+	public.SupportedPermissionModes = modes
 	response.Settings = &public
 	return response
+}
+
+func sameClaudeInferenceAccount(current, next claudeSettingsFile) bool {
+	if current.AuthMode != next.AuthMode || current.BaseURL != next.BaseURL {
+		return false
+	}
+	return next.AuthMode == "login" || current.Credential == next.Credential
+}
+
+func claudeDefaultEffortAdvertised(models []codexadapter.ModelInfo, model, effort string) bool {
+	model = valueOr(model, "default")
+	// Prefer the selected alias/ID over another row sharing its resolved model.
+	for _, candidate := range models {
+		if candidate.ID == model || candidate.Model == model {
+			return containsString(candidate.ReasoningEfforts, effort)
+		}
+	}
+	for _, candidate := range models {
+		if candidate.ResolvedModel == model {
+			return containsString(candidate.ReasoningEfforts, effort)
+		}
+	}
+	return false
 }

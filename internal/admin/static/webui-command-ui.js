@@ -136,10 +136,10 @@
     }
     function unavailable(entry) {
       if (ctx.isClaude?.()) {
-        if (['model', 'reasoning', 'permissions', 'approvals'].includes(entry.name)) return 'Manage Claude Code model, authentication and permissions in the worker settings in the admin console.';
+        if (entry.name === 'approvals') return 'Use /permissions to choose Claude Code’s permission mode.';
         if (['delete', 'tgdeletesession'].includes(entry.name) && ctx.deletionUnavailable?.()) return ctx.deletionUnavailable();
         if (entry.name === 'tgsteer') return 'Claude Code cannot steer an active turn. Send a normal message to queue it after the current turn.';
-        if (entry.kind === 'unavailable' || entry.kind === 'worker' && !['status', 'pwd', 'rename', 'delete', 'diff', 'stop'].includes(entry.name)) return 'This command is unavailable for Claude Code workers.';
+        if (entry.kind === 'unavailable' || entry.kind === 'worker' && !['model', 'permissions', 'status', 'pwd', 'rename', 'delete', 'diff', 'stop'].includes(entry.name)) return 'This command is unavailable for Claude Code workers.';
       }
       if (entry.kind === 'unavailable') return entry.reason;
       if (entry.kind === 'gateway' || ['help', 'tghelp', 'theme', 'title', 'tui', 'resume', 'agents', 'tgsessions'].includes(entry.name)) return state.authenticated ? '' : 'Sign in to use commands.';
@@ -269,9 +269,9 @@
       const parts = args.trim().split(/\s+/);
       if (parts[0] === '--menu' && parts.length === 2) parts.shift();
       else if (parts[0].startsWith('--')) return false;
-      const model = ctx.currentModel?.() || state.selected?.stats?.model || '';
+      const model = ctx.currentModel ? ctx.currentModel() : state.selected?.stats?.model || '';
       const available = state.models.find(value => value.id === parts[0] || value.model === parts[0]);
-      const matchesModel = parts[0] === model || available?.id === model || available?.model === model;
+      const matchesModel = parts[0] === model || available?.id === model || available?.model === model || available?.resolvedModel === model;
       return matchesModel && (!parts[1] || parts[1] === ctx.currentEffort?.());
     }
     function settingChange(name, args) {
@@ -301,7 +301,7 @@
         if (result.text) text(result.text);
         if (result.permissions) {
           const options = result.permissions.options || [];
-          const confirmation = options.some(option => option.id === 'confirm-full-access');
+          const confirmation = options.some(option => ['confirm-full-access', 'confirm-bypass-permissions'].includes(option.id));
           if (confirmation) menuBack = () => worker('permissions');
           for (const option of options) button(option.label, () => option.id === 'cancel' ? close(true) : worker('permissions', option.id), option.description,
             { current: option.current === true, preferred: confirmation && option.id === 'cancel' });
@@ -312,6 +312,7 @@
           if (reasoning) menuBack = () => worker('model');
           else if (/^--page [1-9]\d*$/.test(args)) menuBack = () => worker('model', '--page ' + (Number(args.split(' ')[1]) - 1));
           for (const option of options) button(option.label, () => option.args === '--cancel' ? close(true) : worker('model', option.args === '--menu' ? '' : option.args), '', { current: currentModelOption(option.args) });
+          if (ctx.isClaude?.() && !reasoning) button('Custom model…', () => form('/model · Custom model', [{ key: 'model', label: 'Model ID or alias', value: ctx.currentModel?.(), maxLength: 256 }], 'Use model', values => worker('model', values.model), () => worker('model')), 'Enter a model ID supported by this provider.');
           if (reasoning && !options.some(option => option.args === '--menu')) button('Back to models', menuBack);
         }
         if (result.usage_menu) {
@@ -383,10 +384,14 @@
       if (['model', 'permissions', 'status', 'usage'].includes(name)) return worker(name, args, original);
       if (name === 'reasoning') {
         if (args) return worker(name, args, original);
-        consume(original); show('/reasoning'); text('Choose the reasoning effort for subsequent turns.');
+        consume(original); show('/reasoning', 'reasoning'); text('Choose the reasoning effort for subsequent turns.');
         const options = ctx.reasoningOptions?.() || [];
+        if (ctx.isClaude?.()) button('Claude Code default', () => worker('reasoning', 'default'), 'Use the native reasoning setting.', { current: !ctx.currentEffort?.() });
         for (const option of options.filter(option => option.value)) button(option.label, () => worker('reasoning', option.value), option.description || '', { current: option.value === ctx.currentEffort?.() });
-        if (!options.length) button('Choose model and reasoning', () => worker('model'));
+        if (!options.length) {
+          if (ctx.isClaude?.()) text('This model has not advertised reasoning effort choices. Choose a listed model to see its supported efforts.');
+          button('Choose model and reasoning', () => worker('model'));
+        }
         return;
       }
       if (name === 'archive' || name === 'delete' || name === 'tgdeletesession') {
@@ -512,6 +517,7 @@
     search.addEventListener('keydown', keydown);
     panel.addEventListener('keydown', keydown);
     return { open, close, handle, changed, keydown, update,
+      modelsChanged() { if (mode === 'reasoning' && !pending) execute('reasoning'); },
       gatewayAllowed(value) { const parsed = catalog.parse(value); return state.authenticated && catalog.find(parsed?.name)?.kind === 'gateway'; },
       get pending() { return pending; }, sessionChanged() { close(); pendingToken++; pending = false; ctx.cancelGatewayCommand(); } };
   } };

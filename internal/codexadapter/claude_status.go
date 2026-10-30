@@ -8,10 +8,11 @@ import (
 // ClaudeSessionStatus contains only public runtime observations. Account
 // credentials and provider response bodies never form part of this projection.
 type ClaudeSessionStatus struct {
-	Provider       string  `json:"provider"`
-	Model          *string `json:"model"`
-	PermissionMode *string `json:"permissionMode"`
-	Context        struct {
+	Provider        string  `json:"provider"`
+	Model           *string `json:"model"`
+	ReasoningEffort *string `json:"reasoningEffort"`
+	PermissionMode  *string `json:"permissionMode"`
+	Context         struct {
 		UsedTokens *int64 `json:"usedTokens"`
 		MaxTokens  *int64 `json:"maxTokens"`
 	} `json:"context"`
@@ -19,7 +20,8 @@ type ClaudeSessionStatus struct {
 		SessionUSD  *float64 `json:"sessionUSD"`
 		LastTurnUSD *float64 `json:"lastTurnUSD"`
 	} `json:"cost"`
-	Balance *struct {
+	EnterpriseBudget *ClaudeEnterpriseBudget `json:"enterpriseBudget,omitempty"`
+	Balance          *struct {
 		Remaining  float64 `json:"remaining"`
 		Unit       string  `json:"unit"`
 		ObservedAt int64   `json:"observedAt"`
@@ -38,4 +40,16 @@ func (c *Client) ReadClaudeStatus(ctx context.Context, threadID string) (ClaudeS
 		return ClaudeSessionStatus{}, errors.New("Claude session status is unavailable")
 	}
 	return *result.Status, nil
+}
+
+// ClaudeEnterpriseBudget is the account's Enterprise monthly allocation,
+// separate from per-conversation API cost or prepaid credit.
+type ClaudeEnterpriseBudget struct {
+	Limit      *float64 `json:"limit"`
+	Spent      float64  `json:"spent"`
+	Remaining  *float64 `json:"remaining"`
+	Currency   string   `json:"currency"`
+	Period     string   `json:"period"`
+	Unlimited  bool     `json:"unlimited"`
+	ObservedAt int64    `json:"observedAt"`
 }

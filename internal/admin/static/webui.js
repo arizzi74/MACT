@@ -29,7 +29,7 @@
   const telegramBots = { rows: [], revision: '', activityRevision: '', httpRevision: '', epoch: 0, ready: false, read: null, readAgain: false, pending: null, errorTimer: null };
   const sessionSettings = new Map(), activitySettingsRevisions = new Map();
   const sessionErrors = new Map(), sessionErrorDismissals = new Map(), sessionErrorTurns = new Map();
-  let settingsSerial = 0;
+  let settingsSerial = 0, modelReadEpoch = 0;
   let permissionSettings = null, permissionRevision = 0;
   let claudeStatus = null, claudeStatusRevision = 0;
   let loadingOlder = false, suppressHistoryScroll = false;
@@ -109,21 +109,34 @@
     claudeStatus = null; claudeStatusRevision++;
     statusField('claude-cost', 'Session —', 'Claude Code has not reported this session’s consumption in USD.');
     statusField('claude-balance', 'Credits —', 'The API provider has not reported a remaining account credit balance.');
+    statusField('claude-budget', 'Budget —', 'The Claude Enterprise monthly member budget has not been reported. Configure an Enterprise Admin API key in the worker settings to read it.');
     if (isClaude()) renderClaudeStatus();
   }
   function applyClaudeStatus(raw, threadId) {
     if (!isClaude() || !state.authenticated || !state.connected || threadId !== state.selected?.codex_thread_id) return;
     const value = raw && typeof raw === 'object' && (!raw.provider || raw.provider === 'claude') ? raw : {};
-    const balance = value.balance;
+    const balance = value.balance, budget = value.enterpriseBudget;
     claudeStatus = {
-      model: statusText(value.model), permissionMode: statusText(value.permissionMode),
+      model: statusText(value.model), reasoningEffort: typeof value.reasoningEffort === 'string' ? statusText(value.reasoningEffort) : null, permissionMode: statusText(value.permissionMode),
       context: { usedTokens: statusNumber(value.context?.usedTokens), maxTokens: statusNumber(value.context?.maxTokens) },
       cost: { sessionUSD: statusNumber(value.cost?.sessionUSD), lastTurnUSD: statusNumber(value.cost?.lastTurnUSD) },
       balance: balance && ['USD', 'credits'].includes(balance.unit) && statusNumber(balance.remaining) !== null
         ? { remaining: balance.remaining, unit: balance.unit, observedAt: statusNumber(balance.observedAt) } : null,
+      enterpriseBudget: budget && budget.currency === 'USD' && budget.period === 'monthly' && statusNumber(budget.spent) !== null &&
+        (budget.unlimited === true || statusNumber(budget.limit) !== null && statusNumber(budget.remaining) !== null)
+        ? { limit: statusNumber(budget.limit), spent: budget.spent, remaining: statusNumber(budget.remaining), currency: budget.currency, period: budget.period, unlimited: budget.unlimited === true, observedAt: statusNumber(budget.observedAt) } : null,
     };
     claudeStatusRevision++;
     renderClaudeStatus();
+  }
+  function applyClaudeSettings(settings) {
+    if (!isClaude() || !settings || !state.connected) return;
+    const next = { ...(claudeStatus || {}), provider: 'claude' };
+    if (Object.hasOwn(settings, 'model')) next.model = settings.model;
+    if (Object.hasOwn(settings, 'effort')) next.reasoningEffort = settings.effort;
+    if (Object.hasOwn(settings, 'reasoningEffort')) next.reasoningEffort = settings.reasoningEffort;
+    if (Object.hasOwn(settings, 'permissionMode')) next.permissionMode = settings.permissionMode;
+    applyClaudeStatus(next, state.selected?.codex_thread_id);
   }
   function handleClaudeStatusEvent(message) {
     if (message.method !== 'thread/claudeStatus/updated') return false;
@@ -133,10 +146,11 @@
   function renderClaudeStatus() {
     if (!isClaude()) return;
     const status = claudeStatus;
-    statusField('model', status?.model || 'Model —', status?.model ? 'Claude Code reported model: ' + status.model : 'The current Claude Code model has not been reported.');
+    statusField('model', status?.model || 'Model —', status?.model ? 'Claude Code reported model: ' + status.model + '. Choose model.' : 'The current Claude Code model has not been reported. Choose model.');
+    statusField('effort', status?.reasoningEffort || (status?.reasoningEffort === '' ? 'Default' : 'Effort —'), status?.reasoningEffort ? 'Claude Code reported reasoning effort: ' + status.reasoningEffort + '. Choose reasoning effort.' : status?.reasoningEffort === '' ? 'Claude Code default reasoning effort. Choose reasoning effort.' : 'The current Claude Code reasoning effort has not been reported. Choose reasoning effort.');
     const permissions = { default: 'Ask', acceptEdits: 'Allow edits', plan: 'Plan only', bypassPermissions: 'Bypass', dontAsk: 'Don’t ask', auto: 'Auto' };
     const permission = permissions[status?.permissionMode];
-    statusField('permissions', permission || 'Permissions —', permission ? 'Claude Code reported permission mode: ' + status.permissionMode : 'The current Claude Code permission mode has not been reported.');
+    statusField('permissions', permission || 'Permissions —', permission ? 'Claude Code reported permission mode: ' + status.permissionMode + '. Choose permissions.' : 'The current Claude Code permission mode has not been reported. Choose permissions.');
     $('permissions').dataset.mode = permission ? status.permissionMode : 'unknown';
     const used = status?.context.usedTokens ?? null, maximum = status?.context.maxTokens ?? null;
     const context = used !== null && maximum > 0 ? Math.round(used / maximum * 100) + '% context'
@@ -152,6 +166,12 @@
     statusField('claude-balance', balance ? balance.unit === 'USD' ? 'Balance ' + usd(balance.remaining) : balance.remaining.toLocaleString('en-US', { maximumFractionDigits: 4 }) + ' credits left' : 'Credits —', balance
       ? 'API provider remaining account credit: ' + (balance.unit === 'USD' ? exactUSD(balance.remaining) + ' USD' : balance.remaining.toLocaleString('en-US', { maximumFractionDigits: 8 }) + ' credits') + '. Based on the latest provider totals; finalized usage can lag activity.' + (observed ? ' Updated ' + observed.toLocaleString() + '.' : '')
       : 'The API provider has not reported a remaining account credit balance. Session consumption does not establish an account balance.');
+    const budget = status?.enterpriseBudget;
+    const budgetObserved = budget?.observedAt > 0 ? timestamp(budget.observedAt) : null;
+    const budgetMoney = value => value.toLocaleString('en-US', { style: 'currency', currency: budget.currency, minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    statusField('claude-budget', budget ? budget.unlimited ? 'Budget unlimited' : 'Budget ' + budgetMoney(budget.remaining) + ' / ' + budgetMoney(budget.limit) + ' remaining' : 'Budget —', budget
+      ? 'Claude Enterprise effective monthly member spending limit: ' + (budget.unlimited ? 'unlimited' : budgetMoney(budget.limit)) + '. Spent this month: ' + budgetMoney(budget.spent) + (budget.unlimited ? '.' : '. Remaining: ' + budgetMoney(budget.remaining) + '.') + ' Includes applicable member, group or seat policies; this is not an organization credit balance.' + (budgetObserved ? ' Checked ' + budgetObserved.toLocaleString() + '.' : '')
+      : 'The Claude Enterprise monthly member budget has not been reported. Configure an Enterprise Admin API key in the worker settings to read it.');
     settleBottom();
   }
   function title(session) { return session.name || session.title || session.codex_thread_id || 'Untitled session'; }
@@ -581,7 +601,7 @@
     $('activity-status').dataset.state = kind;
     $('activity-status').textContent = text;
   }
-  function settingsCheckpoint() { return sessionSettings.get(state.selected?.session_id)?.serial || 0; }
+  function settingsCheckpoint() { const serial = sessionSettings.get(state.selected?.session_id)?.serial || 0; return isClaude() ? serial + ':' + claudeStatusRevision : serial; }
   function applySessionSettings(id, model, effort, source, revision = '') {
     if (!id || typeof model !== 'string' || typeof effort !== 'string') return;
     sessionSettings.set(id, { model, effort, source, revision, serial: ++settingsSerial });
@@ -589,6 +609,7 @@
     if (session) session.stats = { ...session.stats, model, reasoning_effort: effort };
     if (state.selected?.session_id === id) {
       state.selected.stats = { ...state.selected.stats, model, reasoning_effort: effort };
+      if (isClaude()) applyClaudeSettings({ model, effort: source === 'unconfirmed' ? null : effort });
       renderModels(); updateControls();
     }
   }
@@ -806,7 +827,7 @@
     document.querySelector('label[for="prompt"]').textContent = 'Message ' + agentLabel();
     const claude = isClaude();
     document.querySelector('.model-controls').hidden = false;
-    for (const field of document.querySelectorAll('.codex-status-detail')) field.hidden = claude;
+    for (const id of ['model', 'effort', 'permissions']) $(id).disabled = !available || (id === 'permissions' && !!state.turn);
     $('session-status').classList.toggle('claude-status', claude);
     $('claude-spend').hidden = !claude;
     $('rate-limits').hidden = claude;
@@ -1991,6 +2012,7 @@
       // them immediately so a delayed snapshot cannot replace a live change.
       if (handleGoalEvent(message)) return;
       if (handleClaudeStatusEvent(message)) return;
+      if (isClaude() && message.method === 'thread/settings/updated') { handleEvent(message, true); return; }
       if (state.loading) {
         // Permissions are authoritative even while history is still loading.
         // A newer notification must win over a delayed resume snapshot.
@@ -2063,7 +2085,7 @@
     if (isClaude() && claudeStatusRevision === statusBeforeResume) applyClaudeStatus(thread.claudeStatus, threadId);
     resumedThread = { id: thread.id || threadId, cwd: typeof resume.cwd === 'string' ? resume.cwd : typeof thread.cwd === 'string' ? thread.cwd : state.selected.cwd };
     if (permissionRevision === permissionsBeforeResume) applyPermissions(resume, 'sandbox');
-    if (resume?.model && settingsCheckpoint() === settingsBeforeResume && sessionSettings.get(state.selected.session_id)?.source !== 'activity') {
+    if (!isClaude() && resume?.model && settingsCheckpoint() === settingsBeforeResume && sessionSettings.get(state.selected.session_id)?.source !== 'activity') {
       applySessionSettings(state.selected.session_id, resume.model, resume.reasoningEffort || '', 'resume');
     }
     connection('loading', 'Connected · Loading recent messages…');
@@ -2145,14 +2167,26 @@
       state.questionsStatus = 'error';
       sessionConnectionReady();
     });
-    if (isClaude()) return;
-    refreshRateLimits(read);
-    refreshGoal(read);
+    if (!isClaude()) { refreshRateLimits(read); refreshGoal(read); }
+    refreshModels(read);
+  }
+  function refreshModels(read = rpc) {
+    if (!state.authenticated || !state.connected || !state.selected) return;
+    const generation = state.generation, authGeneration = state.authGeneration, socket = state.socket, sessionID = state.selected.session_id;
+    const epoch = ++modelReadEpoch;
+    const current = () => epoch === modelReadEpoch && generation === state.generation && authGeneration === state.authGeneration &&
+      socket === state.socket && sessionID === state.selected?.session_id && state.authenticated && state.connected;
+    if (isClaude()) { state.models = []; commandUI?.modelsChanged(); }
     read('model/list', {}).then(result => {
       if (!current()) return;
-      state.models = result?.data || result?.models || [];
+      const models = result?.data || result?.models;
+      state.models = Array.isArray(models) ? models : [];
       renderModels(); updateControls();
-    }).catch(() => { /* Session defaults remain usable if this runtime has no model listing. */ });
+      if (isClaude()) commandUI?.modelsChanged();
+    }).catch(() => {
+      if (!current()) return;
+      if (isClaude()) commandUI?.modelsChanged();
+    });
   }
   function refreshRateLimits(read = rpc) {
     if (isClaude()) return;
@@ -2574,10 +2608,11 @@
       // Once the versioned activity feed has confirmed settings, its ordered
       // revisions are authoritative across all connections and sessions.
       const settings = p.threadSettings;
-      if (p.threadId === state.selected?.codex_thread_id) applyPermissions(settings, 'sandboxPolicy');
+      if (p.threadId === state.selected?.codex_thread_id) { applyPermissions(settings, 'sandboxPolicy'); applyClaudeSettings(settings); }
       if (p.threadId === state.selected?.codex_thread_id && settings && typeof settings.model === 'string' && (typeof settings.effort === 'string' || settings.effort === null) && sessionSettings.get(state.selected.session_id)?.source !== 'activity') {
         applySessionSettings(state.selected.session_id, settings.model, settings.effort || '', 'native');
       }
+      if (isClaude() && p.threadId === state.selected?.codex_thread_id) refreshModels();
       return;
     }
     if (method === 'account/rateLimits/updated') { updateRateLimits(p.rateLimits); return; }
@@ -2794,9 +2829,9 @@
     }
     updateSessionIndicators();
   }
-  function currentModel() { return sessionSettings.get(state.selected?.session_id)?.model ?? state.selected?.stats?.model ?? ''; }
-  function currentModelInfo() { return state.models.find(model => model.model === currentModel() || model.id === currentModel()); }
-  function currentEffort() { const settings = sessionSettings.get(state.selected?.session_id); return settings ? settings.effort : state.selected?.stats?.reasoning_effort || currentModelInfo()?.defaultReasoningEffort || ''; }
+  function currentModel() { if (isClaude()) return claudeStatus?.model || ''; return sessionSettings.get(state.selected?.session_id)?.model ?? state.selected?.stats?.model ?? ''; }
+  function currentModelInfo() { const current = currentModel(); return state.models.find(model => model.model === current || model.id === current) || state.models.find(model => model.resolvedModel === current); }
+  function currentEffort() { if (isClaude()) return claudeStatus?.reasoningEffort || ''; const settings = sessionSettings.get(state.selected?.session_id); return settings ? settings.effort : state.selected?.stats?.reasoning_effort || currentModelInfo()?.defaultReasoningEffort || ''; }
   function reasoningOptions() {
     return (currentModelInfo()?.supportedReasoningEfforts || []).map(option => {
       const value = typeof option === 'string' ? option : option.reasoningEffort;
@@ -2983,6 +3018,8 @@
     } finally { clearTimeout(timeout); if (gatewayCommandAbort === controller) gatewayCommandAbort = null; }
   }
   async function applyCommandResult(name, args, result, settingsBeforeCommand) {
+    const commandSettingsCurrent = () => (sessionSettings.get(state.selected?.session_id)?.source !== 'activity' || isClaude() && settingsBeforeCommand !== undefined) &&
+      (settingsBeforeCommand === undefined || settingsBeforeCommand === settingsCheckpoint());
     // A confirmed redemption can change this account's allowances even when
     // the runtime does not publish a quota event. Refresh once, without ever
     // retrying the account mutation or delaying its visible result.
@@ -3016,12 +3053,13 @@
       connection('connected', 'Connected · ' + args);
     } else if (state.selected && name === 'model' && args && !args.startsWith('--') && !result.model_menu) {
       const [model, effort] = args.split(/\s+/);
-      if (sessionSettings.get(state.selected.session_id)?.source !== 'activity' && (settingsBeforeCommand === undefined || settingsBeforeCommand === settingsCheckpoint())) {
+      if (commandSettingsCurrent()) {
         const canonical = state.models.find(value => value.model === model || value.id === model)?.model || model;
-        applySessionSettings(state.selected.session_id, canonical, effort || currentEffort(), 'command');
+        applySessionSettings(state.selected.session_id, canonical, isClaude() ? effort || '' : effort || currentEffort(), 'command');
       }
     } else if (state.selected && name === 'reasoning' && args) {
-      if (sessionSettings.get(state.selected.session_id)?.source !== 'activity' && (settingsBeforeCommand === undefined || settingsBeforeCommand === settingsCheckpoint())) applySessionSettings(state.selected.session_id, currentModel(), args, 'command');
+      if (isClaude() && args === 'default') args = '';
+      if (commandSettingsCurrent()) applySessionSettings(state.selected.session_id, currentModel(), args, 'command');
     }
   }
   async function commandHistory(count) {
@@ -3060,6 +3098,7 @@
     lastResponse: () => itemText([...state.items.values()].reverse().find(item => item.type === 'agentMessage' && item.phase !== 'commentary') || {}),
     exportText: () => '# ' + title(state.selected) + '\n\n' + [...state.items.values()].filter(item => ['userMessage', 'agentMessage'].includes(item.type)).map(item => '## ' + (item.type === 'userMessage' ? 'You' : agentLabel()) + (itemDate(item) ? ' · ' + (itemTimeLabel(item) ? itemTimeLabel(item) + ': ' : '') + itemDate(item).toISOString() : '') + '\n\n' + clean(item.type === 'userMessage' ? promptText(itemText(item)) : itemText(item))).join('\n\n'),
   });
+  for (const [id, name] of [['model', 'model'], ['effort', 'reasoning'], ['permissions', 'permissions']]) $(id).addEventListener('click', () => commandUI.handle('/' + name));
   $('show-sessions').addEventListener('click', () => showSessions(true));
   $('empty-sessions').addEventListener('click', () => showSessions(true));
   $('close-sessions').addEventListener('click', () => showSessions(false));

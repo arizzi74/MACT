@@ -34,6 +34,23 @@ func TestClaudeProcessHelper(t *testing.T) {
 		return
 	}
 	root := os.Getenv("MACT_CLAUDE_HELPER_ROOT")
+	probe := false
+	for _, arg := range os.Args[1:] {
+		if arg == "--help" {
+			if os.Getenv("MACT_CLAUDE_HELPER_NO_CAPABILITIES") == "1" {
+				os.Exit(1)
+			}
+			if os.Getenv("MACT_CLAUDE_HELPER_MANUAL_MODE") == "1" {
+				fmt.Fprintln(os.Stdout, `  --permission-mode <mode> (choices: "manual", "acceptEdits", "plan", "dontAsk", "auto", "bypassPermissions")`)
+			} else {
+				fmt.Fprintln(os.Stdout, `  --permission-mode <mode> (choices: "default", "acceptEdits", "plan", "dontAsk", "auto", "bypassPermissions")`)
+			}
+			os.Exit(0)
+		}
+		if arg == "--no-session-persistence" {
+			probe = true
+		}
+	}
 	session, resume := "", false
 	for _, arg := range os.Args[1:] {
 		if strings.HasPrefix(arg, "--session-id=") {
@@ -60,13 +77,25 @@ func TestClaudeProcessHelper(t *testing.T) {
 		_ = json.NewEncoder(f).Encode(value)
 		_ = f.Close()
 	}
-	model := ""
+	model, effort, permissionMode := "", "", ""
+	allowBypass := false
 	for _, arg := range os.Args {
+		if arg == "--allow-dangerously-skip-permissions" {
+			allowBypass = true
+		}
+		if strings.HasPrefix(arg, "--effort=") {
+			effort = strings.TrimPrefix(arg, "--effort=")
+		}
+		if strings.HasPrefix(arg, "--permission-mode=") {
+			permissionMode = strings.TrimPrefix(arg, "--permission-mode=")
+		}
 		if strings.HasPrefix(arg, "--model=") {
 			model = strings.TrimPrefix(arg, "--model=")
 		}
 	}
-	log(map[string]any{"launch": true, "resume": resume, "session": session, "model": model, "hasToken": os.Getenv("ANTHROPIC_AUTH_TOKEN") != "", "hasAPIKey": os.Getenv("ANTHROPIC_API_KEY") != ""})
+	if !probe {
+		log(map[string]any{"launch": true, "resume": resume, "session": session, "model": model, "effort": effort, "effortEnv": os.Getenv("CLAUDE_CODE_EFFORT_LEVEL"), "permissionMode": permissionMode, "allowBypass": allowBypass, "hasToken": os.Getenv("ANTHROPIC_AUTH_TOKEN") != "", "hasAPIKey": os.Getenv("ANTHROPIC_API_KEY") != ""})
+	}
 	send := func(value any) { _ = json.NewEncoder(os.Stdout).Encode(value) }
 	result := func(text string) {
 		id := uuid.NewString()
@@ -93,19 +122,26 @@ func TestClaudeProcessHelper(t *testing.T) {
 			}
 			_ = json.Unmarshal(msg["request"], &request)
 			if request.Subtype == "initialize" {
-				if request.Hooks["PreToolUse"] != nil || os.Getenv("CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS") != "1" {
+				if request.Hooks["PreToolUse"] != nil || (!probe && os.Getenv("CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS") != "1") {
 					os.Exit(35)
 				}
-				if os.Getenv("MACT_CLAUDE_HELPER_HANG_INIT") == "1" {
+				if !probe && os.Getenv("MACT_CLAUDE_HELPER_HANG_INIT") == "1" {
 					continue
 				}
-				send(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": id, "response": map[string]any{}}})
+				catalog := map[string]any{}
+				if os.Getenv("MACT_CLAUDE_HELPER_NO_CAPABILITIES") != "1" {
+					_ = json.Unmarshal([]byte(`{"models":[{"value":"default","resolvedModel":"claude-sonnet-4-6","displayName":"Default","supportedEffortLevels":["low","medium","high","max"]},{"value":"sonnet","resolvedModel":"claude-sonnet-4-6","displayName":"Sonnet","supportsEffort":true,"supportedEffortLevels":["low","medium","high","max"]},{"value":"opus","resolvedModel":"claude-opus-4-7","displayName":"Opus","supportsEffort":true,"supportedEffortLevels":["low","medium","high","xhigh","max"]},{"value":"haiku","displayName":"Haiku"}]}`), &catalog)
+				}
+				send(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": id, "response": catalog}})
 			}
 			if request.Subtype == "interrupt" {
 				send(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": id, "response": map[string]any{}}})
 				send(map[string]any{"type": "result", "subtype": "error_during_execution", "is_error": true})
 			}
 		case "user":
+			if probe {
+				os.Exit(99)
+			}
 			_ = os.WriteFile(filepath.Join(root, session+".native"), []byte("native Claude session"), 0o600)
 			var message struct {
 				Content []map[string]any `json:"content"`
@@ -183,7 +219,7 @@ func testConfig(t *testing.T) Config {
 	if err := os.Chmod(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	return Config{Command: os.Args[0], WorkingDirectory: root, StateDirectory: filepath.Join(root, "state"), SocketPath: filepath.Join(root, "s"), Env: append(os.Environ(), "MACT_CLAUDE_HELPER=1", "MACT_CLAUDE_HELPER_ROOT="+root, "HOME="+root, "CLAUDE_CONFIG_DIR="+filepath.Join(root, "native")), StartupTimeout: time.Second, RequestTimeout: 2 * time.Second}
+	return Config{Command: os.Args[0], WorkingDirectory: root, StateDirectory: filepath.Join(root, "state"), SocketPath: filepath.Join(root, "s"), Env: append(os.Environ(), "MACT_CLAUDE_HELPER=1", "GORACE=atexit_sleep_ms=0", "MACT_CLAUDE_HELPER_ROOT="+root, "HOME="+root, "CLAUDE_CONFIG_DIR="+filepath.Join(root, "native")), StartupTimeout: time.Second, RequestTimeout: 2 * time.Second}
 }
 
 func startTest(t *testing.T, cfg Config) *Runtime {

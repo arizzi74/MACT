@@ -44,9 +44,16 @@ func (m *RuntimeManager) startClaudeProfile(ctx context.Context, profile config.
 				"DISABLE_AUTOUPDATER": "1",
 				"ANTHROPIC_API_KEY":   "", "ANTHROPIC_AUTH_TOKEN": "", "ANTHROPIC_BASE_URL": settings.BaseURL,
 				"ANTHROPIC_MODEL":                settings.Model,
-				"ANTHROPIC_DEFAULT_OPUS_MODEL":   settings.Model,
-				"ANTHROPIC_DEFAULT_SONNET_MODEL": settings.Model,
-				"ANTHROPIC_DEFAULT_HAIKU_MODEL":  settings.Model,
+				"ANTHROPIC_DEFAULT_OPUS_MODEL":   "",
+				"ANTHROPIC_DEFAULT_SONNET_MODEL": "",
+				"ANTHROPIC_DEFAULT_HAIKU_MODEL":  "",
+			}
+			if settings.BaseURL != "" {
+				// Custom gateways historically use one configured provider model for
+				// Claude's family aliases. Official accounts keep native alias routing.
+				for _, key := range []string{"ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL"} {
+					env[key] = settings.Model
+				}
 			}
 			if settings.AuthMode != "login" {
 				// A configured API account takes precedence over inherited OAuth
@@ -60,7 +67,7 @@ func (m *RuntimeManager) startClaudeProfile(ctx context.Context, profile config.
 			} else if settings.AuthMode == "auth_token" {
 				env["ANTHROPIC_AUTH_TOKEN"] = settings.Credential
 			}
-			return claudeadapter.LaunchSettings{Env: env, Model: settings.Model, PermissionMode: settings.PermissionMode}, nil
+			return claudeadapter.LaunchSettings{Env: env, Model: settings.Model, ReasoningEffort: settings.ReasoningEffort, PermissionMode: settings.PermissionMode}, nil
 		},
 	})
 	if err != nil {

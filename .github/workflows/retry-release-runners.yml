@@ -43,7 +43,8 @@ jobs:
               for family in ("native-speech", "native-whisper")
               for runner in ("macos-15", "macos-26")
           }
-          DEPENDENT_JOBS = {"package", "test-and-build", "publish"}
+          # Full tag pushes always skip the dispatch-only installer tests.
+          ALLOWED_SKIPPED_JOBS = {"installer-tests", "package", "test-and-build", "publish"}
           NOT_ACQUIRED = "The job was not acquired by Runner of type hosted even after multiple attempts"
           CAPACITY = "Due to capacity constraints, jobs targeting macOS arm64 runners may experience longer queue times."
 
@@ -162,7 +163,7 @@ jobs:
                   conclusion = job.get("conclusion")
                   if conclusion == "success":
                       continue
-                  if conclusion == "skipped" and job.get("name") in DEPENDENT_JOBS:
+                  if conclusion == "skipped" and job.get("name") in ALLOWED_SKIPPED_JOBS:
                       continue
                   if (conclusion != "cancelled" or job.get("name") not in CAPACITY_JOBS
                           or job.get("steps") != [] or job.get("runner_id") not in (0, None)

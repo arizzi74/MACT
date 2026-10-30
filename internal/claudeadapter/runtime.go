@@ -31,10 +31,11 @@ const maxMessageBytes = 32 << 20
 // ANTHROPIC_API_KEY as distinct authentication mechanisms. They are never
 // returned through the protocol or written to the history store.
 type LaunchSettings struct {
-	Env            map[string]string
-	Model          string
-	SettingsFile   string
-	PermissionMode string
+	Env             map[string]string
+	Model           string
+	ReasoningEffort string
+	SettingsFile    string
+	PermissionMode  string
 }
 
 type Config struct {
@@ -68,7 +69,7 @@ var supportedMethods = []string{
 	"initialize", "thread/start", "thread/resume", "thread/read", "thread/list",
 	"thread/loaded/list", "thread/name/set", "thread/turns/list", "turn/start",
 	"turn/interrupt", "turn/steer", "thread/queue/list", "thread/queue/clear", "config/read", "model/list",
-	"thread/status/read", "thread/delete", "thread/history/recover",
+	"thread/status/read", "thread/settings/update", "thread/delete", "thread/history/recover",
 }
 
 // SupportedMethods is an exhaustive allowlist. In particular Claude's queued
@@ -96,6 +97,8 @@ type server struct {
 	socketInfo        os.FileInfo
 	closeOnce         sync.Once
 	balance           *CreditBalance
+	enterpriseBudget  *EnterpriseBudget
+	capabilities      nativeCapabilities
 	balanceGeneration uint64
 	wg                sync.WaitGroup
 }
@@ -164,6 +167,7 @@ func Start(ctx context.Context, cfg Config) (*Runtime, error) {
 		cancel()
 		return nil, err
 	}
+	s.capabilities = s.discoverCapabilities(ctx, settings)
 	for _, thread := range threads {
 		if s.deletions[thread.ID] != nil {
 			continue
@@ -302,15 +306,18 @@ func (r *Runtime) WithIdleSettingsUpdate(update func() error) error {
 	}
 	s.balanceGeneration++
 	s.balance = nil
+	s.enterpriseBudget = nil
 	settings, err := s.settings()
 	if err != nil {
 		return err
 	}
+	s.capabilities = s.discoverCapabilities(s.ctx, settings)
 	for _, thread := range s.threads {
 		s.applyStatusSettings(thread, settings, true)
 		if err := s.save(thread); err != nil {
 			return err
 		}
+		s.broadcastSettings(thread)
 		s.broadcastStatus(thread)
 	}
 	return nil
@@ -478,7 +485,7 @@ func (s *server) close() error {
 }
 
 func initializeInfo(s *server) map[string]any {
-	return map[string]any{"userAgent": "claude-code/telegramgw", "codexHome": s.cfg.StateDirectory, "platformFamily": runtime.GOOS, "platformOs": runtime.GOOS, "supportedMethods": SupportedMethods()}
+	return map[string]any{"userAgent": "claude-code/telegramgw", "codexHome": s.cfg.StateDirectory, "platformFamily": runtime.GOOS, "platformOs": runtime.GOOS, "supportedMethods": SupportedMethods(), "supportedPermissionModes": s.supportedPermissionModes()}
 }
 
 func methodSupported(method string) bool {

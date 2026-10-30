@@ -68,6 +68,9 @@ func (s *sessionActor) codexModelMenu(ctx context.Context, client *codexadapter.
 	start := page * protocol.ModelMenuPageSize
 	for _, model := range available[start:min(start+protocol.ModelMenuPageSize, len(available))] {
 		label := valueOr(strings.TrimSpace(model.DisplayName), model.ID)
+		if s.agent.cfg.AgentKind == "claude" && model.ResolvedModel != "" && model.ResolvedModel != model.ID {
+			label += " → " + model.ResolvedModel
+		}
 		if model.Default {
 			label += " (default)"
 		}
@@ -84,7 +87,11 @@ func (s *sessionActor) codexModelMenu(ctx context.Context, client *codexadapter.
 }
 
 func (s *sessionActor) modelReasoningMenu(model codexadapter.ModelInfo) (protocol.Result, error) {
-	name := permissionText(s.agent.redactor.Redact(valueOr(strings.TrimSpace(model.DisplayName), model.ID)), 120)
+	name := valueOr(strings.TrimSpace(model.DisplayName), model.ID)
+	if s.agent.cfg.AgentKind == "claude" && model.ResolvedModel != "" && model.ResolvedModel != model.ID {
+		name += " → " + model.ResolvedModel
+	}
+	name = permissionText(s.agent.redactor.Redact(name), 120)
 	result := protocol.Result{Text: "Choose reasoning effort for " + name + ". Both choices apply to subsequent turns in this session.", ModelMenu: &protocol.ModelMenu{}}
 	if s.session.ActiveTurnID != "" {
 		result.Text += "\nWait for the current turn to finish before applying the selection."
@@ -102,6 +109,9 @@ func (s *sessionActor) modelReasoningMenu(model codexadapter.ModelInfo) (protoco
 			label += " (default)"
 		}
 		result.ModelMenu.Options = append(result.ModelMenu.Options, protocol.ModelOption{Args: model.ID + " " + effort, Label: permissionText(s.agent.redactor.Redact(label), 120)})
+	}
+	if s.agent.cfg.AgentKind == "claude" && len(result.ModelMenu.Options) > 0 {
+		result.ModelMenu.Options = append([]protocol.ModelOption{{Args: model.ID, Label: "Claude Code default"}}, result.ModelMenu.Options...)
 	}
 	if len(result.ModelMenu.Options) == 0 {
 		result.Text = "This model does not advertise reasoning effort choices. Apply " + name + " to subsequent turns?"

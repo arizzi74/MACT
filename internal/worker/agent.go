@@ -50,8 +50,10 @@ func NewAgent(cfg config.WorkerConfig, store *Store, logger *slog.Logger) (*Agen
 		if err != nil {
 			return nil, err
 		}
-		if settings.Credential != "" {
-			cfg.RedactPatterns = append(append([]string{}, cfg.RedactPatterns...), regexp.QuoteMeta(settings.Credential))
+		for _, credential := range []string{settings.Credential, settings.EnterpriseBudgetAPIKey} {
+			if credential != "" {
+				cfg.RedactPatterns = append(append([]string{}, cfg.RedactPatterns...), regexp.QuoteMeta(credential))
+			}
 		}
 	}
 	if cfg.MaxQueuedTurns == 0 {
@@ -1035,7 +1037,7 @@ func codexCommandNeedsIdle(name, args string) bool {
 		return args == ""
 	case "permissions":
 		choice := strings.ToLower(args)
-		return choice != "" && choice != "cancel" && choice != "full-access" && choice != "danger-full-access"
+		return choice != "" && choice != "cancel" && choice != "full-access" && choice != "danger-full-access" && choice != "bypasspermissions"
 	case "model":
 		return !modelMenuReadOnly(args)
 	case "rename", "reasoning", "approvals", "personality", "memories", "goal":

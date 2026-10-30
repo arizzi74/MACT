@@ -33,14 +33,20 @@ func TestClaudeWorkerProcessHelper(t *testing.T) {
 	if os.Getenv("MACT_WORKER_CLAUDE_HELPER") != "1" {
 		return
 	}
-	if path := os.Getenv("MACT_WORKER_CLAUDE_START_LOG"); path != "" {
-		_ = os.WriteFile(path, []byte("started"), 0o600)
-	}
 	for _, arg := range os.Args[1:] {
+		if arg == "--help" {
+			_, _ = os.Stdout.WriteString(`  --permission-mode <mode> (choices: "default", "acceptEdits", "plan", "dontAsk", "auto", "bypassPermissions")
+  --effort <level> (choices: "low", "medium", "high", "xhigh", "max")
+`)
+			os.Exit(0)
+		}
 		if arg == "--version" {
 			_, _ = os.Stdout.WriteString("9.8.7 (Claude Code)\n")
 			os.Exit(0)
 		}
+	}
+	if path := os.Getenv("MACT_WORKER_CLAUDE_START_LOG"); path != "" {
+		_ = os.WriteFile(path, []byte("started"), 0o600)
 	}
 	send := func(value any) { _ = json.NewEncoder(os.Stdout).Encode(value) }
 	scan := bufio.NewScanner(os.Stdin)
@@ -61,7 +67,17 @@ func TestClaudeWorkerProcessHelper(t *testing.T) {
 			os.Exit(2)
 		}
 		if msg.Type == "control_request" {
-			send(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": msg.RequestID, "response": map[string]any{}}})
+			response := map[string]any{}
+			if msg.Request.Subtype == "initialize" {
+				response["models"] = []any{
+					map[string]any{"value": "default", "resolvedModel": "claude-default-test", "supportedEffortLevels": []string{"low", "medium", "high"}},
+					map[string]any{"value": "claude-opus-test", "resolvedModel": "claude-opus-resolved-test", "supportedEffortLevels": []string{"low", "medium", "high", "xhigh", "max"}},
+					map[string]any{"value": "worker-initial", "supportedEffortLevels": []string{"low", "medium", "high"}},
+					map[string]any{"value": "worker-next", "supportedEffortLevels": []string{"low", "medium", "high"}},
+					map[string]any{"value": "no-effort-model"},
+				}
+			}
+			send(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": msg.RequestID, "response": response}})
 			if msg.Request.Subtype == "interrupt" {
 				send(map[string]any{"type": "result", "subtype": "error_during_execution", "is_error": true})
 			}
@@ -72,7 +88,7 @@ func TestClaudeWorkerProcessHelper(t *testing.T) {
 				if err != nil {
 					os.Exit(3)
 				}
-				_ = json.NewEncoder(f).Encode(map[string]any{"api_key": os.Getenv("ANTHROPIC_API_KEY") != "", "auth_token": os.Getenv("ANTHROPIC_AUTH_TOKEN") != "", "base_url": os.Getenv("ANTHROPIC_BASE_URL"), "model": os.Getenv("ANTHROPIC_MODEL"), "disable_autoupdater": os.Getenv("DISABLE_AUTOUPDATER")})
+				_ = json.NewEncoder(f).Encode(map[string]any{"api_key": os.Getenv("ANTHROPIC_API_KEY") != "", "auth_token": os.Getenv("ANTHROPIC_AUTH_TOKEN") != "", "base_url": os.Getenv("ANTHROPIC_BASE_URL"), "model": os.Getenv("ANTHROPIC_MODEL"), "disable_autoupdater": os.Getenv("DISABLE_AUTOUPDATER"), "opus_model": os.Getenv("ANTHROPIC_DEFAULT_OPUS_MODEL"), "sonnet_model": os.Getenv("ANTHROPIC_DEFAULT_SONNET_MODEL"), "haiku_model": os.Getenv("ANTHROPIC_DEFAULT_HAIKU_MODEL")})
 				_ = f.Close()
 			}
 			text := ""
@@ -515,6 +531,11 @@ func TestClaudeRejectsInsecureAssignedAndPersistedEndpointsBeforeNativeLaunch(t 
 	if err != nil {
 		t.Fatal(err)
 	}
+	// StartThread can inspect native initialization metadata without inference.
+	// The launch fence below concerns the subsequently rejected persisted file.
+	if err := os.Remove(marker); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
 	// Model an older installation's existing insecure file. Persisted reads
 	// must fail even though no new settings assignment occurs.
 	data, _ := json.Marshal(claudeSettingsFile{BaseURL: "http://remote.example.test", AuthMode: "api_key", PermissionMode: "default", Credential: credential})
@@ -532,5 +553,241 @@ func TestClaudeRejectsInsecureAssignedAndPersistedEndpointsBeforeNativeLaunch(t 
 	}
 	if _, err := NewAgent(a.cfg, a.store, slog.New(slog.NewTextHandler(io.Discard, nil))); err == nil || strings.Contains(err.Error(), credential) {
 		t.Fatal("worker startup accepted insecure persisted settings or exposed credential")
+	}
+}
+
+func TestClaudeRuntimeReasoningAndEnterpriseBudgetPersistPrivateAndPreserveOmitted(t *testing.T) {
+	a, _ := claudeSettingsAgent(t)
+	key := "synthetic-admin-key-in-private-worker-file"
+	update := &protocol.WorkerRuntimeSettingsUpdate{Model: "claude-opus-test", ReasoningEffort: "xhigh", AuthMode: "login", PermissionMode: "default", EnterpriseBudget: &protocol.ClaudeEnterpriseBudgetUpdate{Enabled: true, UserID: "user_Ab123", APIKey: &key}}
+	result := a.runtimeSettings(t.Context(), claudeSettingsRequest(a, "put", update))
+	if result.ErrorCode != "" || result.Settings == nil || result.Settings.ReasoningEffort != "xhigh" || result.Settings.EnterpriseBudget == nil || !result.Settings.EnterpriseBudget.APIKeyConfigured {
+		t.Fatalf("public projection: %#v", result)
+	}
+	settings, err := readClaudeSettings(claudeSettingsPath(a.cfg))
+	if err != nil || settings.ReasoningEffort != "xhigh" || settings.EnterpriseBudgetAPIKey != key {
+		t.Fatalf("private settings not persisted: %v", err)
+	}
+	update.EnterpriseBudget = nil
+	update.ReasoningEffort = "low"
+	result = a.runtimeSettings(t.Context(), claudeSettingsRequest(a, "put", update))
+	if result.ErrorCode != "" || result.Settings == nil || result.Settings.EnterpriseBudget == nil || !result.Settings.EnterpriseBudget.Enabled {
+		t.Fatalf("omitted Enterprise enrollment lost: %#v", result)
+	}
+	// Disabling polling preserves the secret unless removal is explicit.
+	update.EnterpriseBudget = &protocol.ClaudeEnterpriseBudgetUpdate{Enabled: false, UserID: "user_Ab123"}
+	result = a.runtimeSettings(t.Context(), claudeSettingsRequest(a, "put", update))
+	if result.ErrorCode != "" || result.Settings.EnterpriseBudget.Enabled || !result.Settings.EnterpriseBudget.APIKeyConfigured {
+		t.Fatalf("disable lost enrollment/key: %#v", result)
+	}
+	for _, redactor := range []*auth.Redactor{a.redactor, a.manager.statsRedactor, a.store.redactor.Load()} {
+		if redactor.Redact(key) != "[REDACTED]" {
+			t.Fatal("Enterprise Admin credential was not redacted")
+		}
+	}
+	fresh, err := NewAgent(a.cfg, a.store, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, redactor := range []*auth.Redactor{fresh.redactor, fresh.manager.statsRedactor, fresh.store.redactor.Load()} {
+		if redactor.Redact(key) != "[REDACTED]" {
+			t.Fatal("saved Admin credential unprotected on startup")
+		}
+	}
+	data, _ := json.Marshal(result)
+	if strings.Contains(string(data), key) || strings.Contains(string(data), `"api_key":`) {
+		t.Fatal("public settings exposed Enterprise credential")
+	}
+	if err := a.store.db.View(func(tx *workerdb.Tx) error {
+		for _, name := range [][]byte{bucketCommands, bucketOutbox, bucketSessions, bucketRuntimes, bucketMeta} {
+			if err := tx.Bucket(name).ForEach(func(_, value []byte) error {
+				if strings.Contains(string(value), key) {
+					t.Errorf("Enterprise key persisted in durable bucket %q", name)
+				}
+				return nil
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestClaudePrivateSettingsRoundTripMaximumCredentialSizes(t *testing.T) {
+	a, _ := claudeSettingsAgent(t)
+	inferenceKey, adminKey := strings.Repeat("i", 8192), strings.Repeat("a", 8192)
+	update := &protocol.WorkerRuntimeSettingsUpdate{AuthMode: "login", PermissionMode: "default", APIKey: &inferenceKey, EnterpriseBudget: &protocol.ClaudeEnterpriseBudgetUpdate{Enabled: true, UserID: "user_Ab123", APIKey: &adminKey}}
+	result := a.runtimeSettings(t.Context(), claudeSettingsRequest(a, "put", update))
+	if result.ErrorCode != "" {
+		t.Fatalf("valid maximum credentials not saved: %s", result.ErrorCode)
+	}
+	saved, err := readClaudeSettings(claudeSettingsPath(a.cfg))
+	if err != nil || saved.Credential != inferenceKey || saved.EnterpriseBudgetAPIKey != adminKey {
+		t.Fatal("valid PUT created settings that cannot be read", err)
+	}
+	info, err := os.Stat(claudeSettingsPath(a.cfg))
+	if err != nil || info.Mode().Perm() != 0600 {
+		t.Fatalf("private settings lost file permissions: %v %v", info, err)
+	}
+}
+
+func TestClaudeOfficialAccountKeepsNativeFamilyAliasesAndCustomProviderOverrides(t *testing.T) {
+	a, _ := claudeSettingsAgent(t)
+	root := a.cfg.AllowedWorkspaceRoots[0]
+	logPath := filepath.Join(root, "alias-env.jsonl")
+	t.Setenv("MACT_WORKER_CLAUDE_HELPER", "1")
+	t.Setenv("MACT_WORKER_CLAUDE_ENV_LOG", logPath)
+	for _, name := range []string{"ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL"} {
+		t.Setenv(name, "ambient-alias-model")
+	}
+	if err := saveClaudeSettings(claudeSettingsPath(a.cfg), claudeSettingsFile{Model: "opus", AuthMode: "login", PermissionMode: "default"}); err != nil {
+		t.Fatal(err)
+	}
+	client, err := a.manager.startClaudeProfile(a.ctx, a.cfg.Runtimes[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	thread, err := client.StartThread(t.Context(), codexadapter.ThreadOptions{CWD: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index, baseURL := range []string{"", "https://provider.example.test"} {
+		if index > 0 {
+			update := &protocol.WorkerRuntimeSettingsUpdate{Model: "provider-model", BaseURL: baseURL, AuthMode: "login", PermissionMode: "default"}
+			if result := a.runtimeSettings(t.Context(), claudeSettingsRequest(a, "put", update)); result.ErrorCode != "" {
+				t.Fatal(result.ErrorCode)
+			}
+		}
+		if _, err := client.StartTurn(t.Context(), thread.ID, "probe aliases"); err != nil {
+			t.Fatal(err)
+		}
+		deadline := time.After(3 * time.Second)
+	completed:
+		for {
+			select {
+			case event := <-client.Events():
+				if event.Kind == "turn_completed" {
+					break completed
+				}
+			case <-deadline:
+				t.Fatal("native helper did not finish")
+			}
+		}
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("unexpected native helper launches: %s", data)
+	}
+	for i, line := range lines {
+		var env map[string]any
+		if json.Unmarshal([]byte(line), &env) != nil {
+			t.Fatal(line)
+		}
+		for _, key := range []string{"opus_model", "sonnet_model", "haiku_model"} {
+			want := ""
+			if i == 1 {
+				want = "provider-model"
+			}
+			if env[key] != want {
+				t.Fatalf("native family alias %s got %v, want %q", key, env[key], want)
+			}
+		}
+	}
+}
+
+func TestClaudeNewAndClearUseWorkerDefaultsAndKeepSessionOverrides(t *testing.T) {
+	a, _ := claudeSettingsAgent(t)
+	t.Setenv("MACT_WORKER_CLAUDE_HELPER", "1")
+	initial := claudeSettingsFile{Model: "worker-initial", ReasoningEffort: "high", AuthMode: "login", PermissionMode: "acceptEdits"}
+	if err := saveClaudeSettings(claudeSettingsPath(a.cfg), initial); err != nil {
+		t.Fatal(err)
+	}
+	client, err := a.manager.startClaudeProfile(a.ctx, a.cfg.Runtimes[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	runtime, err := a.store.BeginRuntime("primary", "Claude", a.cfg.AllowedWorkspaceRoots[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.State = "running"
+	a.manager.install(runtime, client)
+	options, err := a.newThreadOptions(runtime.DefaultCWD, "legacy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if options.Model != "" || options.ReasoningEffort != "" || options.PermissionProfile != "" || options.Sandbox != "" {
+		t.Fatalf("Claude default settings were mapped to Codex options: %#v", options)
+	}
+	parent, err := client.StartThread(t.Context(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSettings := func(threadID, model, effort, mode string) {
+		t.Helper()
+		status, err := client.ReadClaudeStatus(t.Context(), threadID)
+		if err != nil || status.Model == nil || *status.Model != model || (status.ReasoningEffort == nil && effort != "") || (status.ReasoningEffort != nil && *status.ReasoningEffort != effort) || status.PermissionMode == nil || *status.PermissionMode != mode {
+			t.Fatalf("thread settings model=%s effort=%s mode=%s: %#v %v", model, effort, mode, status, err)
+		}
+	}
+	assertSettings(parent.ID, initial.Model, initial.ReasoningEffort, initial.PermissionMode)
+	model, effort, mode := "provider/session-override", "", "plan"
+	if err := client.UpdateClaudeThreadSettings(t.Context(), parent.ID, &model, &effort, &mode); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := a.store.UpsertRuntimeSession(runtime, sessionFromThread(runtime, parent, true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	actor := &sessionActor{agent: a, runtime: runtime, session: saved}
+	// Existing session preferences survive a worker default change.
+	update := &protocol.WorkerRuntimeSettingsUpdate{Model: "worker-next", ReasoningEffort: "medium", AuthMode: "login", PermissionMode: "dontAsk"}
+	if result := a.runtimeSettings(t.Context(), claudeSettingsRequest(a, "put", update)); result.ErrorCode != "" {
+		t.Fatal(result.ErrorCode)
+	}
+	assertSettings(parent.ID, model, effort, mode)
+	result, err := actor.webUINewSession(t.Context(), client, `{"name":"Cleared Claude session"}`)
+	if err != nil || result.Session == nil {
+		t.Fatalf("clear/new did not create session: %#v %v", result, err)
+	}
+	assertSettings(result.Session.ThreadID, update.Model, update.ReasoningEffort, update.PermissionMode)
+	assertSettings(parent.ID, model, effort, mode)
+}
+
+func TestClaudeOversizedEscapedCredentialsPreserveReadableSavedSettings(t *testing.T) {
+	a, _ := claudeSettingsAgent(t)
+	original := claudeSettingsFile{Model: "saved-model", AuthMode: "login", PermissionMode: "default"}
+	path := claudeSettingsPath(a.cfg)
+	if err := saveClaudeSettings(path, original); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inferenceKey, adminKey := strings.Repeat("&", 8192), strings.Repeat("<", 8192)
+	update := &protocol.WorkerRuntimeSettingsUpdate{Model: "oversized-model", AuthMode: "login", PermissionMode: "default", APIKey: &inferenceKey, EnterpriseBudget: &protocol.ClaudeEnterpriseBudgetUpdate{Enabled: true, UserID: "user_Ab123", APIKey: &adminKey}}
+	if err := update.Validate(); err != nil {
+		t.Fatal("valid individual credential bounds were rejected")
+	}
+	result := a.runtimeSettings(t.Context(), claudeSettingsRequest(a, "put", update))
+	if result.ErrorCode != "save_failed" {
+		t.Fatalf("encoded private file limit not enforced: %s", result.ErrorCode)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || string(after) != string(before) {
+		t.Fatal("oversized settings partially replaced saved configuration", err)
+	}
+	got, err := readClaudeSettings(path)
+	if err != nil || got != original {
+		t.Fatal("oversized settings made the previous file unreadable", err)
 	}
 }

@@ -1019,6 +1019,10 @@ function closeWorkerRuntimeSettings() {
   workerRuntimeBusy = false;
   $('worker-runtime-form').reset();
   $('worker-runtime-key').value = '';
+  $('worker-runtime-budget-key').value = '';
+  $('worker-runtime-budget-clear').checked = false;
+  $('worker-runtime-budget-fields').hidden = true;
+  $('worker-runtime-budget-key-help').textContent = 'Use a separate Admin API key with read:spend_limits access. Leave blank to keep the saved key. The saved value is never returned.';
   $('worker-runtime-clear').checked = false;
   $('worker-runtime-key-help').textContent = 'Leave blank to keep the saved credential. The saved value is never returned.';
   $('worker-runtime-target').textContent = '';
@@ -1031,6 +1035,9 @@ function closeWorkerRuntimeSettings() {
 function updateWorkerRuntimeControls() {
   $('worker-runtime-key').disabled = $('worker-runtime-clear').checked;
   if ($('worker-runtime-clear').checked) $('worker-runtime-key').value = '';
+  $('worker-runtime-budget-fields').hidden = !$('worker-runtime-budget-enabled').checked;
+  $('worker-runtime-budget-key').disabled = $('worker-runtime-budget-clear').checked;
+  if ($('worker-runtime-budget-clear').checked) $('worker-runtime-budget-key').value = '';
   $('worker-runtime-bypass').hidden = $('worker-runtime-permissions').value !== 'bypassPermissions';
   $('worker-runtime-codex-full-access').hidden = $('worker-runtime-codex-permissions').value !== 'full-access';
 }
@@ -1045,9 +1052,20 @@ function fillWorkerRuntimeSettings(settings) {
   }
   if (settings.provider !== 'claude') throw new Error('Unexpected worker settings.');
   $('worker-runtime-model').value = settings.model || '';
+  $('worker-runtime-reasoning').value = settings.reasoning_effort || '';
   $('worker-runtime-url').value = settings.base_url || '';
   $('worker-runtime-auth').value = settings.auth_mode || 'login';
+  const permissionModes = Array.isArray(settings.supported_permission_modes) ? settings.supported_permission_modes : ['default', 'acceptEdits', 'plan', 'bypassPermissions'];
+  for (const option of $('worker-runtime-permissions').options) { option.hidden = !permissionModes.includes(option.value); option.disabled = option.hidden; }
   $('worker-runtime-permissions').value = settings.permission_mode || 'default';
+  const budget = settings.enterprise_budget || {};
+  $('worker-runtime-budget-enabled').checked = budget.enabled === true;
+  $('worker-runtime-budget-user').value = budget.user_id || '';
+  $('worker-runtime-budget-key').value = '';
+  $('worker-runtime-budget-clear').checked = false;
+  $('worker-runtime-budget-key-help').textContent = budget.api_key_configured
+    ? 'An Admin API key is saved. Leave blank to keep it, or select Remove to clear it. Uses read:spend_limits access; the saved value is never returned.'
+    : 'Use a separate Admin API key with read:spend_limits access. Leave blank to keep the saved key. The saved value is never returned.';
   $('worker-runtime-key').value = '';
   $('worker-runtime-clear').checked = false;
   $('worker-runtime-key-help').textContent = settings.api_key_configured
@@ -1106,12 +1124,16 @@ async function saveWorkerRuntimeSettings(event) {
   const codex = workerRuntimeTarget.provider === 'codex';
   const update = codex ? { codex_defaults: { model: $('worker-runtime-codex-model').value.trim(),
     reasoning_effort: $('worker-runtime-codex-reasoning').value, permission_level: $('worker-runtime-codex-permissions').value } }
-    : { model: $('worker-runtime-model').value.trim(), base_url: $('worker-runtime-url').value.trim(),
-    auth_mode: $('worker-runtime-auth').value, permission_mode: $('worker-runtime-permissions').value };
+    : { model: $('worker-runtime-model').value.trim(), reasoning_effort: $('worker-runtime-reasoning').value, base_url: $('worker-runtime-url').value.trim(),
+    auth_mode: $('worker-runtime-auth').value, permission_mode: $('worker-runtime-permissions').value,
+    enterprise_budget: { enabled: $('worker-runtime-budget-enabled').checked, user_id: $('worker-runtime-budget-user').value.trim() } };
   if (!codex && $('worker-runtime-clear').checked) update.api_key = '';
   else if (!codex && $('worker-runtime-key').value) update.api_key = $('worker-runtime-key').value;
+  if (!codex && $('worker-runtime-budget-clear').checked) update.enterprise_budget.api_key = '';
+  else if (!codex && $('worker-runtime-budget-key').value) update.enterprise_budget.api_key = $('worker-runtime-budget-key').value;
   // Credentials are held only by this request; never retain them as a draft.
   $('worker-runtime-key').value = '';
+  $('worker-runtime-budget-key').value = '';
   workerRuntimeBusy = true;
   $('worker-runtime-fields').disabled = true;
   $('worker-runtime-error').hidden = true;
@@ -1129,6 +1151,7 @@ async function saveWorkerRuntimeSettings(event) {
     if (current()) { $('worker-runtime-status').textContent = ''; showWorkerRuntimeError(error); }
   } finally {
     delete update.api_key;
+    if (update.enterprise_budget) delete update.enterprise_budget.api_key;
     if (current()) { workerRuntimeBusy = false; $('worker-runtime-fields').disabled = false; }
   }
 }
@@ -1678,6 +1701,8 @@ $('worker-runtime-close').addEventListener('click', closeWorkerRuntimeSettings);
 $('worker-runtime-dialog').addEventListener('cancel', event => { event.preventDefault(); closeWorkerRuntimeSettings(); });
 $('worker-runtime-form').addEventListener('submit', saveWorkerRuntimeSettings);
 $('worker-runtime-clear').addEventListener('change', updateWorkerRuntimeControls);
+$('worker-runtime-budget-enabled').addEventListener('change', updateWorkerRuntimeControls);
+$('worker-runtime-budget-clear').addEventListener('change', updateWorkerRuntimeControls);
 $('worker-runtime-permissions').addEventListener('change', updateWorkerRuntimeControls);
 $('worker-runtime-codex-permissions').addEventListener('change', updateWorkerRuntimeControls);
 $('worker-runtime-codex-reset').addEventListener('click', () => {

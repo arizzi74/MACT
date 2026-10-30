@@ -240,6 +240,7 @@ func (r *resetCreditConsumeResponse) UnmarshalJSON(data []byte) error {
 type ModelInfo struct {
 	ID                     string
 	Model                  string
+	ResolvedModel          string
 	DisplayName            string
 	Description            string
 	DefaultReasoningEffort string
@@ -257,9 +258,9 @@ func (c *Client) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	for len(models) < 200 {
 		var reply struct {
 			Data []struct {
-				ID, Model, DisplayName, Description, DefaultReasoningEffort string
-				IsDefault, SupportsPersonality                              bool
-				SupportedReasoningEfforts                                   []struct {
+				ID, Model, ResolvedModel, DisplayName, Description, DefaultReasoningEffort string
+				IsDefault, SupportsPersonality                                             bool
+				SupportedReasoningEfforts                                                  []struct {
 					Effort string `json:"reasoningEffort"`
 				} `json:"supportedReasoningEfforts"`
 				ServiceTiers []struct{ ID, Name, Description string } `json:"serviceTiers"`
@@ -274,7 +275,7 @@ func (c *Client) ListModels(ctx context.Context) ([]ModelInfo, error) {
 			return nil, err
 		}
 		for _, item := range reply.Data {
-			model := ModelInfo{ID: item.ID, Model: item.Model, DisplayName: item.DisplayName, Description: item.Description, DefaultReasoningEffort: item.DefaultReasoningEffort, SupportsPersonality: item.SupportsPersonality, Default: item.IsDefault}
+			model := ModelInfo{ID: item.ID, Model: item.Model, ResolvedModel: item.ResolvedModel, DisplayName: item.DisplayName, Description: item.Description, DefaultReasoningEffort: item.DefaultReasoningEffort, SupportsPersonality: item.SupportsPersonality, Default: item.IsDefault}
 			for _, effort := range item.SupportedReasoningEfforts {
 				model.ReasoningEfforts = append(model.ReasoningEfforts, effort.Effort)
 			}

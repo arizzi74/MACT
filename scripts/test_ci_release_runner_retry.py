@@ -96,6 +96,18 @@ class ReleaseRunnerRetryTest(unittest.TestCase):
         self.assertEqual(self.calls[-1][0:2], ("POST", POLICY.API + self.run_path + "/rerun-failed-jobs"))
         self.assertTrue(any("/check-runs/777/" in url for _, url, _ in self.calls))
 
+    def test_full_release_installer_only_job_skip_allows_capacity_retry(self):
+        self.jobs.append(self.job(106, "installer-tests", "skipped"))
+        self.assertTrue(self.invoke())
+
+    def test_expected_installer_skip_does_not_mask_other_skips_or_failures(self):
+        for conclusion in ("skipped", "failure", "cancelled", "timed_out"):
+            with self.subTest(conclusion=conclusion):
+                self.setUp()
+                self.jobs.append(self.job(106, "installer-tests", "skipped"))
+                self.jobs[0]["conclusion"] = conclusion
+                self.assert_refused()
+
     def test_both_known_families_and_runner_generations(self):
         for runner in ("macos-15", "macos-26"):
             with self.subTest(runner=runner):

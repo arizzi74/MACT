@@ -18,7 +18,7 @@ func TestClaudeAdminPermissionChoicesMatchValidatedSubset(t *testing.T) {
 		t.Fatal("missing permission selector")
 	}
 	options := regexp.MustCompile(`<option value="([^"]+)">`).FindAllSubmatch(selectHTML[1], -1)
-	want := map[string]bool{"default": true, "acceptEdits": true, "plan": true, "bypassPermissions": true}
+	want := map[string]bool{"default": true, "acceptEdits": true, "plan": true, "dontAsk": true, "auto": true, "bypassPermissions": true}
 	for _, option := range options {
 		mode := string(option[1])
 		if !want[mode] {
@@ -32,7 +32,7 @@ func TestClaudeAdminPermissionChoicesMatchValidatedSubset(t *testing.T) {
 	if len(want) != 0 || strings.Contains(string(selectHTML[1]), `selected`) {
 		t.Fatal("missing choices or unexpected bypass default")
 	}
-	for _, mode := range []string{"dontAsk", "auto", "BYPASSPERMISSIONS", "invented"} {
+	for _, mode := range []string{"read-only", "full-access", "manual", "BYPASSPERMISSIONS", "invented"} {
 		if err := (&protocol.WorkerRuntimeSettingsUpdate{AuthMode: "login", PermissionMode: mode}).Validate(); err == nil {
 			t.Fatal("unreviewed remote permission mode accepted")
 		}

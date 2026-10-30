@@ -11,14 +11,21 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/iaia/telegramgw/internal/protocol"
 )
 
 type params struct {
-	ThreadID       string `json:"threadId"`
-	TurnID         string `json:"turnId"`
-	ExpectedTurnID string `json:"expectedTurnId"`
-	CWD            string `json:"cwd"`
-	Model          string `json:"model"`
+	ThreadID        string  `json:"threadId"`
+	TurnID          string  `json:"turnId"`
+	ExpectedTurnID  string  `json:"expectedTurnId"`
+	CWD             string  `json:"cwd"`
+	Model           string  `json:"model"`
+	Effort          *string `json:"effort"`
+	ReasoningEffort *string `json:"reasoningEffort"`
+	PermissionMode  *string `json:"permissionMode"`
+	Config          struct {
+		ReasoningEffort *string `json:"model_reasoning_effort"`
+	} `json:"config"`
 	Name           string `json:"name"`
 	ApprovalPolicy string `json:"approvalPolicy"`
 	Sandbox        string `json:"sandbox"`
@@ -125,21 +132,13 @@ func (s *server) handle(peer *peer, msg rpcMessage, p params) (any, error) {
 		if !permissionMode(mode) {
 			mode = ""
 		}
-		return map[string]any{"config": map[string]any{"model": optionalString(model), "model_provider": "anthropic", "permissionMode": optionalString(mode)}}, nil
+		return map[string]any{"config": map[string]any{"model": optionalString(model), "model_provider": "anthropic", "permissionMode": optionalString(mode), "model_reasoning_effort": optionalString(settings.ReasoningEffort), "supportedPermissionModes": s.supportedPermissionModes()}}, nil
 	case "model/list":
 		settings, err := s.settings()
 		if err != nil {
 			return nil, err
 		}
-		models := []string{"sonnet", "opus", "haiku"}
-		if settings.Model != "" && settings.Model != "sonnet" && settings.Model != "opus" && settings.Model != "haiku" {
-			models = append([]string{settings.Model}, models...)
-		}
-		data := make([]any, 0, len(models))
-		for i, model := range models {
-			data = append(data, map[string]any{"id": model, "model": model, "displayName": model, "isDefault": i == 0, "supportedReasoningEfforts": []any{}, "supportsPersonality": false})
-		}
-		return map[string]any{"data": data, "nextCursor": nil}, nil
+		return s.modelList(settings), nil
 	case "thread/list", "thread/loaded/list":
 		threads := sortedThreads(s.threads)
 		data := make([]any, 0, len(threads))
@@ -206,12 +205,37 @@ func (s *server) handle(peer *peer, msg rpcMessage, p params) (any, error) {
 		now := time.Now().Unix()
 		t := &savedThread{ID: uuid.NewString(), CWD: cwd, Model: model, CreatedAt: now, UpdatedAt: now, Turns: []*savedTurn{}}
 		t.RequestedModel = p.Model
+		t.RequestedEffort = p.Config.ReasoningEffort
+		if p.ReasoningEffort != nil {
+			t.RequestedEffort = p.ReasoningEffort
+		}
+		if p.Effort != nil {
+			t.RequestedEffort = p.Effort
+		}
+		if t.RequestedEffort != nil && *t.RequestedEffort != "" && !reasoningEffort(*t.RequestedEffort) {
+			return nil, errors.New("Invalid Claude effort level")
+		}
+		if p.PermissionMode != nil {
+			if *p.PermissionMode != "" && !s.supportsPermissionMode(*p.PermissionMode) {
+				return nil, errors.New("This permission mode is not advertised by the installed Claude runtime")
+			}
+			t.RequestedPermissionMode = *p.PermissionMode
+		}
+		if t.RequestedEffort != nil && *t.RequestedEffort != "" {
+			selected := t.effectiveSettings(settings).Model
+			if selected == "" {
+				selected = "default"
+			}
+			if !s.supportsEffort(selected, *t.RequestedEffort) {
+				return nil, errors.New("This effort level is not advertised for the selected Claude model")
+			}
+		}
 		s.applyStatusSettings(t, settings, true)
 		if err := s.save(t); err != nil {
 			return nil, err
 		}
 		s.threads[t.ID] = t
-		rpcResult(peer, msg.ID, map[string]any{"thread": s.threadMetadata(t, false)})
+		rpcResult(peer, msg.ID, s.threadResult(t, false))
 		s.broadcast("thread/started", map[string]any{"thread": s.threadMetadata(t, false)})
 		return nil, nil
 	}
@@ -242,16 +266,27 @@ func (s *server) handle(peer *peer, msg rpcMessage, p params) (any, error) {
 					return nil, errors.New("Resume workspace does not match the saved session")
 				}
 			}
-			if p.Model != "" && p.Model != t.Model {
+			if p.Model != "" && p.Model != t.Model && p.Model != t.StatusConfigModel {
 				return nil, errors.New("Changing a saved Claude model through resume is not supported")
+			}
+			if p.Effort != nil || p.ReasoningEffort != nil || p.Config.ReasoningEffort != nil || p.PermissionMode != nil {
+				return nil, errors.New("Use thread/settings/update to change saved Claude session preferences")
 			}
 			if p.Sandbox != "" || p.Personality != "" || (p.ApprovalPolicy != "" && p.ApprovalPolicy != "on-request") {
 				return nil, errors.New("Claude Code does not support these Codex thread settings")
 			}
 		}
-		return map[string]any{"thread": s.threadMetadata(t, p.IncludeTurns)}, nil
+		return s.threadResult(t, p.IncludeTurns), nil
+	case "thread/settings/update":
+		if err := s.updateThreadSettings(t, msg.Params); err != nil {
+			return nil, err
+		}
+		rpcResult(peer, msg.ID, map[string]any{})
+		s.broadcastSettings(t)
+		s.broadcastStatus(t)
+		return nil, nil
 	case "thread/status/read":
-		return map[string]any{"threadId": t.ID, "claudeStatus": t.statusSnapshot(s.balance)}, nil
+		return map[string]any{"threadId": t.ID, "claudeStatus": t.statusSnapshot(s.balance, s.enterpriseBudget), "threadSettings": t.settingsSnapshot()}, nil
 	case "thread/name/set":
 		if len(p.Name) > 512 {
 			return nil, errors.New("Session name is too long")
@@ -393,7 +428,7 @@ func pageBounds(cursor string, limit, total int) (int, int, any, error) {
 }
 
 func validateModel(model string) error {
-	if model == "" || len(model) > 512 || strings.HasPrefix(model, "-") || strings.ContainsAny(model, "\x00\r\n") {
+	if !protocol.ModelMenuToken(model) || strings.HasPrefix(model, "-") {
 		return errors.New("Invalid Claude model")
 	}
 	return nil
@@ -410,6 +445,15 @@ func (s *server) settings() (LaunchSettings, error) {
 		if settings.SettingsFile == "" {
 			settings.SettingsFile = s.cfg.SettingsFile
 		}
+	}
+	if settings.Model != "" && validateModel(settings.Model) != nil {
+		return LaunchSettings{}, errors.New("Invalid Claude model")
+	}
+	if settings.ReasoningEffort != "" && !reasoningEffort(settings.ReasoningEffort) {
+		return LaunchSettings{}, errors.New("Invalid Claude effort level")
+	}
+	if settings.PermissionMode != "" && !permissionMode(settings.PermissionMode) {
+		return LaunchSettings{}, errors.New("Invalid Claude permission mode")
 	}
 	if err := validateSettingsFile(settings.SettingsFile); err != nil {
 		return LaunchSettings{}, err

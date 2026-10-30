@@ -60,6 +60,7 @@ func (s *server) startProcess(thread *savedThread) (*process, error) {
 		return nil, err
 	}
 	s.applyStatusSettings(thread, settings, false)
+	settings = thread.effectiveSettings(settings)
 	args := append([]string(nil), s.cfg.Args...)
 	args = append(args, "--print", "--verbose", "--input-format=stream-json", "--output-format=stream-json", "--include-partial-messages", "--permission-prompt-tool=stdio")
 	if thread.NativeStarted {
@@ -68,9 +69,6 @@ func (s *server) startProcess(thread *savedThread) (*process, error) {
 		args = append(args, "--session-id="+thread.ID)
 	}
 	model := settings.Model
-	if model == "" {
-		model = thread.RequestedModel
-	}
 	if model != "" {
 		if err := validateModel(model); err != nil {
 			return nil, err
@@ -80,13 +78,23 @@ func (s *server) startProcess(thread *savedThread) (*process, error) {
 		args = append(args, "--model="+model)
 		thread.Model = model
 	}
+	if settings.ReasoningEffort != "" {
+		args = append(args, "--effort="+settings.ReasoningEffort)
+	}
 	if settings.SettingsFile != "" {
 		args = append(args, "--settings="+settings.SettingsFile)
 	}
 	if settings.PermissionMode != "" {
 		switch settings.PermissionMode {
 		case "default", "acceptEdits", "plan", "bypassPermissions", "dontAsk", "auto":
-			args = append(args, "--permission-mode="+settings.PermissionMode)
+			mode := settings.PermissionMode
+			if mode == "default" && s.capabilities.manualPermission {
+				mode = "manual"
+			}
+			args = append(args, "--permission-mode="+mode)
+			if mode == "bypassPermissions" {
+				args = append(args, "--allow-dangerously-skip-permissions")
+			}
 		default:
 			return nil, errors.New("Invalid Claude permission mode")
 		}
@@ -94,6 +102,16 @@ func (s *server) startProcess(thread *savedThread) (*process, error) {
 	env, err := childEnvironment(s.cfg.Env, settings.Env)
 	if err != nil {
 		return nil, err
+	}
+	// An explicit per-session effort outranks the inherited environment, as
+	// Claude reads CLAUDE_CODE_EFFORT_LEVEL before --effort. Empty selects
+	// the native/API default instead of restoring an old session setting.
+	if thread.RequestedEffort != nil || settings.ReasoningEffort != "" {
+		effort := settings.ReasoningEffort
+		if effort == "" {
+			effort = "auto"
+		}
+		env, _ = childEnvironment(env, map[string]string{"CLAUDE_CODE_EFFORT_LEVEL": effort})
 	}
 	// A result ends one native query, which can be an intermediate reply while
 	// background agents continue. The opt-in idle signal ends the whole run.
@@ -127,7 +145,15 @@ func (s *server) startProcess(thread *savedThread) (*process, error) {
 		defer s.wg.Done()
 		ctx, cancel := context.WithTimeout(s.ctx, s.cfg.StartupTimeout)
 		defer cancel()
-		_, p.initErr = p.control(ctx, map[string]any{"subtype": "initialize", "hooks": map[string]any{}})
+		var initialized json.RawMessage
+		initialized, p.initErr = p.control(ctx, map[string]any{"subtype": "initialize", "hooks": map[string]any{}})
+		if p.initErr == nil {
+			s.mu.Lock()
+			if !s.closed && s.runners[thread.ID] == p {
+				s.observeCapabilities(initialized)
+			}
+			s.mu.Unlock()
+		}
 		close(p.ready)
 		if p.initErr != nil {
 			p.stop()
@@ -407,6 +433,9 @@ func (p *process) handle(data []byte) {
 				t.Model = envelope.Model
 			}
 			if envelope.PermissionMode != "" {
+				if envelope.PermissionMode == "manual" {
+					envelope.PermissionMode = "default"
+				}
 				if permissionMode(envelope.PermissionMode) {
 					status.PermissionMode = optionalString(envelope.PermissionMode)
 				} else {

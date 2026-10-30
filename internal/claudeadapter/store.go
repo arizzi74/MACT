@@ -14,20 +14,23 @@ import (
 )
 
 type savedThread struct {
-	ID                     string         `json:"id"`
-	Name                   string         `json:"name,omitempty"`
-	CWD                    string         `json:"cwd"`
-	Model                  string         `json:"model,omitempty"`
-	CreatedAt              int64          `json:"createdAt"`
-	UpdatedAt              int64          `json:"updatedAt"`
-	NativeStarted          bool           `json:"nativeStarted"`
-	NativeConfigRoots      []string       `json:"nativeConfigRoots,omitempty"`
-	Turns                  []*savedTurn   `json:"turns"`
-	Queue                  []*queuedInput `json:"queue,omitempty"`
-	ClaudeStatus           *ClaudeStatus  `json:"claudeStatus,omitempty"`
-	RequestedModel         string         `json:"requestedModel,omitempty"`
-	StatusConfigModel      string         `json:"statusConfigModel,omitempty"`
-	StatusConfigPermission string         `json:"statusConfigPermission,omitempty"`
+	ID                      string         `json:"id"`
+	Name                    string         `json:"name,omitempty"`
+	CWD                     string         `json:"cwd"`
+	Model                   string         `json:"model,omitempty"`
+	CreatedAt               int64          `json:"createdAt"`
+	UpdatedAt               int64          `json:"updatedAt"`
+	NativeStarted           bool           `json:"nativeStarted"`
+	NativeConfigRoots       []string       `json:"nativeConfigRoots,omitempty"`
+	Turns                   []*savedTurn   `json:"turns"`
+	Queue                   []*queuedInput `json:"queue,omitempty"`
+	ClaudeStatus            *ClaudeStatus  `json:"claudeStatus,omitempty"`
+	RequestedModel          string         `json:"requestedModel,omitempty"`
+	RequestedEffort         *string        `json:"requestedEffort,omitempty"`
+	RequestedPermissionMode string         `json:"requestedPermissionMode,omitempty"`
+	StatusConfigEffort      string         `json:"statusConfigEffort,omitempty"`
+	StatusConfigModel       string         `json:"statusConfigModel,omitempty"`
+	StatusConfigPermission  string         `json:"statusConfigPermission,omitempty"`
 }
 
 type queuedInput struct {
@@ -247,13 +250,13 @@ func (s *server) save(thread *savedThread) error {
 }
 
 // Extra arguments are administrator supplied but cannot replace the owned
-// session, framing, or permission callback channels.
+// session, framing, or preference and permission callback channels.
 func validateArgs(args []string) error {
 	for _, arg := range args {
 		flag := strings.SplitN(arg, "=", 2)[0]
 		switch flag {
-		case "--", "--resume", "-r", "--continue", "-c", "--session-id", "--fork-session", "--output-format", "--input-format", "--permission-prompt-tool", "--no-session-persistence", "--print", "-p", "--permission-mode":
-			return errors.New("Claude arguments cannot override adapter protocol or session flags")
+		case "--", "--resume", "-r", "--continue", "-c", "--session-id", "--fork-session", "--output-format", "--input-format", "--permission-prompt-tool", "--no-session-persistence", "--print", "-p", "--permission-mode", "--dangerously-skip-permissions", "--model", "--effort":
+			return errors.New("Claude arguments cannot override adapter protocol, session or preference flags")
 		}
 	}
 	return nil
