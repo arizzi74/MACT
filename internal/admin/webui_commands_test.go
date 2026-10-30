@@ -223,3 +223,54 @@ func TestWebUIWorkerUpdateTextPreservesClaudeRuntimeIdentity(t *testing.T) {
 		t.Fatalf("Claude runtime update mislabeled: %s", text)
 	}
 }
+
+func TestWebUIUpdateMonitorUsesTheActualAgentVersionLabel(t *testing.T) {
+	ctx := t.Context()
+	store := adminIntegrationStore(t)
+	token := webuiTestLogin(t, store)
+	server, err := New(store, Config{Origin: passkeyTestOrigin})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range []string{"claude", "codex"} {
+		worker, err := store.CreateWorker(ctx, registry.CreateWorkerInput{Name: kind + " worker", OS: "linux", Arch: "arm64", Version: "1.0.0", TokenHash: auth.HashWorkerToken("worker-" + kind)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		connection := uuid.New()
+		if err := store.BindConnection(ctx, worker.ID, connection); err != nil {
+			t.Fatal(err)
+		}
+		metadata, _ := json.Marshal(map[string]string{"agent_kind": kind})
+		version := "0.166.0"
+		if kind == "claude" {
+			version = "2.1.314"
+		}
+		if err := store.RecordHeartbeat(ctx, registry.Heartbeat{WorkerID: worker.ID, ConnectionID: connection, Metadata: metadata, Runtimes: []registry.Runtime{{ID: uuid.New(), WorkerID: worker.ID, ProfileID: "primary", Name: "Primary agent", Generation: 1, State: "running", CodexVersion: version, Metadata: json.RawMessage(`{}`)}}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, command := range []string{"tgstatus", "tginstances"} {
+		w := webUICommandRequestForTest(server, "GET", "/tgw/api/v1/webui/commands?command="+command, "", token, "", "", "")
+		var response webUICommandResponse
+		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &response) != nil || len(response.Instances) != 2 {
+			t.Fatal(w.Code, w.Body.String())
+		}
+		if !strings.Contains(response.Text, "Claude Code 2.1.314") || strings.Contains(response.Text, "Codex 2.1.314") || !strings.Contains(response.Text, "Codex 0.166.0") {
+			t.Fatal("mislabeled update-monitor inventory", response.Text)
+		}
+		for _, instance := range response.Instances {
+			if instance.AgentKind == "claude" {
+				if instance.ClaudeVersion != "2.1.314" || instance.AgentVersion != "2.1.314" || instance.CodexVersion != "" {
+					t.Fatal(instance)
+				}
+			} else if instance.CodexVersion != "0.166.0" || instance.ClaudeVersion != "" {
+				t.Fatal(instance)
+			}
+		}
+	}
+	w := webUICommandRequestForTest(server, "POST", "/tgw/api/v1/webui/commands", `{"command":"tgupdateworkers"}`, token, passkeyTestOrigin, "csrf", "csrf")
+	if w.Code != 200 || !strings.Contains(w.Body.String(), "Claude Code runtime versions") {
+		t.Fatal("update explanation still assumes Codex", w.Body.String())
+	}
+}

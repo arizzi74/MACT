@@ -164,10 +164,13 @@ const data = {
       assert.equal(await section.locator(':scope > summary button').count(), 0, id + ' summary contains only its heading');
       if (id === 'session-section') continue;
       await section.locator(':scope > summary').tap();
+      await page.waitForFunction(id => document.getElementById(id).open, id);
       assert.equal(await section.evaluate(node => node.open), true, id + ' opens with touch');
       await section.locator(':scope > summary').press('Space');
+      await page.waitForFunction(id => !document.getElementById(id).open, id);
       assert.equal(await section.evaluate(node => node.open), false, id + ' closes from the keyboard');
       await section.locator(':scope > summary').press('Enter');
+      await page.waitForFunction(id => document.getElementById(id).open, id);
       assert.equal(await section.evaluate(node => node.open), true, id + ' opens from the keyboard');
     }
     await page.locator('#audio-section > summary').click();

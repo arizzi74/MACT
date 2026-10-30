@@ -17,14 +17,17 @@ type webUICommandRequest struct {
 }
 
 type webUICommandInstance struct {
-	WorkerID     string `json:"worker_id"`
-	Name         string `json:"name"`
-	Version      string `json:"version"`
-	State        string `json:"state"`
-	RuntimeID    string `json:"runtime_id,omitempty"`
-	RuntimeName  string `json:"runtime_name,omitempty"`
-	RuntimeState string `json:"runtime_state,omitempty"`
-	CodexVersion string `json:"codex_version,omitempty"`
+	WorkerID      string `json:"worker_id"`
+	Name          string `json:"name"`
+	Version       string `json:"version"`
+	State         string `json:"state"`
+	RuntimeID     string `json:"runtime_id,omitempty"`
+	RuntimeName   string `json:"runtime_name,omitempty"`
+	RuntimeState  string `json:"runtime_state,omitempty"`
+	CodexVersion  string `json:"codex_version,omitempty"`
+	ClaudeVersion string `json:"claude_version,omitempty"`
+	AgentKind     string `json:"agent_kind,omitempty"`
+	AgentVersion  string `json:"agent_version,omitempty"`
 }
 
 type webUICommandResponse struct {
@@ -53,8 +56,8 @@ func (s *Server) webuiCommands(w http.ResponseWriter, r *http.Request) {
 		if in.Command == "" {
 			writeJSON(w, http.StatusOK, map[string]any{"commands": []map[string]string{
 				{"name": "tgstatus", "description": "Gateway, worker and queued update status"},
-				{"name": "tginstances", "description": "List enrolled workers and Codex runtimes"},
-				{"name": "tgupdateworkers", "description": "Queue worker updates and supported Codex runtime checks"},
+				{"name": "tginstances", "description": "List enrolled workers and agent runtimes"},
+				{"name": "tgupdateworkers", "description": "Queue worker updates and supported agent runtime checks"},
 			}})
 			return
 		}
@@ -90,7 +93,7 @@ func (s *Server) webuiCommands(w http.ResponseWriter, r *http.Request) {
 			for _, worker := range workers {
 				lines = append(lines, worker.Name+": "+webUIWorkerUpdateText(worker))
 			}
-			lines = append(lines, "Each worker will check for an update at its next idle point, after its turns and pending work finish. Supporting workers also check Codex runtime versions. Offline workers receive the request when they reconnect. A Codex runtime update may also restart the worker supervisor. Results update automatically; /tgstatus also shows progress.")
+			lines = append(lines, "Each worker will check for an update at its next idle point, after its turns and pending work finish. Supporting workers also check their Codex or Claude Code runtime versions. Offline workers receive the request when they reconnect. A runtime update may also restart the worker supervisor. Results update automatically; /tgstatus also shows progress.")
 			response.Text = strings.Join(lines, "\n")
 		}
 	} else {
@@ -120,9 +123,25 @@ func (s *Server) webuiCommands(w http.ResponseWriter, r *http.Request) {
 				}
 				withRuntime = true
 				instance.RuntimeID, instance.RuntimeName = runtime.ID, runtime.Name
-				instance.RuntimeState, instance.CodexVersion = runtime.State, runtime.CodexVersion
+				instance.RuntimeState, instance.AgentVersion = runtime.State, runtime.CodexVersion
+				instance.AgentKind = worker.AgentKind
+				var metadata struct {
+					AgentKind string `json:"agent_kind"`
+				}
+				if json.Unmarshal(runtime.Metadata, &metadata) == nil && (metadata.AgentKind == "claude" || metadata.AgentKind == "codex") {
+					instance.AgentKind = metadata.AgentKind
+				}
+				label := "Codex"
+				instance.CodexVersion, instance.ClaudeVersion = "", ""
+				if instance.AgentKind == "claude" {
+					label = "Claude Code"
+					instance.ClaudeVersion = runtime.CodexVersion
+				} else {
+					instance.AgentKind = "codex"
+					instance.CodexVersion = runtime.CodexVersion
+				}
 				response.Instances = append(response.Instances, instance)
-				lines = append(lines, fmt.Sprintf("  %s · %s · Codex %s", runtime.Name, runtime.State, runtime.CodexVersion))
+				lines = append(lines, fmt.Sprintf("  %s · %s · %s %s", runtime.Name, runtime.State, label, runtime.CodexVersion))
 			}
 			if !withRuntime {
 				response.Instances = append(response.Instances, instance)

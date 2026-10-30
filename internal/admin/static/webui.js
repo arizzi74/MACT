@@ -2344,10 +2344,10 @@
       const models = result?.data || result?.models;
       state.models = Array.isArray(models) ? models : [];
       renderModels(); updateControls();
-      if (isClaude()) commandUI?.modelsChanged();
+      commandUI?.modelsChanged();
     }).catch(() => {
       if (!current()) return;
-      if (isClaude()) commandUI?.modelsChanged();
+      commandUI?.modelsChanged();
     });
   }
   function refreshRateLimits(read = rpc) {
