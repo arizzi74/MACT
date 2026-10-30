@@ -209,7 +209,7 @@ func run(args []string, logger *slog.Logger) error {
 		mux.Handle("/tgw/enroll/", console)
 		mux.Handle("/tgw/webui/", console)
 		mux.Handle("/tgw/api/v1/webui/", console)
-		sender := gateway.NewSender(store, api, logger, gateway.SenderOptions{BotID: cfg.Secrets.BotName, OwnerID: cfg.Secrets.WLID, AllowedChatIDs: cfg.AllowedChatIDs, Redactor: redactor, BotResolver: bots})
+		sender := gateway.NewSender(store, api, logger, gateway.SenderOptions{BotID: cfg.Secrets.BotName, OwnerID: cfg.Secrets.WLID, AllowedChatIDs: cfg.AllowedChatIDs, Redactor: redactor, BotResolver: bots, Files: hub})
 		dispatcher := gateway.NewDispatcher(store, hub, logger)
 		server := &http.Server{Addr: cfg.Listen, Handler: mux, ReadHeaderTimeout: cfg.ReadHeaderTimeout, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10}
 		serviceCtx, stopService := context.WithCancel(ctx)

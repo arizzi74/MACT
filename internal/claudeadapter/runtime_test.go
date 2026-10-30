@@ -2,6 +2,7 @@ package claudeadapter
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -77,9 +78,12 @@ func TestClaudeProcessHelper(t *testing.T) {
 		_ = json.NewEncoder(f).Encode(value)
 		_ = f.Close()
 	}
-	model, effort, permissionMode := "", "", ""
+	model, effort, permissionMode, artifactPrompt := "", "", "", ""
 	allowBypass := false
 	for _, arg := range os.Args {
+		if strings.HasPrefix(arg, "--append-system-prompt=") {
+			artifactPrompt = strings.TrimPrefix(arg, "--append-system-prompt=")
+		}
 		if arg == "--allow-dangerously-skip-permissions" {
 			allowBypass = true
 		}
@@ -94,7 +98,7 @@ func TestClaudeProcessHelper(t *testing.T) {
 		}
 	}
 	if !probe {
-		log(map[string]any{"launch": true, "resume": resume, "session": session, "model": model, "effort": effort, "effortEnv": os.Getenv("CLAUDE_CODE_EFFORT_LEVEL"), "permissionMode": permissionMode, "allowBypass": allowBypass, "hasToken": os.Getenv("ANTHROPIC_AUTH_TOKEN") != "", "hasAPIKey": os.Getenv("ANTHROPIC_API_KEY") != ""})
+		log(map[string]any{"launch": true, "resume": resume, "session": session, "model": model, "effort": effort, "effortEnv": os.Getenv("CLAUDE_CODE_EFFORT_LEVEL"), "permissionMode": permissionMode, "artifactPrompt": artifactPrompt, "allowBypass": allowBypass, "hasToken": os.Getenv("ANTHROPIC_AUTH_TOKEN") != "", "hasAPIKey": os.Getenv("ANTHROPIC_API_KEY") != ""})
 	}
 	send := func(value any) { _ = json.NewEncoder(os.Stdout).Encode(value) }
 	result := func(text string) {
@@ -359,6 +363,22 @@ func TestPersistentSessionsStreamingToolsAndHistory(t *testing.T) {
 	}
 	if strings.Contains(string(data), "PRIVATE TOOL OUTPUT") {
 		t.Fatal("private tool result persisted")
+	}
+	found := false
+	for _, line := range bytes.Split(log, []byte{'\n'}) {
+		var action struct {
+			Launch         bool   `json:"launch"`
+			ArtifactPrompt string `json:"artifactPrompt"`
+		}
+		if json.Unmarshal(line, &action) == nil && action.Launch {
+			found = true
+			if !strings.Contains(action.ArtifactPrompt, "Markdown link") || !strings.Contains(action.ArtifactPrompt, "Telegram") {
+				t.Fatal("native process missing artifact delivery guidance")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("native launch was not observed")
 	}
 }
 

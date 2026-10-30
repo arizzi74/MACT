@@ -31,6 +31,7 @@ const unsafe = [
 const markdown = targets.map(([label, target, leading = '', trailing = '']) => '[' + label + '](' + leading + (target.includes(' ') ? '<' + target + '>' : target) + trailing + ')').join('\n\n') + '\n\n' + unsafe.map(([label, target]) => '[' + label + '](' + target + ')').join(' ') + '\n\n[Documentation]( \thttps://example.com/docs\t )\n\n' + pdfPath + '\n\n`' + pdfPath + '`\n\n> [Quoted report](./quoted.md)\n\n| File | Description |\n| --- | --- |\n| [Table report](./table.md) | Results |';
 const sessions = [first, second].map((id, index) => ({ session_id: id, codex_thread_id: 'thread-' + id, worker_id: 'worker-' + index, worker_name: 'Artifact worker ' + (index + 1), runtime_name: 'Codex', name: 'Conversation ' + (index + 1), cwd: '/projects/demo', state: 'idle' }));
 const contents = Buffer.from('# Complete artifact matrix\n\nPerformance results: 42 ms.\n');
+const imagePaths = ['/home/worker/CLAUDE_CODE/Session/screenshot.png', './screenshots/result.JPG', 'image.webp', '~/CLAUDE_CODE/Session/Screen final.png'];
 (async () => {
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, colorScheme: 'dark', acceptDownloads: true });
@@ -119,7 +120,25 @@ const contents = Buffer.from('# Complete artifact matrix\n\nPerformance results:
   };
   try {
     await page.goto('https://files.test/tgw/webui/?session_id=' + first); await ready();
+    await page.evaluate(paths => {
+      const article = document.querySelector('#messages article');
+      article.append(window.CodexFormat.markdown(paths.map(path => '`' + path + '`').join('\n\n') + '\n\n![Screenshot](./image.png)'));
+    }, imagePaths);
     assert.equal(requests.length, 0, 'Rendering file links makes no file requests');
+    for (const imagePath of imagePaths) {
+      const imageLink = page.locator('#messages a.file-link').filter({ has: page.locator('code', { hasText: imagePath }) });
+      assert.equal(await imageLink.count(), 1, 'Saved Claude image code becomes a file action');
+      assert.equal(await imageLink.getAttribute('data-file-path'), imagePath);
+      await imageLink.click(); await detailsReady();
+      assert.equal(requests.at(-1).path, imagePath);
+      await close();
+    }
+    assert.equal(await link('Screenshot').count(), 1, 'Markdown images are download actions without external image requests');
+    await page.evaluate(() => {
+      for (const source of ['`cat screenshots/a.png`', '`javascript:evil.png`', '`//remote/a.png`', '`sandbox:/mnt/data/a.png`', '`/project/bad\0name.png`', '```sh\n./sample.png\n```']) {
+        if (window.CodexFormat.markdown(source).querySelector('a.file-link')) throw new Error('Unsafe or example image path became clickable');
+      }
+    });
     for (const [label] of targets) assert.equal(await link(label).count(), 1, label + ' renders as a file action');
     assert.equal(await link(reportLabel).getAttribute('title'), reportPath, 'The full worker path is exposed without replacing its label');
     assert.equal(await link(reportLabel).getAttribute('target'), null, 'Local files stay in this application');

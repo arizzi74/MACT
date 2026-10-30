@@ -31,10 +31,11 @@ type telegramSessionAliasesStore interface {
 // chunks acquire their session label when the user turns multisession on.
 type sessionDeliveryMessage struct {
 	SendMessage
-	SessionName         string           `json:"_session_name,omitempty"`
-	SessionMarker       string           `json:"_session_marker,omitempty"`
-	SessionBody         string           `json:"_session_body,omitempty"`
-	SessionBodyEntities []TelegramEntity `json:"_session_body_entities,omitempty"`
+	Image               *telegramImageCheckpoint `json:"_image,omitempty"`
+	SessionName         string                   `json:"_session_name,omitempty"`
+	SessionMarker       string                   `json:"_session_marker,omitempty"`
+	SessionBody         string                   `json:"_session_body,omitempty"`
+	SessionBodyEntities []TelegramEntity         `json:"_session_body_entities,omitempty"`
 }
 
 func (s *Sender) skipInvisibleDelivery(ctx context.Context, row registry.Delivery) (bool, error) {

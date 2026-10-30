@@ -180,6 +180,17 @@ attachment, or Codex-specific settings and plugins. These capabilities are not
 advertised for Claude workers. Session naming changes only the name displayed in
 MACT and Telegram.
 
+### Screenshots and generated files
+
+The worker tells Claude to save deliverables inside the session project and
+return Markdown file links. These open the Web UI's download dialog. Screenshot
+paths written in inline code also become clickable, including in saved history.
+Local image references in a final reply are attached to that reply's Telegram
+bot automatically, using the protected worker file-transfer channel. Claude
+does not need the bot token or a separate Telegram tool. See
+[worker file downloads and image attachments](webui.md#downloading-project-files)
+for supported formats and limits.
+
 ### Delete a session
 
 Choose **Edit session → Delete** and confirm the selected session. Deletion

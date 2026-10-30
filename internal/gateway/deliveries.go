@@ -35,6 +35,7 @@ type SenderOptions struct {
 	OwnerID        int64
 	AllowedChatIDs []int64
 	Redactor       *auth.Redactor
+	Files          TelegramFileOpener
 }
 
 // SessionDeliveryRepairStore supports upgrading oversized, previously frozen
@@ -174,9 +175,19 @@ func (s *Sender) sendResolvedDelivery(ctx context.Context, row registry.Delivery
 		if skip, err := s.skipInvisibleDelivery(ctx, row); err != nil || skip {
 			return err
 		}
-		sendCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		var checkpoint sessionDeliveryMessage
+		if err := json.Unmarshal(chunk.Payload, &checkpoint); err != nil {
+			return err
+		}
+		timeout := 15 * time.Second
+		if checkpoint.Image != nil {
+			timeout = 25 * time.Second
+		}
+		sendCtx, cancel := context.WithTimeout(ctx, timeout)
 		var id int64
-		if row.Kind == "picker_cleanup" {
+		if checkpoint.Image != nil {
+			id, err = s.sendImageCheckpoint(sendCtx, row, checkpoint.Image)
+		} else if row.Kind == "picker_cleanup" {
 			id, err = s.sendPickerCleanup(sendCtx, row)
 		} else if row.Kind == "input_reply_cleanup" {
 			id, err = s.sendInputReplyCleanup(sendCtx, row)
@@ -277,6 +288,9 @@ func (s *Sender) renderDeliveryMessages(ctx context.Context, row registry.Delive
 			return nil, err
 		}
 		messages = append(messages, raw)
+	}
+	if final {
+		messages = s.appendImageCheckpoints(row, messages)
 	}
 	return messages, nil
 }

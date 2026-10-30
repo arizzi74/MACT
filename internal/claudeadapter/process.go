@@ -63,6 +63,7 @@ func (s *server) startProcess(thread *savedThread) (*process, error) {
 	settings = thread.effectiveSettings(settings)
 	args := append([]string(nil), s.cfg.Args...)
 	args = append(args, "--print", "--verbose", "--input-format=stream-json", "--output-format=stream-json", "--include-partial-messages", "--permission-prompt-tool=stdio")
+	args = append(args, "--append-system-prompt="+artifactInstructions)
 	if thread.NativeStarted {
 		args = append(args, "--resume="+thread.ID)
 	} else {

@@ -84,6 +84,7 @@ window.CodexFormat = (() => {
   // removing terminal controls from the surrounding message.
   function cleanMarkdown(value, budget) {
     const raw = String(value ?? '');
+    if (/[\x00-\x08\x0b-\x1f\x7f]/.test(raw)) budget.unsafeImageCode = true;
     // Preserve offsets and mark entire terminal escapes before clean() can
     // remove them. Invalid controls around destination padding stay guarded too.
     const guarded = terminalText(raw, true), parts = [];
@@ -119,6 +120,17 @@ window.CodexFormat = (() => {
     if (/^[a-z][a-z0-9+.-]*:/i.test(value)) return /^[^/:]+\.[^/:]+(?::\d+){1,2}$/.test(value);
     return true;
   }
+  function decorateFileLink(child, target) {
+    child.href = '#file'; child.dataset.filePath = target; child.title = target;
+    child.setAttribute('aria-haspopup', 'dialog'); child.setAttribute('aria-controls', 'file-dialog');
+    const icon = node('span', 'file-link-icon', '↧'); icon.setAttribute('aria-hidden', 'true'); child.append(icon);
+    return child;
+  }
+  function imageFilePath(value) {
+    if (!fileLink(value) || !/\.(?:png|jpe?g|gif|webp)(?::\d+(?::\d+)?|#L\d+(?:C\d+)?)?$/i.test(value)) return false;
+    const space = value.search(/\s/), slash = value.indexOf('/');
+    return space < 0 || slash >= 0 && slash < space;
+  }
   function renderInline(parent, value, depth, budget) {
     spend(budget, 0, 1);
     const text = cleanMarkdown(value, budget);
@@ -128,16 +140,15 @@ window.CodexFormat = (() => {
       spend(budget);
       if (text[i] === '\\') { i++; continue; }
       let child, end = i, content, tag;
-      const link = text[i] === '[' ? linkAt(text, i, budget) : null;
+      const link = text[i] === '[' ? linkAt(text, i, budget)
+        : text[i] === '!' && text[i + 1] === '[' ? linkAt(text, i + 1, budget) : null;
       if (link) {
         const target = link.target.replace(/^<|>$/g, '').replace(/\\([\\ ()])/g, '$1');
         const href = safeLink(target), local = !href && fileLink(target);
         child = node(href || local ? 'a' : 'span', local ? 'file-link' : '', link.label);
         if (href) { child.href = href; child.target = '_blank'; child.rel = 'noopener noreferrer'; }
         else if (local) {
-          child.href = '#file'; child.dataset.filePath = target; child.title = target;
-          child.setAttribute('aria-haspopup', 'dialog'); child.setAttribute('aria-controls', 'file-dialog');
-          const icon = node('span', 'file-link-icon', '↧'); icon.setAttribute('aria-hidden', 'true'); child.append(icon);
+          decorateFileLink(child, target);
         } else child.title = target;
         end = link.end;
       } else if ('`*_~'.includes(text[i])) {
@@ -150,7 +161,12 @@ window.CodexFormat = (() => {
           content = text.slice(i + width, close); end = close + width;
           tag = char === '`' ? 'code' : char === '~' ? 's' : width === 2 ? 'strong' : 'em';
           child = node(tag);
-          if (tag === 'code') child.textContent = content;
+          if (tag === 'code') {
+            child.textContent = content;
+            if (!budget.unsafeImageCode && imageFilePath(content)) {
+              const link = node('a', 'file-link'); link.append(child); child = decorateFileLink(link, content);
+            }
+          }
           else renderInline(child, content, depth + 1, budget);
         }
       } else if (text.startsWith('https://', i) || text.startsWith('http://', i)) {

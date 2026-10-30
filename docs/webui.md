@@ -431,8 +431,10 @@ path on the session's worker, for example
 `[Download the report](./reports/report.pdf)`. Optional spaces or tabs around
 the destination inside parentheses are accepted. For a filename containing
 spaces, wrap the destination in angle brackets:
-`[Download the report](<./reports/Final report.pdf>)`. Plain paths and inline
-code are not download links. ChatGPT-style `sandbox:/mnt/data/...` links are
+`[Download the report](<./reports/Final report.pdf>)`. Screenshot/image paths in
+inline code also open the download dialog, including in saved Claude replies;
+shell commands and fenced code remain text. Other plain paths and inline code
+are not download links. ChatGPT-style `sandbox:/mnt/data/...` links are
 not worker project paths and are not supported by MACT.
 
 Absolute paths, paths relative to the session project, home-relative paths and
@@ -452,6 +454,16 @@ worker connection and session/runtime identity are rechecked during transfer.
 File contents are not written to the gateway database or a gateway cache, and no
 additional Codex process or turn is started. The browser holds the requested file
 in memory until it hands it to the browser's download mechanism.
+
+Final Telegram replies also attach referenced local PNG, JPEG, GIF and WebP
+images, up to four images of 10 MiB each. Markdown image/file links and standalone
+image paths in inline code are recognized. Each image is read through the same
+protected worker file stream and delivered to that reply's bot and chat after
+its text. Telegram-compatible PNG/JPEG screenshots are photos; other supported
+images are sent as image documents. File bytes are not kept in the gateway
+database. Remote URLs, fenced examples and files outside the session project
+are excluded. Unavailable images leave the text reply intact and report that
+the file could not be attached.
 
 ## Upstream formatting reference and attribution
 
