@@ -795,6 +795,10 @@ func (p *process) finish(t *savedThread, status, message string) {
 		view["error"] = map[string]any{"message": message}
 	}
 	p.server.broadcast("turn/completed", map[string]any{"threadId": t.ID, "turn": view})
+	// Browsers can resume during a turn and observe an active thread snapshot.
+	// Completion settles that turn, while the explicit status also retires the
+	// snapshot marker used by the worker's idle-safe update guard.
+	p.server.broadcast("thread/status/changed", map[string]any{"threadId": t.ID, "status": map[string]string{"type": "idle"}})
 	if status == "completed" && turn.Status == "completed" {
 		p.server.nextQueued(t)
 	}

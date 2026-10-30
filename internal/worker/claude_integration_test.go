@@ -322,6 +322,9 @@ func TestClaudeWorkerIntegration(t *testing.T) {
 	}
 	turn("approval")
 	approval := browserA.next(func(rpc webUIRPC) bool { return rpc.Method == "item/commandExecution/requestApproval" })
+	// A second browser connects during the approval, so its attachment proxy
+	// observes an active-thread snapshot as well as subsequent turn events.
+	resumedDuringApproval := open(a)
 	var activeTurn string
 	_ = json.Unmarshal(approval.Params["turnId"], &activeTurn)
 	queued := browserA.success("turn/steer", map[string]any{"threadId": a.ThreadID, "expectedTurnId": activeTurn, "input": []any{map[string]any{"type": "text", "text": "queued follow-up"}}})
@@ -341,6 +344,20 @@ func TestClaudeWorkerIntegration(t *testing.T) {
 	}
 	complete()
 	complete() // The adapter-owned successor turn runs after approval completion.
+	waitControl(t, func() bool {
+		lease, err := agent.prepareUpdate(ctx, time.Second)
+		if err != nil {
+			if strings.Contains(err.Error(), "a native CLI thread is active") {
+				t.Fatalf("completed Claude turn left an active browser snapshot blocking updates: %v", err)
+			}
+			return false // Durable event acknowledgements can still be in flight.
+		}
+		if err := agent.abortUpdate(lease.Token); err != nil {
+			t.Fatal(err)
+		}
+		return true
+	})
+	resumedDuringApproval.stream.Close()
 	turn("question")
 	question := browserA.next(func(rpc webUIRPC) bool { return rpc.Method == "item/tool/requestUserInput" })
 	var questions []struct {
