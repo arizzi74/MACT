@@ -1,4 +1,4 @@
-name: Recover verified installer publication
+name: Recover verified release publication
 
 on:
   create:
@@ -25,7 +25,7 @@ jobs:
       artifact_id: ${{ steps.source.outputs.artifact_id }}
     steps:
       # Validate metadata without checking out or executing branch code.
-      - name: Prove the exact successful installer run and signed artifact
+      - name: Prove the exact validated release run and signed artifact
         id: source
         env:
           GH_TOKEN: ${{ github.token }}
@@ -105,16 +105,39 @@ jobs:
               require(comparison['merge_base_commit']['sha'] == commit)
               run = api('/actions/runs/' + run_id)
               require(run['id'] == int(run_id) and run['path'] == '.github/workflows/release.yml')
-              require(run['name'] == 'Release' and run['event'] == 'workflow_dispatch')
+              require(run['name'] == 'Release' and run['event'] in ('workflow_dispatch', 'push'))
               require(run['head_branch'] == tag and run['head_sha'] == commit)
               require(run['repository']['full_name'] == REPOSITORY)
               require(run['head_repository']['full_name'] == REPOSITORY)
-              require(run['status'] == 'completed' and run['conclusion'] == 'success')
+              full = run['event'] == 'push'
+              require(run['status'] == 'completed' and run['conclusion'] == ('failure' if full else 'success'))
               attempt = run['run_attempt']
               require(type(attempt) is int and attempt > 0)
               jobs = pages('/actions/runs/' + run_id + '/attempts/' + str(attempt) + '/jobs', 'jobs')
-              for name, conclusion in (('release-mode', 'success'), ('installer-tests', 'success'),
-                                       ('test-and-build', 'success'), ('publish', 'skipped')):
+              if full:
+                  # A publication-only retry must never rehabilitate failed,
+                  # cancelled, missing, duplicated or skipped validation jobs.
+                  required = {
+                      'release-mode', 'browser', 'package / package', 'test-and-build',
+                      'security / Git history and working tree secrets',
+                      'security / Shipped browser dependency advisories',
+                      *(f'go-checks / {name}' for name in ('format', 'vet', 'vulnerabilities', 'python', 'Other packages race')),
+                      *(f'go-checks / Registry race {index} of 4' for index in range(4)),
+                      *(f'{component} / build ({target})' for component in ('native-whisper', 'native-speech')
+                        for target in ('linux, arm64, ubuntu-24.04-arm', 'linux, amd64, ubuntu-24.04',
+                                       'darwin, arm64, macos-26', 'darwin, amd64, macos-15-intel')),
+                  }
+                  archives = {job['name'] for job in jobs if job['name'].startswith('native-session-archive / native-session-archive (')}
+                  require(len(archives) == 2)
+                  required.update(archives)
+                  require(len(jobs) == len(required) + 2)
+                  require({job['name'] for job in jobs} == required | {'installer-tests', 'publish'})
+                  expected_jobs = [(name, 'success') for name in required]
+                  expected_jobs += [('installer-tests', 'skipped'), ('publish', 'failure')]
+              else:
+                  expected_jobs = [('release-mode', 'success'), ('installer-tests', 'success'),
+                                   ('test-and-build', 'success'), ('publish', 'skipped')]
+              for name, conclusion in expected_jobs:
                   selected = [job for job in jobs if job['name'] == name]
                   require(len(selected) == 1)
                   job = selected[0]
@@ -143,9 +166,9 @@ jobs:
                   with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
                       for key, value in values.items():
                           output.write(key + '=' + value + '\n')
-                  print('Verified frozen installer release source and signed artifact.')
+                  print('Verified frozen release source and signed artifact.')
               except Exception:
-                  print('Installer publication recovery refused or failed.', file=sys.stderr)
+                  print('Release publication recovery refused or failed.', file=sys.stderr)
                   sys.exit(1)
           PY
 
@@ -165,7 +188,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          # Execute only the source that passed the original installer checks.
+          # Execute only the source that passed the original release checks.
           ref: ${{ needs.guard.outputs.commit }}
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
