@@ -129,7 +129,7 @@ async function adminChecks(browser, width) {
   await page.close();
 }
 
-async function webUIChecks(browser, width, usageOnly = false) {
+async function webUIChecks(browser, width, usageOnly = false, costOnly = false) {
   const page = await browser.newPage({ viewport: { width, height: 900 } });
   const errors = [];
   const other = { ...session, session_id: 'claude-other', codex_thread_id: 'other-thread', name: 'Other Claude project', state: 'idle', stats: { model: 'STALE_INVENTORY_MODEL', context_tokens: 777, context_window: 1000 } };
@@ -245,6 +245,30 @@ async function webUIChecks(browser, width, usageOnly = false) {
   };
   await page.goto('https://webui.test/tgw/webui/');
   await select(session.session_id);
+  if (costOnly) {
+    const observedAt = Math.floor(Date.now() / 1000);
+    const partial = { ...known, cost: { sessionUSD: null, lastTurnUSD: null, knownSessionUSD: 23.85, incomplete: true, reportedSessionUSD: 0.25, observedAt } };
+    await emitStatus(session.codex_thread_id, partial);
+    assert.equal(await page.locator('#claude-cost').textContent(), 'Session $0.25 (partial)', 'The live native counter is visible below the historical high-water mark');
+    assert.match(await page.locator('#claude-cost').getAttribute('title'), /Current native session estimate: \$0\.25.*Historical lower bound: at least \$23\.85.*overlapping figures are not added.*Checked/);
+    const growing = { ...partial, cost: { ...partial.cost, reportedSessionUSD: 1.5, observedAt: observedAt + 15 } };
+    await emitStatus(session.codex_thread_id, growing);
+    assert.equal(await page.locator('#claude-cost').textContent(), 'Session $1.50 (partial)', 'An active turn can update its cost before the result');
+    await emitStatus(other.codex_thread_id, { ...known, cost: { reportedSessionUSD: 999 } }, false);
+    assert.equal(await page.locator('#claude-cost').textContent(), 'Session $1.50 (partial)', 'Another session cannot replace the selected cost');
+    await select(other.session_id); await select(session.session_id);
+    assert.equal(await page.locator('#claude-cost').textContent(), 'Session $1.50 (partial)', 'Switching sessions restores the latest observation');
+    await emitStatus(session.codex_thread_id, { ...partial, cost: { ...partial.cost, reportedSessionUSD: 0 } });
+    assert.equal(await page.locator('#claude-cost').textContent(), 'Session $0.00 (partial)', 'A reported zero stays different from unknown');
+    await emitStatus(session.codex_thread_id, { ...partial, cost: { ...partial.cost, reportedSessionUSD: -1 } });
+    assert.equal(await page.locator('#claude-cost').textContent(), 'Session ≥$23.85 (partial)', 'Invalid live values cannot replace older evidence');
+    await emitStatus(session.codex_thread_id, { ...known, cost: { sessionUSD: 2, lastTurnUSD: .5, reportedSessionUSD: 2.75, observedAt } });
+    assert.equal(await page.locator('#claude-cost').textContent(), 'Session $2.75', 'Live local control advances a complete session between results');
+    await assertFits();
+    assert.deepEqual(errors, []);
+    await page.close();
+    return;
+  }
   if (usageOnly) {
     const observedAt = Math.floor(Date.now() / 1000) - 600, nextAttemptAt = Math.floor(Date.now() / 1000) + 1800;
     const fresh = { ...known, balance: null, usage: { plan: 'enterprise', observedAt, windows: [], apiSpend: { enabled: true, currency: 'USD', period: 'monthly', limit: 500, spent: 125, remaining: 375 } } };
@@ -688,6 +712,11 @@ async function deletionChecks(browser, width) {
 (async () => {
   const browser = await chromium.launch({ headless: true });
   try {
+    if (process.argv.includes('--cost-only')) {
+      for (const width of [390, 1280]) await webUIChecks(browser, width, false, true);
+      process.stdout.write('Claude session cost browser checks passed.\n');
+      return;
+    }
     if (process.argv.includes('--usage-only')) {
       for (const width of [390, 1280]) await webUIChecks(browser, width, true);
       process.stdout.write('Claude usage refresh browser checks passed.\n');

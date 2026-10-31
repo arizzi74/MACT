@@ -163,6 +163,18 @@ func TestClaudeProcessHelper(t *testing.T) {
 				_ = json.Unmarshal([]byte(os.Getenv("MACT_CLAUDE_HELPER_USAGE")), &usage)
 				send(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": id, "response": usage}})
 			}
+			if request.Subtype == "get_session_cost" {
+				log(map[string]any{"costProbe": true, "foreground": !probe})
+				if os.Getenv("MACT_CLAUDE_HELPER_COST_ERROR") == "1" {
+					send(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "error", "request_id": id, "error": "PRIVATE NATIVE COST FAILURE"}})
+					continue
+				}
+				text := "Total cost:            $1.25\nTotal duration (API):  10s"
+				if value := os.Getenv("MACT_CLAUDE_HELPER_COST"); value != "" {
+					text = value
+				}
+				send(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": id, "response": map[string]any{"text": text}}})
+			}
 			if request.Subtype == "set_permission_mode" {
 				if !probe || request.Mode == "bypassPermissions" && !allowBypass {
 					os.Exit(97)

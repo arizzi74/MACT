@@ -16,6 +16,8 @@ func TestClaudeStatusKeepsUnknownDifferentFromZero(t *testing.T) {
 		{`{"cost":{"sessionUSD":-1}}`, "Session cost: unavailable", "$-1"},
 		{`{"cost":{"sessionUSD":null,"knownSessionUSD":0.75,"incomplete":true}}`, "Session cost: at least $0.750000 (incomplete native accounting)", "Session cost: $0.750000"},
 		{`{"cost":{"sessionUSD":100,"incomplete":true}}`, "Session cost: incomplete", "$100.000000"},
+		{`{"cost":{"reportedSessionUSD":1.5,"knownSessionUSD":23.85,"incomplete":true}}`, "Session cost: $1.500000 (current native estimate; earlier accounting incomplete); historical lower bound $23.850000 (overlaps; not added)", "$25.350000"},
+		{`{"cost":{"sessionUSD":1,"reportedSessionUSD":2.75}}`, "Session cost: $2.750000", "Session cost: $1.000000"},
 	} {
 		var status codexadapter.ClaudeSessionStatus
 		if err := json.Unmarshal([]byte(test.wire), &status); err != nil {

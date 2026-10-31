@@ -16,7 +16,7 @@ on:
         type: boolean
         default: false
       claude_usage_only:
-        description: Prove a Claude usage-only diff and test account polling and status without voice tests
+        description: Prove a Claude accounting-only diff and test cost, account polling and status without voice tests
         type: boolean
         default: false
   push:
@@ -200,16 +200,18 @@ jobs:
         run: |
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_ci_installer_release.py
           go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color
-      - name: Check account refresh, cooldown, retained observations and read-only native controls
+      - name: Check account and session accounting, retained observations and read-only native controls
         run: |
           ./scripts/check.sh format
           go vet ./internal/worker ./internal/claudeadapter ./internal/codexadapter
           go test -race ./internal/worker -run 'TestClaude(Account|EnterpriseBudget|Credits|NativeUsage|Status)' -count=1
-          go test -race ./internal/claudeadapter -run 'TestNativeUsage|TestClaudeStatusBootstrapRPC' -count=1
+          go test -race ./internal/claudeadapter -run 'TestNativeUsage|TestClaudeStatus|TestClaudeSessionCost' -count=1
       - run: npm ci
       - run: npx playwright install --with-deps chromium
       - name: Check only usage retention, retry labels and account status on desktop and mobile
-        run: node scripts/test-claude-ui.cjs --usage-only
+        run: |
+          node scripts/test-claude-ui.cjs --usage-only
+          node scripts/test-claude-ui.cjs --cost-only
 
   package:
     needs: [native-whisper, native-speech]

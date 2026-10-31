@@ -132,7 +132,7 @@
       model: statusText(value.model), modelDisplayName: statusText(value.modelDisplayName), usage: nativeClaudeUsage(value.usage), reasoningEffort: typeof value.reasoningEffort === 'string' ? statusText(value.reasoningEffort) : null, permissionMode: statusText(value.permissionMode),
       accountRefresh: value.accountRefresh && typeof value.accountRefresh === 'object' ? value.accountRefresh : {},
       context: { usedTokens: statusNumber(value.context?.usedTokens), maxTokens: statusNumber(value.context?.maxTokens) },
-      cost: { sessionUSD: statusNumber(value.cost?.sessionUSD), lastTurnUSD: statusNumber(value.cost?.lastTurnUSD), knownSessionUSD: statusNumber(value.cost?.knownSessionUSD), incomplete: value.cost?.incomplete === true },
+      cost: { sessionUSD: statusNumber(value.cost?.sessionUSD), lastTurnUSD: statusNumber(value.cost?.lastTurnUSD), reportedSessionUSD: statusNumber(value.cost?.reportedSessionUSD), observedAt: statusNumber(value.cost?.observedAt), knownSessionUSD: statusNumber(value.cost?.knownSessionUSD), incomplete: value.cost?.incomplete === true },
       balance: balance && ['USD', 'credits'].includes(balance.unit) && statusNumber(balance.remaining) !== null
         ? { remaining: balance.remaining, unit: balance.unit, observedAt: statusNumber(balance.observedAt) } : null,
       enterpriseBudget: budget && budget.currency === 'USD' && budget.period === 'monthly' && statusNumber(budget.spent) !== null &&
@@ -170,12 +170,14 @@
       : used !== null ? 'Context ' + used.toLocaleString('en-US', { notation: 'compact', maximumFractionDigits: 1 }) : 'Context —';
     const contextDescription = used !== null ? 'Reported context: ' + used.toLocaleString('en-US') + ' tokens' + (maximum > 0 ? ' of ' + maximum.toLocaleString('en-US') + '.' : '; context window size unavailable.') : 'Claude Code has not reported the current context usage.';
     statusField('usage', context, contextDescription);
-    const cost = status?.cost.sessionUSD ?? null, last = status?.cost.lastTurnUSD ?? null;
+    const reported = status?.cost.reportedSessionUSD ?? null;
+    const cost = reported ?? status?.cost.sessionUSD ?? null, last = status?.cost.lastTurnUSD ?? null;
     const partial = status?.cost.incomplete === true, known = partial ? statusNumber(status.cost.knownSessionUSD) : null;
-    statusField('claude-cost', partial ? known !== null ? 'Session ≥' + usd(known) + ' (partial)' : 'Session incomplete' : cost !== null ? 'Session ' + usd(cost) : 'Session —', partial
-      ? 'Claude Code reset or lost part of its cumulative accounting. ' + (known !== null ? 'At least ' + exactUSD(known) + ' USD was previously reported for this session. ' : '') + 'A complete session total and last-turn cost are unavailable; this is separate from the account spending allowance.' : cost !== null
+    const checked = status?.cost.observedAt > 0 ? timestamp(status.cost.observedAt) : null;
+    statusField('claude-cost', partial ? reported !== null ? 'Session ' + usd(reported) + ' (partial)' : known !== null ? 'Session ≥' + usd(known) + ' (partial)' : 'Session incomplete' : cost !== null ? 'Session ' + usd(cost) : 'Session —', (partial
+      ? 'Claude Code reset or lost part of its cumulative accounting. ' + (reported !== null ? 'Current native session estimate: ' + exactUSD(reported) + ' USD; it can exclude spending before the reset. ' : '') + (known !== null ? 'Historical lower bound: at least ' + exactUSD(known) + ' USD. ' : '') + 'These overlapping figures are not added. A complete session total and last-turn cost are unavailable; this is separate from the account spending allowance.' : cost !== null
       ? 'Claude Code reported cumulative session consumption: ' + exactUSD(cost) + ' USD. Provider billing can differ.' + (last !== null ? ' Last reported turn: ' + exactUSD(last) + ' USD.' : '')
-      : 'Claude Code has not reported this session’s consumption in USD.');
+      : 'Claude Code has not reported this session’s consumption in USD.') + (checked ? ' Checked ' + checked.toLocaleString() + '. Refreshes locally during active turns; a failed refresh keeps the last observation.' : ''));
     const balance = status?.balance;
     const observed = balance?.observedAt > 0 ? timestamp(balance.observedAt) : null;
     statusField('claude-balance', balance ? balance.unit === 'USD' ? 'Balance ' + usd(balance.remaining) : balance.remaining.toLocaleString('en-US', { maximumFractionDigits: 4 }) + ' credits left' : 'Credits —', balance

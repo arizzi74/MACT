@@ -47,6 +47,9 @@ type process struct {
 	stateEvents   bool              // Session-state support is detected once per process.
 	seenResults   map[string]bool
 	resultOrder   []string
+	costReady     bool   // A resumed conversation has emitted assistant/result output.
+	costRevision  uint64 // Fences a cost probe against a newer precise result.
+	costWake      chan struct{}
 }
 
 type controlReply struct {
@@ -139,9 +142,10 @@ func (s *server) startProcess(thread *savedThread) (*process, error) {
 		_ = out.Close()
 		return nil, errors.New("Cannot start Claude Code; check the configured executable")
 	}
-	p := &process{server: s, threadID: thread.ID, cmd: cmd, in: in, out: out, controls: make(map[string]chan controlReply), ready: make(chan struct{}), done: make(chan struct{}), streamItem: make(map[int]string), tools: make(map[string]map[string]any)}
-	s.wg.Add(2)
+	p := &process{server: s, threadID: thread.ID, cmd: cmd, in: in, out: out, controls: make(map[string]chan controlReply), ready: make(chan struct{}), done: make(chan struct{}), streamItem: make(map[int]string), tools: make(map[string]map[string]any), costWake: make(chan struct{}, 1)}
+	s.wg.Add(3)
 	go func() { defer s.wg.Done(); p.read() }()
+	go func() { defer s.wg.Done(); p.pollSessionCost() }()
 	go func() {
 		defer s.wg.Done()
 		ctx, cancel := context.WithTimeout(s.ctx, s.cfg.StartupTimeout)
@@ -208,7 +212,7 @@ func (p *process) control(ctx context.Context, request any) (json.RawMessage, er
 	return p.controlRequest(ctx, request, true)
 }
 
-// Read-only account observations must never terminate a user's process when
+// Read-only status observations must never terminate a user's process when
 // their write deadline expires. A late control reply can safely be discarded.
 func (p *process) controlRequest(ctx context.Context, request any, stopOnWriteTimeout bool) (json.RawMessage, error) {
 	id := uuid.NewString()
@@ -221,7 +225,7 @@ func (p *process) controlRequest(ctx context.Context, request any, stopOnWriteTi
 	value := map[string]any{"type": "control_request", "request_id": id, "request": request}
 	if !stopOnWriteTimeout {
 		if !p.writeMu.TryLock() {
-			return nil, errors.New("Claude input is busy; retry the account observation later")
+			return nil, errors.New("Claude input is busy; retry the status observation later")
 		}
 		go func() {
 			defer p.writeMu.Unlock()
@@ -488,6 +492,11 @@ func (p *process) handle(data []byte) {
 			p.stream(t, envelope.Event)
 		}
 	case "assistant":
+		p.costReady = true
+		select {
+		case p.costWake <- struct{}{}:
+		default:
+		}
 		if t.active() == nil {
 			return
 		}
@@ -657,6 +666,8 @@ func (p *process) handle(data []byte) {
 			}
 			t.active().NativeResultID = envelope.UUID
 		}
+		p.costReady = true
+		p.costRevision++
 		p.observeResult(t, data, envelope.Subtype)
 		p.observeTurnCost(t, data)
 		p.publishStatus(t)

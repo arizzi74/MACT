@@ -195,6 +195,8 @@ class InstallerReleaseWorkflowTest(unittest.TestCase):
         self.assertIn("if: needs.release-mode.outputs.claude_usage_only == 'true'", usage)
         self.assertIn("--scope claude-usage", text)
         self.assertIn("node scripts/test-claude-ui.cjs --usage-only", usage)
+        self.assertIn("node scripts/test-claude-ui.cjs --cost-only", usage)
+        self.assertIn("TestClaudeSessionCost", usage)
         self.assertIn("TestNativeUsage", usage)
         self.assertNotIn("npm run test:browser", usage)
         self.assertNotIn("test-admin-audio", usage)

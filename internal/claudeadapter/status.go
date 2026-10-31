@@ -5,6 +5,7 @@ import (
 	"errors"
 	"math"
 	"strings"
+	"time"
 )
 
 // ClaudeStatus contains only display-safe session observations. Nil numbers
@@ -32,6 +33,11 @@ type ContextUsage struct {
 type ReportedCost struct {
 	SessionUSD  *float64 `json:"sessionUSD"`
 	LastTurnUSD *float64 `json:"lastTurnUSD"`
+	// The latest native counter can keep moving below a historical high-water
+	// mark after a restart. Keep it separately rather than freezing the display
+	// or adding overlapping cumulative counters together.
+	ReportedSessionUSD *float64 `json:"reportedSessionUSD,omitempty"`
+	ObservedAt         int64    `json:"observedAt,omitempty"`
 	// Only snapshots expose this lower bound when a native accounting reset
 	// prevents presenting a complete session total.
 	KnownSessionUSD *float64 `json:"knownSessionUSD,omitempty"`
@@ -341,6 +347,10 @@ func (p *process) observeResult(t *savedThread, raw json.RawMessage, subtype str
 	if total := rawNumber(result.Total); total != nil {
 		prior := status.Cost.SessionUSD
 		crashZero := subtype == "error_during_execution" && *total == 0
+		if !crashZero {
+			status.Cost.ReportedSessionUSD = total
+			status.Cost.ObservedAt = time.Now().UTC().Unix()
+		}
 		if prior != nil && (crashZero || *total < *prior) {
 			status.Cost.Incomplete = true
 		}
@@ -401,10 +411,13 @@ func sanitizeSavedStatus(t *savedThread) {
 	if status.Context.MaxTokens != nil && *status.Context.MaxTokens == 0 {
 		status.Context.MaxTokens = nil
 	}
-	for _, value := range []**float64{&status.Cost.SessionUSD, &status.Cost.LastTurnUSD} {
+	for _, value := range []**float64{&status.Cost.SessionUSD, &status.Cost.LastTurnUSD, &status.Cost.ReportedSessionUSD} {
 		if *value != nil && !validUSD(**value) {
 			*value = nil
 		}
+	}
+	if status.Cost.ObservedAt < 0 || status.Cost.ObservedAt > 253402300799 {
+		status.Cost.ObservedAt = 0
 	}
 	if strings.TrimSpace(t.RequestedModel) != t.RequestedModel || (t.RequestedModel != "" && validateModel(t.RequestedModel) != nil) {
 		t.RequestedModel = ""

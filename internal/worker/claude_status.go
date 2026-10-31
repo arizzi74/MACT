@@ -40,12 +40,26 @@ func claudeStatusLines(status codexadapter.ClaudeSessionStatus) []string {
 	}
 	if status.Cost.Incomplete {
 		line := "Session cost: incomplete (native accounting reset)"
+		if reported := status.Cost.ReportedSessionUSD; reported != nil && validClaudeKnownCost(*reported) {
+			line = fmt.Sprintf("Session cost: $%.6f (current native estimate; earlier accounting incomplete)", *reported)
+		}
 		if known := status.Cost.KnownSessionUSD; known != nil && validClaudeKnownCost(*known) {
-			line = fmt.Sprintf("Session cost: at least $%.6f (incomplete native accounting)", *known)
+			if status.Cost.ReportedSessionUSD != nil && validClaudeKnownCost(*status.Cost.ReportedSessionUSD) {
+				line += fmt.Sprintf("; historical lower bound $%.6f (overlaps; not added)", *known)
+			} else {
+				line = fmt.Sprintf("Session cost: at least $%.6f (incomplete native accounting)", *known)
+			}
 		}
 		lines = append(lines, line, "Last turn cost: unavailable (incomplete native accounting)")
 	} else {
-		lines = append(lines, "Session cost: "+cost(status.Cost.SessionUSD), "Last turn cost: "+cost(status.Cost.LastTurnUSD))
+		reported := status.Cost.ReportedSessionUSD
+		if reported == nil {
+			reported = status.Cost.SessionUSD
+		}
+		lines = append(lines, "Session cost: "+cost(reported), "Last turn cost: "+cost(status.Cost.LastTurnUSD))
+	}
+	if status.Cost.ObservedAt > 0 {
+		lines = append(lines, "Session cost checked: "+time.Unix(status.Cost.ObservedAt, 0).UTC().Format("2006-01-02 15:04:05 UTC"))
 	}
 	lines = append(lines, claudeNativeUsageLines(status.Usage)...)
 	if balance := status.Balance; balance != nil && (balance.Unit == "USD" || balance.Unit == "credits") && balance.Remaining >= 0 && !math.IsNaN(balance.Remaining) && !math.IsInf(balance.Remaining, 0) {

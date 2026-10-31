@@ -262,9 +262,20 @@ restarts, and cumulative CLI totals are not added repeatedly. Historical costs
 that were never reported to MACT remain unavailable until the native CLI
 reports them; a crashed process can leave unreported spending unknown.
 If a native counter resets below its saved total, MACT marks the accounting as
-incomplete. A known subtotal appears as **Session ≥$… (partial)** with an
-explanation; a complete total and last-turn cost remain unavailable. This
-qualification survives restarts and never becomes an account balance.
+incomplete. The latest native counter appears as **Session $… (partial)** and
+keeps updating even below an older saved total. Its tooltip explains that the
+counter may omit spending before the reset, and retains the historical lower
+bound separately. These overlapping figures are never added. Without a newer
+counter, the fallback remains **Session ≥$… (partial)**. A complete historical
+total and last-turn cost remain unavailable. This qualification survives
+restarts and never becomes an account balance.
+
+During an active turn, MACT refreshes the native cost summary approximately
+every 15 seconds, after Claude starts producing output. This is a local,
+read-only `get_session_cost` control: it submits no model prompt and makes no
+account billing request. Failed or unsupported controls keep the previous
+observation; the tooltip shows when it was checked. A completed result replaces
+the rounded live summary with Claude's more precise reported value.
 
 For an existing Claude Code account on the default endpoint, the worker reads
 Claude Code’s structured `/usage` control automatically on startup and normally

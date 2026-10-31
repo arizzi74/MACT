@@ -42,6 +42,8 @@ USAGE_ALLOWED = frozenset({
     "internal/claudeadapter/native_usage.go", "internal/claudeadapter/native_usage_test.go",
     "internal/claudeadapter/process.go", "internal/claudeadapter/runtime.go",
     "internal/claudeadapter/runtime_test.go", "internal/claudeadapter/status.go",
+    "internal/claudeadapter/status_test.go", "internal/claudeadapter/session_cost.go",
+    "internal/claudeadapter/session_cost_test.go", "internal/worker/claude_status_test.go",
     "internal/codexadapter/claude_status.go", "internal/admin/static/webui.js",
     "internal/worker/claude_account_poll.go", "internal/worker/claude_account_poll_test.go",
     "internal/worker/claude_budget.go", "internal/worker/claude_budget_poll_test.go",
