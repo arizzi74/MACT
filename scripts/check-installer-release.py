@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Authorize focused installer release checks only for an exact, narrow Git diff."""
+"""Authorize focused release checks only for an exact, narrow Git diff."""
 
 import argparse
 import json
@@ -26,6 +26,17 @@ ALLOWED = frozenset({
     "scripts/test_ci_installer_release.py",
 })
 
+COMPACTION_ALLOWED = frozenset({
+    "docs/claude-code.md", ".github/workflows/release.yml",
+    "internal/claudeadapter/compaction.go", "internal/claudeadapter/compaction_test.go",
+    "internal/claudeadapter/runtime.go", "internal/claudeadapter/runtime_test.go",
+    "internal/claudeadapter/rpc.go", "internal/claudeadapter/process.go",
+    "internal/claudeadapter/lifecycle.go", "internal/worker/slash_commands.go",
+    "internal/worker/claude_integration_test.go", "internal/admin/static/webui.js",
+    "internal/admin/static/webui-command-ui.js", "scripts/test-claude-ui.cjs",
+    "scripts/check-installer-release.py", "scripts/test_ci_installer_release.py",
+})
+
 
 class ScopeError(Exception):
     pass
@@ -35,7 +46,9 @@ def git(*arguments, root=ROOT):
     return subprocess.check_output(["git", *arguments], cwd=root, stderr=subprocess.DEVNULL)
 
 
-def validate(tag, baseline, commit, latest, root=ROOT):
+def validate(tag, baseline, commit, latest, root=ROOT, scope="installer"):
+    if scope not in ("installer", "claude-compaction"):
+        raise ScopeError("Unknown focused release scope")
     target = STABLE.fullmatch(tag)
     previous = STABLE.fullmatch(baseline)
     if not target or not previous or tuple(map(int, target.groups())) <= tuple(map(int, previous.groups())):
@@ -53,14 +66,14 @@ def validate(tag, baseline, commit, latest, root=ROOT):
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
     names = git("diff", "--name-only", "--no-renames", "-z", base, commit, "--", root=root).split(b"\0")
     changed = {name.decode("utf-8", errors="strict") for name in names if name}
-    allowed = ALLOWED | {f"docs/releases/{tag}.md"}
+    allowed = (ALLOWED if scope == "installer" else COMPACTION_ALLOWED) | {f"docs/releases/{tag}.md"}
     if not changed or changed - allowed:
-        raise ScopeError("Installer-only release contains an empty or out-of-scope change set")
+        raise ScopeError("Focused release contains an empty or out-of-scope change set")
     # Even an allowed path must remain an ordinary file, never executable
     # indirection through a Git symlink or submodule.
     entries = git("ls-tree", "-r", "-z", commit, "--", *sorted(changed), root=root).split(b"\0")
     if any(entry.split(b" ", 1)[0] not in (b"100644", b"100755") for entry in entries if entry):
-        raise ScopeError("Installer-only release contains a symlink or submodule")
+        raise ScopeError("Focused release contains a symlink or submodule")
     return changed
 
 
@@ -81,13 +94,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("repo", "tag", "baseline", "commit"):
         parser.add_argument("--" + name, required=True)
+    parser.add_argument("--scope", choices=("installer", "claude-compaction"), default="installer")
     args = parser.parse_args()
     try:
-        changed = validate(args.tag, args.baseline, args.commit, latest_release(args.repo))
+        changed = validate(args.tag, args.baseline, args.commit, latest_release(args.repo), scope=args.scope)
     except (ScopeError, subprocess.SubprocessError, OSError, ValueError, AttributeError):
-        print("Installer-only release scope was not proven; refusing reduced checks.", file=sys.stderr)
+        print("Focused release scope was not proven; refusing reduced checks.", file=sys.stderr)
         return 1
-    print(f"Verified installer-only release scope: {len(changed)} allowed files.")
+    print(f"Verified {args.scope} release scope: {len(changed)} allowed files.")
     return 0
 
 

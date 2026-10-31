@@ -2622,7 +2622,9 @@
     } else if (type === 'contextCompaction') {
       // This native item has no summary or output. Only live item events can
       // distinguish an active compaction within an otherwise running turn.
-      const label = item._complete ? 'Context compacted' : item._liveStarted && item._turn === state.turn ? 'Compacting context…' : 'Context compaction';
+      const outcomes = { failed: 'Context compaction failed', interrupted: 'Context compaction interrupted', skipped: 'Context compaction skipped' };
+      const outcome = Object.hasOwn(outcomes, item.status) ? outcomes[item.status] : '';
+      const label = outcome || (item._complete ? 'Context compacted' : item._liveStarted && item._turn === state.turn ? 'Compacting context…' : 'Context compaction');
       article.append(node('p', 'tool-title', label));
       if (item.displayNotice) article.append(node('p', 'muted small', clean(item.displayNotice)));
     } else if (type === 'subAgentActivity') {

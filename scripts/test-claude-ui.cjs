@@ -191,6 +191,7 @@ async function webUIChecks(browser, width) {
           const { name, args } = frame.params;
           const native = window.testStatuses[thread];
           let settings;
+          if (name === 'compact') result = { text: 'Compaction started. Claude Code will report when it finishes.', state: 'running' };
           if (name === 'model' && !args) result = { model_menu: { options: [{ label: 'Native Sonnet', args: '--menu sonnet' }, { label: 'Cancel', args: '--cancel' }] } };
           else if (name === 'model' && args === '--menu sonnet') result = { model_menu: { options: [{ label: 'Native Sonnet · high', args: 'sonnet high' }, { label: 'Native Sonnet · low', args: 'sonnet low' }, { label: 'Back to models', args: '--menu' }] } };
           else if (name === 'model') { const [model, effort = ''] = args.split(/\s+/); settings = { model: model === 'sonnet' ? 'native-sonnet' : model, effort }; result = { text: 'Model changed.' }; }
@@ -346,6 +347,10 @@ async function webUIChecks(browser, width) {
   await page.waitForFunction(() => window.testSent.some(frame => frame.method === 'turn/steer'));
   await page.waitForFunction(() => document.getElementById('prompt').value === '');
   assert.equal(await page.locator('#steer-notice').textContent(), '✓ Message queued');
+  await page.locator('#prompt').fill('/compact');
+  await page.waitForFunction(() => document.querySelector('#command-suggestions .command-option')?.title.includes('active turn'));
+  await page.locator('#close-commands').click();
+  await page.locator('#prompt').fill('');
   await page.locator('#model').click();
   await page.getByRole('button', { name: /Native Sonnet/, exact: false }).click();
   await page.getByRole('button', { name: /Native Sonnet · high/ }).click();
@@ -399,6 +404,24 @@ async function webUIChecks(browser, width) {
   assert.equal(await page.locator('#effort').textContent(), 'High');
   assert.equal(await page.locator('#permissions').isDisabled(), true, 'Permission mutations wait for the active turn');
   await page.evaluate(() => window.testSockets.at(-1).emit({ method: 'turn/completed', params: { threadId: 'claude-thread', turn: { id: 'active-turn', status: 'completed' } } }));
+  await page.evaluate(() => window.testSockets.at(-1).emit({ method: 'turn/completed', params: { threadId: 'claude-thread', turn: { id: 'active-turn', status: 'completed' } } }));
+  await page.waitForFunction(() => document.getElementById('turn-state').textContent === 'Ready');
+  await page.locator('#prompt').fill('/compact');
+  await page.locator('#prompt').press('Enter');
+  await page.waitForFunction(() => window.testSent.some(frame => frame.method === 'gateway/command' && frame.params.name === 'compact'));
+  await page.getByText('Compaction started. Claude Code will report when it finishes.', { exact: true }).waitFor();
+  await page.locator('#close-commands').click();
+  await page.evaluate(() => {
+    const socket = window.testSockets.at(-1), threadId = 'claude-thread', turnId = 'compact-turn';
+    socket.emit({ method: 'turn/started', params: { threadId, turn: { id: turnId, status: 'inProgress' } } });
+    socket.emit({ method: 'item/started', params: { threadId, turnId, item: { id: 'claude-compact', type: 'contextCompaction', status: 'inProgress' } } });
+  });
+  await page.locator('[data-item-id="claude-compact"]').getByText('Compacting context…', { exact: true }).waitFor();
+  for (const [status, label] of [['skipped', 'Context compaction skipped'], ['failed', 'Context compaction failed'], ['interrupted', 'Context compaction interrupted'], ['completed', 'Context compacted']]) {
+    await page.evaluate(status => window.testSockets.at(-1).emit({ method: 'item/completed', params: { threadId: 'claude-thread', turnId: 'compact-turn', item: { id: 'claude-compact', type: 'contextCompaction', status } } }), status);
+    await page.locator('[data-item-id="claude-compact"]').getByText(label, { exact: true }).waitFor();
+  }
+  await page.evaluate(() => window.testSockets.at(-1).emit({ method: 'turn/completed', params: { threadId: 'claude-thread', turn: { id: 'compact-turn', status: 'completed' } } }));
   await page.locator('#permissions').click();
   await page.getByRole('button', { name: /Automatic permissions/ }).click();
   await page.waitForFunction(() => document.getElementById('command-panel').hidden);

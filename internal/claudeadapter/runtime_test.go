@@ -192,6 +192,27 @@ func TestClaudeProcessHelper(t *testing.T) {
 			}
 			log(map[string]any{"user": mode, "session": session})
 			switch mode {
+			case "/compact":
+				switch os.Getenv("MACT_CLAUDE_HELPER_COMPACT") {
+				case "block":
+					continue
+				case "exit":
+					os.Exit(7)
+				case "skip":
+					send(map[string]any{"type": "result", "subtype": "success", "result": "Not enough messages to compact."})
+					continue
+				case "error":
+					send(map[string]any{"type": "result", "subtype": "error_during_execution", "is_error": true})
+					continue
+				}
+				send(map[string]any{"type": "system", "subtype": "session_state_changed", "state": "running"})
+				send(map[string]any{"type": "system", "subtype": "status", "status": "compacting"})
+				send(map[string]any{"type": "system", "subtype": "compact_boundary", "compact_metadata": map[string]any{"trigger": "manual", "pre_tokens": 32000}})
+				send(map[string]any{"type": "result", "subtype": "success"})
+				if os.Getenv("MACT_CLAUDE_HELPER_COMPACT") == "hold-idle" {
+					continue
+				}
+				send(map[string]any{"type": "system", "subtype": "session_state_changed", "state": "idle"})
 			case "provider-error":
 				send(map[string]any{"type": "assistant", "error": "authentication_failed", "message": map[string]any{"id": uuid.NewString(), "content": []any{map[string]any{"type": "text", "text": "PRIVATE PROVIDER AUTH RESPONSE"}}}})
 				send(map[string]any{"type": "result", "subtype": "error_during_execution", "is_error": true, "result": "PRIVATE PROVIDER AUTH RESPONSE"})

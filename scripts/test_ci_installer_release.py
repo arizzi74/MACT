@@ -57,6 +57,24 @@ class InstallerReleaseScopeTest(unittest.TestCase):
         self.target(changed)
         self.assertEqual(self.validate(), changed)
 
+    def test_claude_compaction_scope_is_explicit_and_does_not_allow_audio_or_other_runtime_changes(self):
+        changed = POLICY.COMPACTION_ALLOWED | {f"docs/releases/{self.tag}.md"}
+        self.target(changed)
+        self.assertEqual(self.validate(scope="claude-compaction"), changed)
+        for name in ("internal/audio/audio.go", "native/whisper/source.env", "go.mod",
+                     "scripts/publish-release.py", "internal/worker/worker.go", "README.md"):
+            with self.subTest(path=name):
+                self.setUp()
+                self.target(("internal/claudeadapter/compaction.go", name))
+                with self.assertRaises(POLICY.ScopeError):
+                    self.validate(scope="claude-compaction")
+
+    def test_claude_compaction_scope_cannot_bypass_tag_and_baseline_checks(self):
+        self.target(("internal/claudeadapter/compaction.go",))
+        for arguments in ({"latest": "v1.2.2"}, {"commit": "a" * 40}, {"tag": self.baseline}, {"scope": "unknown"}):
+            with self.subTest(arguments=arguments), self.assertRaises(POLICY.ScopeError):
+                self.validate(**{"scope": "claude-compaction", **arguments})
+
     def test_runtime_dependencies_security_publisher_and_unrelated_docs_are_refused(self):
         for name in ("internal/worker/worker.go", "go.mod", "package-lock.json", "scripts/publish-release.py",
                      ".github/workflows/security.yml", "docs/operations.md", "docs/releases/v1.2.3.md"):
@@ -135,12 +153,13 @@ class InstallerReleaseWorkflowTest(unittest.TestCase):
         for name in ("go-checks", "native-session-archive", "browser"):
             self.assertIn("needs: release-mode", jobs[name])
             self.assertIn("if: needs.release-mode.outputs.installer_only != 'true'", jobs[name])
+            self.assertIn("needs.release-mode.outputs.claude_compaction_only != 'true'", jobs[name])
         self.assertIn("if: needs.release-mode.outputs.installer_only == 'true'", jobs["installer-tests"])
         gate = jobs["test-and-build"]
         self.assertIn("always() && !cancelled()", gate)
-        for name in ("release-mode", "package", "security", "installer-tests", "go-checks", "browser", "native-session-archive"):
+        for name in ("release-mode", "package", "security", "installer-tests", "go-checks", "browser", "native-session-archive", "claude-compaction-tests"):
             self.assertIn(f"needs.{name}.result == 'success'", gate)
-        for name in ("go-checks", "browser", "native-session-archive", "installer-tests"):
+        for name in ("go-checks", "browser", "native-session-archive", "installer-tests", "claude-compaction-tests"):
             self.assertIn(f"needs.{name}.result == 'skipped'", gate)
         self.assertIn("needs.release-mode.outputs.installer_only == 'false'", gate)
         self.assertIn("needs.release-mode.outputs.installer_only == 'true'", gate)
@@ -148,7 +167,18 @@ class InstallerReleaseWorkflowTest(unittest.TestCase):
         self.assertIn("if: always() && !cancelled() && needs.test-and-build.result == 'success'", jobs["publish"])
         for name in ("native-whisper", "native-speech"):
             self.assertIn("needs: release-mode", jobs[name])
-            self.assertIn("run-smoke-tests: ${{ needs.release-mode.outputs.installer_only != 'true' }}", jobs[name])
+            self.assertIn("run-smoke-tests: ${{ needs.release-mode.outputs.installer_only != 'true' && needs.release-mode.outputs.claude_compaction_only != 'true' }}", jobs[name])
+        self.assertIn("github.event_name == 'workflow_dispatch' && inputs.claude_compaction_only", text)
+        self.assertIn('"$INSTALLER_ONLY" == \'true\' && "$CLAUDE_COMPACTION_ONLY" == \'true\'', text)
+        self.assertLess(text.index("--scope claude-compaction"), text.index("installer_only=false\\nclaude_compaction_only=true"))
+        focused = jobs["claude-compaction-tests"]
+        self.assertIn("if: needs.release-mode.outputs.claude_compaction_only == 'true'", focused)
+        self.assertIn("go test -race ./internal/claudeadapter -run 'TestClaude(Compaction|AutomaticCompaction)", focused)
+        self.assertIn("go test -race ./internal/worker -run 'TestClaudeWorkerIntegration|TestWebUICompact", focused)
+        self.assertNotIn("go test -race ./internal/claudeadapter ./internal/codexadapter", focused)
+        self.assertIn("node scripts/test-claude-ui.cjs", focused)
+        self.assertNotIn("npm run test:browser", focused)
+        self.assertNotIn("test-admin-audio", focused)
 
     def test_native_smoke_defaults_and_cache_admission_stay_strict(self):
         for name in ("native-whisper", "native-speech"):

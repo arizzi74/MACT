@@ -168,6 +168,16 @@ button **Queue**; Telegram's active-turn messages follow the same queue behavior
 A worker restart never silently replays uncertain prompts. Pending bridge queue
 items are cancelled with a saved history notice so they can be resent explicitly.
 
+Use `/compact` in the Web UI or Telegram to summarize the current Claude
+conversation without creating a new session or changing its model, effort, or
+permissions. Compaction requires an idle session without queued input or pending
+approvals. MACT waits for the native result and idle lifecycle, and shows
+**Context compacted** only after Claude reports a compaction boundary. Too little
+history is shown as skipped; failures and interruptions remain visible. Automatic
+Claude compaction is also shown. The context token count uses Claude's reported
+post-compaction size when available. Otherwise the old count is cleared until
+Claude next reports actual input usage.
+
 Claude background agents and commands remain part of the request that launched
 them, including agents that Claude starts in the background implicitly. MACT
 keeps the turn active while that work runs and while the parent assembles its

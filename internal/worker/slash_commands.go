@@ -97,7 +97,7 @@ func (s *sessionActor) executeCodexCommand(ctx context.Context, client *codexada
 			return protocol.Result{Text: text}, err
 		case "permissions":
 			return s.claudePermissions(ctx, client, args)
-		case "rename", "pwd", "cwd", "copy", "new", "delete", "diff", "stop":
+		case "rename", "pwd", "cwd", "copy", "new", "delete", "diff", "stop", "compact":
 			// Shared session and workspace operations use the same actor fences.
 		default:
 			return protocol.Result{}, validationError("/%s is not supported by the Claude Code worker. Configure its model, account and permissions in the admin console.", name)
@@ -138,7 +138,11 @@ func (s *sessionActor) executeCodexCommand(ctx context.Context, client *codexada
 		if err := client.CompactThread(ctx, s.session.ThreadID); err != nil {
 			return protocol.Result{}, err
 		}
-		return protocol.Result{Text: "Compaction started. Codex will report when it finishes.", State: "running"}, nil
+		agent := "Codex"
+		if s.agent.cfg.AgentKind == "claude" {
+			agent = "Claude Code"
+		}
+		return protocol.Result{Text: "Compaction started. " + agent + " will report when it finishes.", State: "running"}, nil
 	case "review":
 		if err := s.ensureCodexThreadLoaded(ctx, client); err != nil {
 			return protocol.Result{}, err

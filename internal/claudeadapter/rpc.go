@@ -256,6 +256,20 @@ func (s *server) handle(peer *peer, msg rpcMessage, p params) (any, error) {
 		return nil, errors.New("Claude session was not found")
 	}
 	switch msg.Method {
+	case "thread/compact/start":
+		if err := s.checkThreadSettingsIdle(t); err != nil {
+			return nil, err
+		}
+		content := []map[string]any{{"type": "text", "text": "/compact"}}
+		turn, proc, userItem, err := s.beginTurn(t, content)
+		if err != nil {
+			return nil, err
+		}
+		proc.lifecycle.manualCompact = true
+		rpcResult(peer, msg.ID, map[string]any{})
+		s.admitTurn(t, turn, proc, userItem, content)
+		proc.startCompaction(t)
+		return nil, nil
 	case "thread/history/recover":
 		return s.recoverNativeHistory(t.ID, p.TurnID)
 	case "thread/read", "thread/resume":

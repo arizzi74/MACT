@@ -79,6 +79,10 @@ func TestClaudeWorkerCLIHelper(t *testing.T) {
 				text = message.Message.Content[0].Text
 			}
 			switch text {
+			case "/compact":
+				send(map[string]any{"type": "system", "subtype": "status", "status": "compacting"})
+				send(map[string]any{"type": "system", "subtype": "compact_boundary", "compact_metadata": map[string]any{"trigger": "manual", "pre_tokens": 2000}})
+				finish("Context compacted.")
 			case "approval":
 				send(map[string]any{"type": "control_request", "request_id": "approval", "request": map[string]any{"subtype": "can_use_tool", "tool_name": "Bash", "tool_use_id": "approval-tool", "input": map[string]any{"command": "printf hello"}}})
 			case "question":
@@ -320,6 +324,31 @@ func TestClaudeWorkerIntegration(t *testing.T) {
 	if !strings.Contains(string(history.Result), "Answer: hello") {
 		t.Fatal("Claude WebUI history fallback did not include the completed native response")
 	}
+	if foreign := browserA.request("thread/compact/start", map[string]any{"threadId": b.ThreadID}); len(foreign.Error) == 0 {
+		t.Fatal("browser compacted another Claude session")
+	}
+	compact := browserA.success("gateway/command", map[string]any{"name": "compact", "args": ""})
+	if !strings.Contains(string(compact.Result), "Claude Code will report") {
+		t.Fatalf("Claude compact command did not start: %s", compact.Result)
+	}
+	complete()
+	history = browserA.success("thread/items/list", map[string]any{"threadId": a.ThreadID, "limit": 20, "sortDirection": "desc"})
+	if !strings.Contains(string(history.Result), "contextCompaction") || !strings.Contains(string(history.Result), "Context compacted.") {
+		t.Fatal("native compaction result was not available through WebUI history")
+	}
+	waitControl(t, func() bool {
+		lease, err := agent.prepareUpdate(ctx, time.Second)
+		if err != nil {
+			if strings.Contains(err.Error(), "a native CLI thread is active") {
+				t.Fatalf("completed Claude compaction blocked worker updates: %v", err)
+			}
+			return false
+		}
+		if err := agent.abortUpdate(lease.Token); err != nil {
+			t.Fatal(err)
+		}
+		return true
+	})
 	turn("approval")
 	approval := browserA.next(func(rpc webUIRPC) bool { return rpc.Method == "item/commandExecution/requestApproval" })
 	// A second browser connects during the approval, so its attachment proxy

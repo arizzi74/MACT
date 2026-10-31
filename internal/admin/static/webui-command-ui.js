@@ -140,7 +140,7 @@
         if (entry.name === 'approvals') return 'Use /permissions to choose Claude Code’s permission mode.';
         if (['delete', 'tgdeletesession'].includes(entry.name) && ctx.deletionUnavailable?.()) return ctx.deletionUnavailable();
         if (entry.name === 'tgsteer') return 'Claude Code cannot steer an active turn. Send a normal message to queue it after the current turn.';
-        if (entry.kind === 'unavailable' || entry.kind === 'worker' && !['model', 'permissions', 'status', 'usage', 'pwd', 'rename', 'delete', 'diff', 'stop'].includes(entry.name)) return 'This command is unavailable for Claude Code workers.';
+        if (entry.kind === 'unavailable' || entry.kind === 'worker' && !['model', 'permissions', 'status', 'usage', 'pwd', 'rename', 'delete', 'diff', 'stop', 'compact'].includes(entry.name)) return 'This command is unavailable for Claude Code workers.';
       }
       if (entry.kind === 'unavailable') return entry.reason;
       if (entry.kind === 'gateway' || ['help', 'tghelp', 'theme', 'title', 'tui', 'resume', 'agents', 'tgsessions'].includes(entry.name)) return state.authenticated ? '' : 'Sign in to use commands.';
@@ -169,7 +169,7 @@
       matches = catalog.search(query).filter(entry => {
         if (!ctx.isClaude?.()) return entry.source !== 'claude';
         if (entry.source === 'gateway') return true;
-        return ['model', 'effort', 'permissions', 'status', 'usage', 'rename', 'new', 'clear', 'resume', 'delete', 'agents', 'copy', 'export', 'raw', 'diff', 'pwd', 'title', 'statusline', 'theme', 'tui', 'help', 'quit', 'stop'].includes(entry.name);
+        return ['model', 'effort', 'permissions', 'status', 'usage', 'rename', 'new', 'clear', 'resume', 'delete', 'agents', 'copy', 'export', 'raw', 'diff', 'pwd', 'title', 'statusline', 'theme', 'tui', 'help', 'quit', 'stop', 'compact'].includes(entry.name);
       }); index = Math.min(index, Math.max(0, matches.length - 1)); paintSuggestions();
     }
     function open(query = '', fromPrompt = false) {

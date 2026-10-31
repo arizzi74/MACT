@@ -435,6 +435,9 @@ func (p *process) handle(data []byte) {
 	case "control_cancel_request":
 		p.cancelPermission(envelope.RequestID)
 	case "system":
+		if p.handleCompaction(t, data, envelope.Subtype, envelope.UserMessageUUID, envelope.UserMessageUUIDs, envelope.Origin) {
+			return
+		}
 		if p.handleLifecycle(t, data, envelope.Subtype) {
 			return
 		}
@@ -660,6 +663,14 @@ func (p *process) handle(data []byte) {
 				}
 			}
 		}
+		if status == "completed" && p.lifecycle.manualCompact && envelope.Result == "" {
+			if p.lifecycle.compaction != nil && p.lifecycle.compaction["status"] == "completed" {
+				envelope.Result = "Context compacted."
+			} else {
+				status = "failed"
+				message = "Claude Code did not confirm context compaction."
+			}
+		}
 		if status == "completed" && envelope.Result != "" && !p.hasAssistantText(t.active(), envelope.Result) {
 			item := map[string]any{"id": uuid.NewString(), "type": "agentMessage", "text": envelope.Result, "phase": "final_answer"}
 			p.appendItem(t, item)
@@ -752,6 +763,7 @@ func (p *process) finish(t *savedThread, status, message string) {
 	if turn == nil {
 		return
 	}
+	p.settleCompaction(t, status)
 	for id, item := range p.tools {
 		item["status"] = "interrupted"
 		p.notifyItem(t, "item/completed", item)

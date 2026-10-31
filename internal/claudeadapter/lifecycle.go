@@ -6,18 +6,20 @@ import "encoding/json"
 // queries triggered by background-task notifications. Native result messages
 // end those individual queries, not necessarily the user's whole request.
 type turnLifecycle struct {
-	turnID       string
-	submitted    bool
-	state        string
-	runningSeen  bool
-	result       *turnOutcome
-	needsResult  bool // Legacy producers: a task ended after the latest result.
-	queryOpen    bool // Parent output after a result requires another result.
-	messageTexts map[string][]string
-	textItems    map[string][]map[string]any
-	lastMessage  string
-	lastText     map[string]any
-	costStart    *float64
+	turnID        string
+	submitted     bool
+	state         string
+	runningSeen   bool
+	result        *turnOutcome
+	needsResult   bool // Legacy producers: a task ended after the latest result.
+	queryOpen     bool // Parent output after a result requires another result.
+	messageTexts  map[string][]string
+	textItems     map[string][]map[string]any
+	lastMessage   string
+	lastText      map[string]any
+	costStart     *float64
+	manualCompact bool
+	compaction    map[string]any
 }
 
 type turnOutcome struct{ status, message string }
@@ -68,6 +70,9 @@ func settleInterruptedTaskItems(t *savedThread) {
 		}
 		for _, item := range turn.Items {
 			if item["type"] == "dynamicToolCall" && item["status"] == "inProgress" {
+				item["status"] = "interrupted"
+			}
+			if item["type"] == "contextCompaction" && item["status"] == "inProgress" {
 				item["status"] = "interrupted"
 			}
 		}
