@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/iaia/telegramgw/internal/codexadapter"
 )
 
 const nativeUsageFixture = `{"subscription_type":"enterprise","rate_limits_available":true,"rate_limits":{"extra_usage":{"is_enabled":true,"monthly_limit":50000,"used_credits":12345,"currency":"USD","decimal_places":2}},"session":{"total_cost_usd":99999},"behaviors":{"private":"PRIVATE_TRANSCRIPT"},"account":{"key":"PRIVATE_IDENTITY"}}`
@@ -27,6 +29,61 @@ func TestNativeUsageProjectsMinorUnitsWithoutSessionCostOrPrivateData(t *testing
 		if strings.Contains(string(wire), private) {
 			t.Fatalf("projection includes private or unrelated data: %s", wire)
 		}
+	}
+}
+
+func TestNativeUsageReusesLoadedSessionWithoutInterruptingIt(t *testing.T) {
+	for _, scenario := range []string{"success", "timeout", "busy write"} {
+		t.Run(scenario, func(t *testing.T) {
+			cfg := testConfig(t)
+			cfg.Env = append(cfg.Env, "MACT_CLAUDE_HELPER_USAGE="+nativeUsageFixture)
+			if scenario == "timeout" {
+				cfg.Env = append(cfg.Env, "MACT_CLAUDE_HELPER_HANG_USAGE=1")
+			}
+			r := startTest(t, cfg)
+			thread := startThread(t, r)
+			if _, err := r.StartTurn(t.Context(), thread.ID, "approval"); err != nil {
+				t.Fatal(err)
+			}
+			approval := awaitRequest(t, r) // Initialization and input submission finished.
+			r.server.mu.Lock()
+			process := r.server.runners[thread.ID]
+			r.server.mu.Unlock()
+			if scenario == "busy write" {
+				process.writeMu.Lock()
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+			usage, err := r.ReadNativeUsage(ctx)
+			cancel()
+			if scenario == "busy write" {
+				process.writeMu.Unlock()
+			}
+			if scenario == "success" && (err != nil || usage == nil || usage.APISpend == nil) {
+				t.Fatal("loaded usage read failed", usage, err)
+			}
+			if scenario != "success" && err == nil {
+				t.Fatal("failed read was not reported")
+			}
+			select {
+			case <-process.done:
+				t.Fatal("account read killed the user's process")
+			default:
+			}
+			if err := r.ReplyApproval(t.Context(), approval.RequestID, codexadapter.ApprovalResponse{Decision: "accept"}); err != nil {
+				t.Fatal(err)
+			}
+			awaitEvent(t, r, "turn_completed")
+			actions, err := os.ReadFile(filepath.Join(cfg.WorkingDirectory, "actions.jsonl"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Count(string(actions), `"launch":true`) != 1 || strings.Count(string(actions), `"user":`) != 1 {
+				t.Fatal("usage launched another CLI or submitted another prompt", string(actions))
+			}
+			if scenario == "success" && !strings.Contains(string(actions), `"foreground":true`) {
+				t.Fatal("usage did not reuse the native cache")
+			}
+		})
 	}
 }
 

@@ -11,16 +11,17 @@ import (
 // mean unknown; a non-nil zero is an explicitly reported zero. Cost is the
 // CLI's reported USD estimate, not an account quota or billing statement.
 type ClaudeStatus struct {
-	Provider         string            `json:"provider"`
-	Model            *string           `json:"model"`
-	ModelDisplayName *string           `json:"modelDisplayName,omitempty"`
-	ReasoningEffort  *string           `json:"reasoningEffort"`
-	PermissionMode   *string           `json:"permissionMode"`
-	Context          ContextUsage      `json:"context"`
-	Cost             ReportedCost      `json:"cost"`
-	Balance          *CreditBalance    `json:"balance"`
-	Usage            *NativeUsage      `json:"usage,omitempty"`
-	EnterpriseBudget *EnterpriseBudget `json:"enterpriseBudget,omitempty"`
+	Provider         string                    `json:"provider"`
+	Model            *string                   `json:"model"`
+	ModelDisplayName *string                   `json:"modelDisplayName,omitempty"`
+	ReasoningEffort  *string                   `json:"reasoningEffort"`
+	PermissionMode   *string                   `json:"permissionMode"`
+	Context          ContextUsage              `json:"context"`
+	Cost             ReportedCost              `json:"cost"`
+	Balance          *CreditBalance            `json:"balance"`
+	Usage            *NativeUsage              `json:"usage,omitempty"`
+	EnterpriseBudget *EnterpriseBudget         `json:"enterpriseBudget,omitempty"`
+	AccountRefresh   map[string]AccountRefresh `json:"accountRefresh,omitempty"`
 }
 
 type ContextUsage struct {
@@ -38,6 +39,35 @@ type ReportedCost struct {
 	// zeroed crash report. The saved SessionUSD then retains only internal
 	// high-water evidence; snapshots must not present it as a current total.
 	Incomplete bool `json:"incomplete,omitempty"`
+}
+
+// AccountRefresh describes request timing, never provider response text or
+// credentials. Observation timestamps stay on the last successful value.
+type AccountRefresh struct {
+	LastAttemptAt int64 `json:"lastAttemptAt"`
+	NextAttemptAt int64 `json:"nextAttemptAt"`
+	Failed        bool  `json:"failed"`
+	RateLimited   bool  `json:"rateLimited,omitempty"`
+}
+
+func (r *Runtime) SetAccountRefreshAt(generation uint64, source string, refresh AccountRefresh) error {
+	if r == nil || r.server == nil || (source != "usage" && source != "enterpriseBudget" && source != "balance") || refresh.LastAttemptAt <= 0 || refresh.NextAttemptAt < refresh.LastAttemptAt || refresh.NextAttemptAt > 253402300799 {
+		return errors.New("Invalid Claude account refresh")
+	}
+	s := r.server
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed || s.balanceGeneration != generation {
+		return errors.New("Claude account refresh observation expired")
+	}
+	if s.accountRefresh == nil {
+		s.accountRefresh = make(map[string]AccountRefresh)
+	}
+	s.accountRefresh[source] = refresh
+	for _, thread := range s.threads {
+		s.broadcastStatus(thread)
+	}
+	return nil
 }
 
 // CreditBalance is an optional provider-reported account observation supplied
@@ -114,6 +144,7 @@ func (t *savedThread) statusSnapshot(balance *CreditBalance, budget *EnterpriseB
 	copy.Usage = cloneNativeUsage(usage)
 	copy.Balance = cloneBalance(balance)
 	copy.EnterpriseBudget = cloneEnterpriseBudget(budget)
+	copy.AccountRefresh = nil // Refresh state is runtime/account scoped.
 	copy.Cost.KnownSessionUSD = nil
 	if copy.Cost.Incomplete {
 		copy.Cost.KnownSessionUSD = copy.Cost.SessionUSD
@@ -132,6 +163,12 @@ func (s *server) threadMetadata(t *savedThread, includeTurns bool) map[string]an
 
 func (s *server) statusSnapshot(t *savedThread) *ClaudeStatus {
 	status := t.statusSnapshot(s.balance, s.enterpriseBudget, s.nativeUsage)
+	if len(s.accountRefresh) != 0 {
+		status.AccountRefresh = make(map[string]AccountRefresh, len(s.accountRefresh))
+		for source, refresh := range s.accountRefresh {
+			status.AccountRefresh[source] = refresh
+		}
+	}
 	status.ModelDisplayName = nil
 	if status.Model != nil {
 		for _, model := range s.capabilities.models {
@@ -335,6 +372,7 @@ func (p *process) observeResult(t *savedThread, raw json.RawMessage, subtype str
 func sanitizeSavedStatus(t *savedThread) {
 	status := t.ensureStatus()
 	status.Cost.KnownSessionUSD = nil // Derived from validated accounting evidence.
+	status.AccountRefresh = nil       // Account refresh metadata is never restored from a conversation.
 	status.Provider = "claude"
 	status.Balance = nil
 	status.EnterpriseBudget = nil

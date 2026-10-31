@@ -129,7 +129,7 @@ async function adminChecks(browser, width) {
   await page.close();
 }
 
-async function webUIChecks(browser, width) {
+async function webUIChecks(browser, width, usageOnly = false) {
   const page = await browser.newPage({ viewport: { width, height: 900 } });
   const errors = [];
   const other = { ...session, session_id: 'claude-other', codex_thread_id: 'other-thread', name: 'Other Claude project', state: 'idle', stats: { model: 'STALE_INVENTORY_MODEL', context_tokens: 777, context_window: 1000 } };
@@ -245,6 +245,29 @@ async function webUIChecks(browser, width) {
   };
   await page.goto('https://webui.test/tgw/webui/');
   await select(session.session_id);
+  if (usageOnly) {
+    const observedAt = Math.floor(Date.now() / 1000) - 600, nextAttemptAt = Math.floor(Date.now() / 1000) + 1800;
+    const fresh = { ...known, balance: null, usage: { plan: 'enterprise', observedAt, windows: [], apiSpend: { enabled: true, currency: 'USD', period: 'monthly', limit: 500, spent: 125, remaining: 375 } } };
+    await emitStatus(session.codex_thread_id, fresh);
+    assert.equal(await page.locator('#claude-budget').textContent(), 'API spend $375.00 / $500.00 left');
+    const cached = { ...fresh, accountRefresh: { usage: { lastAttemptAt: observedAt + 600, nextAttemptAt, failed: true, rateLimited: true } } };
+    await emitStatus(session.codex_thread_id, cached);
+    assert.equal(await page.locator('#claude-budget').textContent(), 'API spend $375.00 / $500.00 left (last known)');
+    assert.match(await page.locator('#claude-budget').getAttribute('title'), /Checked.*Refresh rate limited.*previous successful report.*Next refresh/);
+    await emitStatus(session.codex_thread_id, { ...cached, accountRefresh: { usage: { lastAttemptAt: observedAt + 600, nextAttemptAt, failed: true } } });
+    assert.match(await page.locator('#claude-budget').textContent(), /375\.00.*last known/);
+    await select(other.session_id); await select(session.session_id);
+    assert.match(await page.locator('#claude-budget').textContent(), /375\.00.*last known/, 'Reconnect preserves worker account cache and its age');
+    await emitStatus(session.codex_thread_id, { ...fresh, usage: { ...fresh.usage, observedAt: observedAt + 700, apiSpend: { ...fresh.usage.apiSpend, spent: 150, remaining: 350 } }, accountRefresh: { usage: { lastAttemptAt: observedAt + 700, nextAttemptAt, failed: false } } });
+    assert.equal(await page.locator('#claude-budget').textContent(), 'API spend $350.00 / $500.00 left');
+    await emitStatus(session.codex_thread_id, { ...known, balance: null, usage: null, accountRefresh: { usage: { lastAttemptAt: observedAt + 700, nextAttemptAt, failed: true } } });
+    assert.equal(await page.locator('#claude-budget').textContent(), 'API spend unavailable');
+    assert.match(await page.locator('#claude-budget').getAttribute('title'), /Next refresh/);
+    await assertFits();
+    assert.deepEqual(errors, []);
+    await page.close();
+    return;
+  }
   assert.equal(await page.locator('#prompt').getAttribute('placeholder'), 'Ask Claude Code to do anything');
   assert.match(await page.locator('[data-item-id="reply-claude-thread"] .role').textContent(), /Claude Code/);
   assert.equal(await page.locator('.model-controls').isVisible(), true);
@@ -665,6 +688,11 @@ async function deletionChecks(browser, width) {
 (async () => {
   const browser = await chromium.launch({ headless: true });
   try {
+    if (process.argv.includes('--usage-only')) {
+      for (const width of [390, 1280]) await webUIChecks(browser, width, true);
+      process.stdout.write('Claude usage refresh browser checks passed.\n');
+      return;
+    }
     for (const width of [390, 1280]) await adminChecks(browser, width);
     for (const width of [320, 390, 768, 1280]) await webUIChecks(browser, width);
     for (const width of [390, 1280]) await deletionChecks(browser, width);

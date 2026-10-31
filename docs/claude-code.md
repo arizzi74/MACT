@@ -267,17 +267,27 @@ explanation; a complete total and last-turn cost remain unavailable. This
 qualification survives restarts and never becomes an account balance.
 
 For an existing Claude Code account on the default endpoint, the worker reads
-Claude Code’s structured `/usage` control automatically on startup and about
-every minute. **API spend** shows the reported monthly allowance, spending and
+Claude Code’s structured `/usage` control automatically on startup and normally
+every five minutes. **API spend** shows the reported monthly allowance, spending and
 remaining amount. Available subscription windows use Claude’s **Current session**
 and **Current week** labels, with reset times in their tooltip and text report.
 This read uses the native login; no Enterprise Admin API key is required.
 
-The query runs in an isolated, non-persistent CLI process and sends no model
-prompt. It requests `skip_behaviors` to avoid scanning local transcripts. A
-failed or unsupported usage query clears the last observation and shows
-**API spend unavailable** without stopping an active conversation. The next
-scheduled read retries it. Native API spend amounts are currency minor units; MACT
+The read reuses a loaded Claude process's native cache and provider cooldowns
+when available. Without a loaded conversation, it uses an isolated,
+non-persistent CLI process. Both paths send no model prompt and request
+`skip_behaviors` to avoid scanning local transcripts. Read failures never stop
+the active conversation. One scheduled poller serves all sessions and browser
+tabs for a runtime. Failures use increasing, capped backoff; direct provider and
+Enterprise HTTP requests also honor `Retry-After` seconds or HTTP dates without
+shortening a longer server cooldown. A successful read restores normal polling.
+
+A failed or empty usage read keeps the previous budget and its original check
+time. The status line marks it **last known**, and its tooltip and `/status`
+show the next scheduled refresh. A first read with no prior value shows
+**API spend unavailable**. Cache values live in the worker runtime, are cleared
+when account settings change, and are not written into conversations. Native
+API spend amounts are currency minor units; MACT
 converts explicit USD to dollars. Missing amounts or currencies stay unknown,
 and a missing limit is not presented as unlimited. Dollar allowances are kept
 separate from estimated session cost and provider credit balances. The native

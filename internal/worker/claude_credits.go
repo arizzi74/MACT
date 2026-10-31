@@ -42,7 +42,7 @@ func fetchClaudeCredits(ctx context.Context, settings claudeSettingsFile, client
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return nil, errClaudeCreditsUnavailable
+		return nil, claudeAccountHTTPError(response, errClaudeCreditsUnavailable)
 	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, (64<<10)+1))
 	if err != nil || len(data) > 64<<10 {
@@ -67,8 +67,8 @@ func fetchClaudeCredits(ctx context.Context, settings claudeSettingsFile, client
 }
 
 // One poller per dedicated runtime, regardless of browser/tab count. A settings
-// generation fences an in-flight response after an account change. Failures
-// clear the projection rather than showing an old balance as current.
+// generation fences an in-flight response after an account change. Cached
+// observations retain their successful-read timestamps while requests back off.
 func (m *RuntimeManager) claudeCreditsLoop(bridge *claudeadapter.Runtime) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -82,15 +82,18 @@ func (m *RuntimeManager) claudeCreditsLoop(bridge *claudeadapter.Runtime) {
 	client := &http.Client{Timeout: 5 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return errClaudeCreditsUnavailable }}
 	defer client.CloseIdleConnections()
 
-	m.pollClaudeAccountStatus(ctx, bridge, client)
-	ticker := time.NewTicker(time.Minute)
+	poller := newClaudeAccountPoller(m, bridge, client)
+	poller.poll(ctx)
+	// Check for settings changes promptly; the per-source schedule below is
+	// the only authority admitting actual HTTP/native usage requests.
+	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			m.pollClaudeAccountStatus(ctx, bridge, client)
+			poller.poll(ctx)
 		}
 	}
 }
@@ -98,33 +101,7 @@ func (m *RuntimeManager) claudeCreditsLoop(bridge *claudeadapter.Runtime) {
 // pollClaudeAccountStatus publishes one current account observation. Both the
 // private settings snapshot and bridge generation fence delayed HTTP replies.
 func (m *RuntimeManager) pollClaudeAccountStatus(ctx context.Context, bridge *claudeadapter.Runtime, client *http.Client) {
-	generation := bridge.BalanceGeneration()
-	settings, err := readClaudeSettings(claudeSettingsPath(m.cfg))
-	if err != nil {
-		_ = bridge.SetBalanceAt(generation, nil)
-		_ = bridge.SetEnterpriseBudgetAt(generation, nil)
-		_ = bridge.SetNativeUsageAt(generation, nil)
-		return
-	}
-	var balance *claudeadapter.CreditBalance
-	if supportsClaudeCredits(settings) {
-		balance, _ = fetchClaudeCredits(ctx, settings, client)
-	}
-	var budget *claudeadapter.EnterpriseBudget
-	if supportsClaudeEnterpriseBudget(settings) {
-		budget, _ = fetchClaudeEnterpriseBudget(ctx, settings, client)
-	}
-	var usage *claudeadapter.NativeUsage
-	if settings.AuthMode == "login" && settings.BaseURL == "" {
-		usage, _ = bridge.ReadNativeUsage(ctx)
-	}
-	latest, settingsErr := readClaudeSettings(claudeSettingsPath(m.cfg))
-	if settingsErr != nil || latest != settings {
-		balance = nil
-		budget = nil
-		usage = nil
-	}
-	_ = bridge.SetBalanceAt(generation, balance)
-	_ = bridge.SetEnterpriseBudgetAt(generation, budget)
-	_ = bridge.SetNativeUsageAt(generation, usage)
+	// One-shot reads share retention and identity checks with the scheduled
+	// poller. Production keeps one poller for the entire runtime lifetime.
+	newClaudeAccountPoller(m, bridge, client).poll(ctx)
 }

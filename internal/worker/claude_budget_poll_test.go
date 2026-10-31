@@ -11,7 +11,7 @@ import (
 	"github.com/iaia/telegramgw/internal/codexadapter"
 )
 
-func TestClaudeEnterpriseBudgetPollFailureClearsPreviouslyPublishedStatus(t *testing.T) {
+func TestClaudeEnterpriseBudgetPollFailureRetainsPreviouslyPublishedStatus(t *testing.T) {
 	a, bridge := claudeSettingsAgent(t)
 	settings := enterpriseBudgetFixture()
 	if err := saveClaudeSettings(claudeSettingsPath(a.cfg), settings); err != nil {
@@ -40,8 +40,8 @@ func TestClaudeEnterpriseBudgetPollFailureClearsPreviouslyPublishedStatus(t *tes
 	}
 	a.manager.pollClaudeAccountStatus(t.Context(), bridge, client)
 	failed, err := bridge.Client.ReadClaudeStatus(t.Context(), thread.ID)
-	if err != nil || calls != 2 || failed.EnterpriseBudget != nil {
-		t.Fatalf("HTTP failure left a stale Enterprise budget visible: %+v %v calls=%d", failed.EnterpriseBudget, err, calls)
+	if err != nil || calls != 2 || failed.EnterpriseBudget == nil || *failed.EnterpriseBudget.Remaining != 185.975 || failed.EnterpriseBudget.ObservedAt != published.EnterpriseBudget.ObservedAt || !failed.AccountRefresh["enterpriseBudget"].Failed {
+		t.Fatalf("HTTP failure discarded or refreshed the last successful budget: %+v %v calls=%d", failed.EnterpriseBudget, err, calls)
 	}
 }
 

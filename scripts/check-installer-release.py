@@ -37,6 +37,19 @@ COMPACTION_ALLOWED = frozenset({
     "scripts/check-installer-release.py", "scripts/test_ci_installer_release.py",
 })
 
+USAGE_ALLOWED = frozenset({
+    ".github/workflows/release.yml", "docs/claude-code.md",
+    "internal/claudeadapter/native_usage.go", "internal/claudeadapter/native_usage_test.go",
+    "internal/claudeadapter/process.go", "internal/claudeadapter/runtime.go",
+    "internal/claudeadapter/runtime_test.go", "internal/claudeadapter/status.go",
+    "internal/codexadapter/claude_status.go", "internal/admin/static/webui.js",
+    "internal/worker/claude_account_poll.go", "internal/worker/claude_account_poll_test.go",
+    "internal/worker/claude_budget.go", "internal/worker/claude_budget_poll_test.go",
+    "internal/worker/claude_credits.go", "internal/worker/claude_status.go",
+    "scripts/test-claude-ui.cjs", "scripts/check-installer-release.py",
+    "scripts/test_ci_installer_release.py",
+})
+
 
 class ScopeError(Exception):
     pass
@@ -47,7 +60,7 @@ def git(*arguments, root=ROOT):
 
 
 def validate(tag, baseline, commit, latest, root=ROOT, scope="installer"):
-    if scope not in ("installer", "claude-compaction"):
+    if scope not in ("installer", "claude-compaction", "claude-usage"):
         raise ScopeError("Unknown focused release scope")
     target = STABLE.fullmatch(tag)
     previous = STABLE.fullmatch(baseline)
@@ -66,7 +79,7 @@ def validate(tag, baseline, commit, latest, root=ROOT, scope="installer"):
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
     names = git("diff", "--name-only", "--no-renames", "-z", base, commit, "--", root=root).split(b"\0")
     changed = {name.decode("utf-8", errors="strict") for name in names if name}
-    allowed = (ALLOWED if scope == "installer" else COMPACTION_ALLOWED) | {f"docs/releases/{tag}.md"}
+    allowed = {"installer": ALLOWED, "claude-compaction": COMPACTION_ALLOWED, "claude-usage": USAGE_ALLOWED}[scope] | {f"docs/releases/{tag}.md"}
     if not changed or changed - allowed:
         raise ScopeError("Focused release contains an empty or out-of-scope change set")
     # Even an allowed path must remain an ordinary file, never executable
@@ -94,7 +107,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("repo", "tag", "baseline", "commit"):
         parser.add_argument("--" + name, required=True)
-    parser.add_argument("--scope", choices=("installer", "claude-compaction"), default="installer")
+    parser.add_argument("--scope", choices=("installer", "claude-compaction", "claude-usage"), default="installer")
     args = parser.parse_args()
     try:
         changed = validate(args.tag, args.baseline, args.commit, latest_release(args.repo), scope=args.scope)

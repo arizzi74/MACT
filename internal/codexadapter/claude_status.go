@@ -23,13 +23,21 @@ type ClaudeSessionStatus struct {
 		KnownSessionUSD *float64 `json:"knownSessionUSD,omitempty"`
 		Incomplete      bool     `json:"incomplete,omitempty"`
 	} `json:"cost"`
-	EnterpriseBudget *ClaudeEnterpriseBudget `json:"enterpriseBudget,omitempty"`
-	Usage            *ClaudeNativeUsage      `json:"usage,omitempty"`
+	EnterpriseBudget *ClaudeEnterpriseBudget         `json:"enterpriseBudget,omitempty"`
+	Usage            *ClaudeNativeUsage              `json:"usage,omitempty"`
+	AccountRefresh   map[string]ClaudeAccountRefresh `json:"accountRefresh,omitempty"`
 	Balance          *struct {
 		Remaining  float64 `json:"remaining"`
 		Unit       string  `json:"unit"`
 		ObservedAt int64   `json:"observedAt"`
 	} `json:"balance,omitempty"`
+}
+
+type ClaudeAccountRefresh struct {
+	LastAttemptAt int64 `json:"lastAttemptAt"`
+	NextAttemptAt int64 `json:"nextAttemptAt"`
+	Failed        bool  `json:"failed"`
+	RateLimited   bool  `json:"rateLimited,omitempty"`
 }
 
 type ClaudeNativeUsage struct {

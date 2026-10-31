@@ -43,7 +43,7 @@ func fetchClaudeEnterpriseBudget(ctx context.Context, settings claudeSettingsFil
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return nil, errClaudeBudgetUnavailable
+		return nil, claudeAccountHTTPError(response, errClaudeBudgetUnavailable)
 	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, (64<<10)+1))
 	if err != nil || len(data) > 64<<10 {

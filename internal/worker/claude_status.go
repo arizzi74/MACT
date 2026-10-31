@@ -70,6 +70,19 @@ func claudeStatusLines(status codexadapter.ClaudeSessionStatus) []string {
 			lines = append(lines, "Enterprise budget checked: "+time.Unix(budget.ObservedAt, 0).UTC().Format("2006-01-02 15:04 UTC"))
 		}
 	}
+	for _, source := range []string{"usage", "enterpriseBudget", "balance"} {
+		refresh, ok := status.AccountRefresh[source]
+		if !ok {
+			continue
+		}
+		label := map[string]string{"usage": "Claude usage", "enterpriseBudget": "Enterprise budget", "balance": "Account credit"}[source]
+		if refresh.Failed {
+			lines = append(lines, label+" refresh unavailable; showing the last successful report when available.")
+		}
+		if refresh.NextAttemptAt > 0 {
+			lines = append(lines, label+" next refresh: "+time.Unix(refresh.NextAttemptAt, 0).UTC().Format("2006-01-02 15:04 UTC"))
+		}
+	}
 	return lines
 }
 

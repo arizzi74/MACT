@@ -148,13 +148,13 @@ func TestClaudeProcessHelper(t *testing.T) {
 				send(map[string]any{"type": "result", "subtype": "error_during_execution", "is_error": true})
 			}
 			if request.Subtype == "get_usage" {
-				if !probe || !request.SkipBehaviors {
+				if !request.SkipBehaviors {
 					os.Exit(98)
 				}
 				if os.Getenv("MACT_CLAUDE_HELPER_HANG_USAGE") == "1" {
 					continue
 				}
-				log(map[string]any{"usageProbe": true, "skipBehaviors": true})
+				log(map[string]any{"usageProbe": true, "skipBehaviors": true, "foreground": !probe})
 				if os.Getenv("MACT_CLAUDE_HELPER_USAGE_ERROR") == "1" {
 					send(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "error", "request_id": id, "error": "PRIVATE NATIVE USAGE FAILURE"}})
 					continue

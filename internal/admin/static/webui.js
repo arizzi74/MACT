@@ -130,6 +130,7 @@
     const balance = value.balance, budget = value.enterpriseBudget;
     claudeStatus = {
       model: statusText(value.model), modelDisplayName: statusText(value.modelDisplayName), usage: nativeClaudeUsage(value.usage), reasoningEffort: typeof value.reasoningEffort === 'string' ? statusText(value.reasoningEffort) : null, permissionMode: statusText(value.permissionMode),
+      accountRefresh: value.accountRefresh && typeof value.accountRefresh === 'object' ? value.accountRefresh : {},
       context: { usedTokens: statusNumber(value.context?.usedTokens), maxTokens: statusNumber(value.context?.maxTokens) },
       cost: { sessionUSD: statusNumber(value.cost?.sessionUSD), lastTurnUSD: statusNumber(value.cost?.lastTurnUSD), knownSessionUSD: statusNumber(value.cost?.knownSessionUSD), incomplete: value.cost?.incomplete === true },
       balance: balance && ['USD', 'credits'].includes(balance.unit) && statusNumber(balance.remaining) !== null
@@ -180,10 +181,15 @@
     statusField('claude-balance', balance ? balance.unit === 'USD' ? 'Balance ' + usd(balance.remaining) : balance.remaining.toLocaleString('en-US', { maximumFractionDigits: 4 }) + ' credits left' : 'Credits —', balance
       ? 'API provider remaining account credit: ' + (balance.unit === 'USD' ? exactUSD(balance.remaining) + ' USD' : balance.remaining.toLocaleString('en-US', { maximumFractionDigits: 8 }) + ' credits') + '. Based on the latest provider totals; finalized usage can lag activity.' + (observed ? ' Updated ' + observed.toLocaleString() + '.' : '')
       : 'The API provider has not reported a remaining account credit balance. Session consumption does not establish an account balance.');
+    const balanceRefresh = status?.accountRefresh?.balance;
+    if (balance && balanceRefresh?.failed === true) {
+      const retry = timestamp(statusNumber(balanceRefresh.nextAttemptAt));
+      statusField('claude-balance', $('claude-balance').textContent + ' (last known)', $('claude-balance').title + ' Refresh unavailable; showing the last successful report.' + (retry ? ' Next refresh ' + retry.toLocaleString() + '.' : ''));
+    }
     const nativeUsage = status?.usage, nativeSpend = nativeUsage?.apiSpend;
     const budget = nativeSpend || status?.enterpriseBudget;
     const budgetObserved = (nativeSpend ? nativeUsage.observedAt : budget?.observedAt) > 0 ? timestamp(nativeSpend ? nativeUsage.observedAt : budget.observedAt) : null;
-    let budgetText = status ? 'API spend unavailable' : 'API spend —', budgetDescription = 'Claude Code has not reported the account’s spending allowance. A usage refresh can fail or return no budget; MACT retries automatically and does not substitute a zero balance or infer it from session cost.';
+    let budgetText = status ? 'API spend unavailable' : 'API spend —', budgetDescription = 'Claude Code has not reported the account’s spending allowance. MACT retries automatically with backoff and retains the last successful account report.';
     if (nativeSpend) {
       budgetText = nativeSpend.remaining !== null ? 'API spend ' + usd(nativeSpend.remaining) + ' / ' + usd(nativeSpend.limit) + ' left'
         : nativeSpend.spent !== null ? 'API spend ' + usd(nativeSpend.spent) + ' spent' : 'API spend unavailable';
@@ -195,6 +201,16 @@
       budgetDescription = 'Enterprise Admin API monthly member limit: ' + (budget.unlimited ? 'unlimited' : exactUSD(budget.limit)) + '. Spent: ' + exactUSD(budget.spent) + '. Includes applicable member, group or seat policies.';
     }
     if (budgetObserved) budgetDescription += ' Checked ' + budgetObserved.toLocaleString() + '.';
+    const refresh = status?.accountRefresh?.[nativeSpend ? 'usage' : budget ? 'enterpriseBudget' : 'usage'] || status?.accountRefresh?.enterpriseBudget;
+    if (refresh?.failed === true) {
+      if (budget) budgetText += ' (last known)';
+      budgetDescription += (refresh.rateLimited === true ? ' Refresh rate limited.' : ' Refresh unavailable.') + (budget ? ' Showing the previous successful report.' : ' Waiting for a successful account report.');
+    }
+    const nextRefresh = statusNumber(refresh?.nextAttemptAt);
+    if (nextRefresh > 0) {
+      const retry = timestamp(nextRefresh);
+      if (retry) budgetDescription += ' Next refresh ' + retry.toLocaleString() + '.';
+    }
     statusField('claude-budget', budgetText, budgetDescription);
     $('claude-balance').hidden = !balance;
     $('claude-budget').hidden = !!balance && !budget;

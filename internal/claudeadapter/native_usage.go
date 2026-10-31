@@ -41,8 +41,9 @@ type UsageSpend struct {
 var errNativeUsageUnavailable = errors.New("Claude Code usage is unavailable")
 var errNativePermissionUnavailable = errors.New("Claude Code did not confirm the requested permission mode; it may be disabled by settings or organization policy. Existing session settings were kept")
 
-// ReadNativeUsage uses an isolated, non-persistent CLI process. A timeout or
-// unsupported experimental control can never stop a user's running turn.
+// ReadNativeUsage reuses a ready conversation's native usage cache and provider
+// cooldowns. With no loaded conversation, an isolated, non-persistent process
+// supplies the same read-only control. Neither path submits a model prompt.
 func (r *Runtime) ReadNativeUsage(ctx context.Context) (*NativeUsage, error) {
 	if r == nil || r.server == nil {
 		return nil, errNativeUsageUnavailable
@@ -54,6 +55,25 @@ func (r *Runtime) ReadNativeUsage(ctx context.Context) (*NativeUsage, error) {
 		return nil, errNativeUsageUnavailable
 	}
 	s.wg.Add(1)
+	var native *process
+	for _, candidate := range s.runners {
+		if s.threads[candidate.threadID] == nil {
+			continue
+		}
+		select {
+		case <-candidate.ready:
+			if candidate.initErr == nil && !candidate.interrupting {
+				native = candidate
+				if s.threads[candidate.threadID].active() != nil {
+					break
+				}
+			}
+		default:
+		}
+		if native != nil && s.threads[native.threadID].active() != nil {
+			break
+		}
+	}
 	s.mu.Unlock()
 	defer s.wg.Done()
 	if ctx == nil {
@@ -62,6 +82,15 @@ func (r *Runtime) ReadNativeUsage(ctx context.Context) (*NativeUsage, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	stop := context.AfterFunc(s.ctx, cancel)
 	defer func() { stop(); cancel() }()
+	if native != nil {
+		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		raw, err := native.controlRequest(ctx, map[string]any{"subtype": "get_usage", "skip_behaviors": true}, false)
+		if err != nil {
+			return nil, errNativeUsageUnavailable
+		}
+		return decodeNativeUsage(raw, time.Now().UTC())
+	}
 	settings, err := s.settings()
 	if err != nil {
 		return nil, errNativeUsageUnavailable

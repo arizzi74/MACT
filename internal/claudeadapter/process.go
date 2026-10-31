@@ -205,6 +205,12 @@ func (p *process) writeLocked(value any) error {
 }
 
 func (p *process) control(ctx context.Context, request any) (json.RawMessage, error) {
+	return p.controlRequest(ctx, request, true)
+}
+
+// Read-only account observations must never terminate a user's process when
+// their write deadline expires. A late control reply can safely be discarded.
+func (p *process) controlRequest(ctx context.Context, request any, stopOnWriteTimeout bool) (json.RawMessage, error) {
 	id := uuid.NewString()
 	reply := make(chan controlReply, 1)
 	p.controlMu.Lock()
@@ -212,16 +218,27 @@ func (p *process) control(ctx context.Context, request any) (json.RawMessage, er
 	p.controlMu.Unlock()
 	defer func() { p.controlMu.Lock(); delete(p.controls, id); p.controlMu.Unlock() }()
 	written := make(chan error, 1)
-	go func() {
-		written <- p.write(map[string]any{"type": "control_request", "request_id": id, "request": request})
-	}()
+	value := map[string]any{"type": "control_request", "request_id": id, "request": request}
+	if !stopOnWriteTimeout {
+		if !p.writeMu.TryLock() {
+			return nil, errors.New("Claude input is busy; retry the account observation later")
+		}
+		go func() {
+			defer p.writeMu.Unlock()
+			written <- p.writeLocked(value)
+		}()
+	} else {
+		go func() { written <- p.write(value) }()
+	}
 	select {
 	case err := <-written:
 		if err != nil {
 			return nil, err
 		}
 	case <-ctx.Done():
-		p.stop()
+		if stopOnWriteTimeout {
+			p.stop()
+		}
 		return nil, ctx.Err()
 	case <-p.done:
 		return nil, errors.New("Claude process exited during control write")

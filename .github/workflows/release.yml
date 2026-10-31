@@ -15,6 +15,10 @@ on:
         description: Prove a Claude compaction-only diff and run affected checks without audio inference
         type: boolean
         default: false
+      claude_usage_only:
+        description: Prove a Claude usage-only diff and test account polling and status without voice tests
+        type: boolean
+        default: false
   push:
     tags:
       - 'v*.*.*'
@@ -33,6 +37,7 @@ jobs:
     outputs:
       installer_only: ${{ steps.scope.outputs.installer_only }}
       claude_compaction_only: ${{ steps.scope.outputs.claude_compaction_only }}
+      claude_usage_only: ${{ steps.scope.outputs.claude_usage_only }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -48,11 +53,17 @@ jobs:
           BASELINE_TAG: ${{ inputs.baseline_tag }}
           INSTALLER_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.installer_only }}
           CLAUDE_COMPACTION_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.claude_compaction_only }}
+          CLAUDE_USAGE_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.claude_usage_only }}
         run: |
-          if [[ "$INSTALLER_ONLY" == 'true' && "$CLAUDE_COMPACTION_ONLY" == 'true' ]]; then
+          selected=0
+          for mode in "$INSTALLER_ONLY" "$CLAUDE_COMPACTION_ONLY" "$CLAUDE_USAGE_ONLY"; do
+            if [[ "$mode" == 'true' ]]; then selected=$((selected + 1)); fi
+          done
+          if (( selected > 1 )); then
             echo 'Focused release modes are mutually exclusive.' >&2
             exit 1
           fi
+          printf 'claude_usage_only=false\n' >> "$GITHUB_OUTPUT"
           printf 'claude_compaction_only=false\n' >> "$GITHUB_OUTPUT"
           if [[ "$INSTALLER_ONLY" == 'true' ]]; then
             test "$RELEASE_REF" = "refs/tags/$RELEASE_TAG"
@@ -62,6 +73,10 @@ jobs:
             test "$RELEASE_REF" = "refs/tags/$RELEASE_TAG"
             python3 scripts/check-installer-release.py --scope claude-compaction --repo "$RELEASE_REPO" --tag "$RELEASE_TAG" --baseline "$BASELINE_TAG" --commit "$RELEASE_COMMIT"
             printf 'installer_only=false\nclaude_compaction_only=true\n' >> "$GITHUB_OUTPUT"
+          elif [[ "$CLAUDE_USAGE_ONLY" == 'true' ]]; then
+            test "$RELEASE_REF" = "refs/tags/$RELEASE_TAG"
+            python3 scripts/check-installer-release.py --scope claude-usage --repo "$RELEASE_REPO" --tag "$RELEASE_TAG" --baseline "$BASELINE_TAG" --commit "$RELEASE_COMMIT"
+            printf 'installer_only=false\nclaude_usage_only=true\n' >> "$GITHUB_OUTPUT"
           else
             printf 'installer_only=false\n' >> "$GITHUB_OUTPUT"
           fi
@@ -72,12 +87,12 @@ jobs:
 
   go-checks:
     needs: release-mode
-    if: needs.release-mode.outputs.installer_only != 'true' && needs.release-mode.outputs.claude_compaction_only != 'true'
+    if: needs.release-mode.outputs.installer_only != 'true' && needs.release-mode.outputs.claude_compaction_only != 'true' && needs.release-mode.outputs.claude_usage_only != 'true'
     uses: ./.github/workflows/go-checks.yml
 
   native-session-archive:
     needs: release-mode
-    if: needs.release-mode.outputs.installer_only != 'true' && needs.release-mode.outputs.claude_compaction_only != 'true'
+    if: needs.release-mode.outputs.installer_only != 'true' && needs.release-mode.outputs.claude_compaction_only != 'true' && needs.release-mode.outputs.claude_usage_only != 'true'
     uses: ./.github/workflows/native-session-archive.yml
 
   native-whisper:
@@ -85,18 +100,18 @@ jobs:
     uses: ./.github/workflows/native-whisper.yml
     with:
       version: ${{ github.ref_name }}
-      run-smoke-tests: ${{ needs.release-mode.outputs.installer_only != 'true' && needs.release-mode.outputs.claude_compaction_only != 'true' }}
+      run-smoke-tests: ${{ needs.release-mode.outputs.installer_only != 'true' && needs.release-mode.outputs.claude_compaction_only != 'true' && needs.release-mode.outputs.claude_usage_only != 'true' }}
 
   native-speech:
     needs: release-mode
     uses: ./.github/workflows/native-speech.yml
     with:
       version: ${{ github.ref_name }}
-      run-smoke-tests: ${{ needs.release-mode.outputs.installer_only != 'true' && needs.release-mode.outputs.claude_compaction_only != 'true' }}
+      run-smoke-tests: ${{ needs.release-mode.outputs.installer_only != 'true' && needs.release-mode.outputs.claude_compaction_only != 'true' && needs.release-mode.outputs.claude_usage_only != 'true' }}
 
   browser:
     needs: release-mode
-    if: needs.release-mode.outputs.installer_only != 'true' && needs.release-mode.outputs.claude_compaction_only != 'true'
+    if: needs.release-mode.outputs.installer_only != 'true' && needs.release-mode.outputs.claude_compaction_only != 'true' && needs.release-mode.outputs.claude_usage_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -166,6 +181,36 @@ jobs:
       - name: Check Claude commands, compaction states and session settings on desktop and mobile
         run: node scripts/test-claude-ui.cjs
 
+  claude-usage-tests:
+    needs: release-mode
+    if: needs.release-mode.outputs.claude_usage_only == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.26.x'
+          check-latest: true
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Validate the usage scope and workflow graph
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_ci_installer_release.py
+          go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color
+      - name: Check account refresh, cooldown, retained observations and read-only native controls
+        run: |
+          ./scripts/check.sh format
+          go vet ./internal/worker ./internal/claudeadapter ./internal/codexadapter
+          go test -race ./internal/worker -run 'TestClaude(Account|EnterpriseBudget|Credits|NativeUsage|Status)' -count=1
+          go test -race ./internal/claudeadapter -run 'TestNativeUsage|TestClaudeStatusBootstrapRPC' -count=1
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Check only usage retention, retry labels and account status on desktop and mobile
+        run: node scripts/test-claude-ui.cjs --usage-only
+
   package:
     needs: [native-whisper, native-speech]
     uses: ./.github/workflows/package.yml
@@ -173,15 +218,17 @@ jobs:
       version: ${{ github.ref_name }}
 
   test-and-build:
-    needs: [release-mode, go-checks, browser, package, native-session-archive, security, installer-tests, claude-compaction-tests]
+    needs: [release-mode, go-checks, browser, package, native-session-archive, security, installer-tests, claude-compaction-tests, claude-usage-tests]
     if: >-
       always() && !cancelled() &&
       needs.release-mode.result == 'success' && needs.package.result == 'success' && needs.security.result == 'success' &&
-      ((needs.release-mode.outputs.installer_only == 'true' && needs.claude-compaction-tests.result == 'skipped' && needs.installer-tests.result == 'success' &&
+      ((needs.release-mode.outputs.installer_only == 'true' && needs.claude-usage-tests.result == 'skipped' && needs.claude-compaction-tests.result == 'skipped' && needs.installer-tests.result == 'success' &&
         needs.go-checks.result == 'skipped' && needs.browser.result == 'skipped' && needs.native-session-archive.result == 'skipped') ||
-       (needs.release-mode.outputs.installer_only == 'false' && needs.release-mode.outputs.claude_compaction_only == 'false' && needs.installer-tests.result == 'skipped' && needs.claude-compaction-tests.result == 'skipped' &&
+       (needs.release-mode.outputs.installer_only == 'false' && needs.release-mode.outputs.claude_compaction_only == 'false' && needs.release-mode.outputs.claude_usage_only == 'false' && needs.claude-usage-tests.result == 'skipped' && needs.installer-tests.result == 'skipped' && needs.claude-compaction-tests.result == 'skipped' &&
         needs.go-checks.result == 'success' && needs.browser.result == 'success' && needs.native-session-archive.result == 'success') ||
-       (needs.release-mode.outputs.installer_only == 'false' && needs.release-mode.outputs.claude_compaction_only == 'true' && needs.installer-tests.result == 'skipped' && needs.claude-compaction-tests.result == 'success' &&
+       (needs.release-mode.outputs.installer_only == 'false' && needs.release-mode.outputs.claude_compaction_only == 'true' && needs.claude-usage-tests.result == 'skipped' && needs.installer-tests.result == 'skipped' && needs.claude-compaction-tests.result == 'success' &&
+        needs.go-checks.result == 'skipped' && needs.browser.result == 'skipped' && needs.native-session-archive.result == 'skipped') ||
+       (needs.release-mode.outputs.installer_only == 'false' && needs.release-mode.outputs.claude_compaction_only == 'false' && needs.release-mode.outputs.claude_usage_only == 'true' && needs.claude-usage-tests.result == 'success' && needs.installer-tests.result == 'skipped' && needs.claude-compaction-tests.result == 'skipped' &&
         needs.go-checks.result == 'skipped' && needs.browser.result == 'skipped' && needs.native-session-archive.result == 'skipped'))
     runs-on: ubuntu-latest
     timeout-minutes: 15

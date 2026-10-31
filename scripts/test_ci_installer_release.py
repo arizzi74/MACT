@@ -75,6 +75,17 @@ class InstallerReleaseScopeTest(unittest.TestCase):
             with self.subTest(arguments=arguments), self.assertRaises(POLICY.ScopeError):
                 self.validate(**{"scope": "claude-compaction", **arguments})
 
+    def test_usage_scope_allows_only_reviewed_account_polling_and_status_files(self):
+        changed = POLICY.USAGE_ALLOWED | {f"docs/releases/{self.tag}.md"}
+        self.target(changed)
+        self.assertEqual(self.validate(scope="claude-usage"), changed)
+        for name in ("internal/voice/voice.go", "native/piper/source.env", "go.mod", "scripts/publish-release.py", "internal/worker/worker.go"):
+            with self.subTest(path=name):
+                self.setUp()
+                self.target(("internal/worker/claude_account_poll.go", name))
+                with self.assertRaises(POLICY.ScopeError):
+                    self.validate(scope="claude-usage")
+
     def test_runtime_dependencies_security_publisher_and_unrelated_docs_are_refused(self):
         for name in ("internal/worker/worker.go", "go.mod", "package-lock.json", "scripts/publish-release.py",
                      ".github/workflows/security.yml", "docs/operations.md", "docs/releases/v1.2.3.md"):
@@ -157,9 +168,9 @@ class InstallerReleaseWorkflowTest(unittest.TestCase):
         self.assertIn("if: needs.release-mode.outputs.installer_only == 'true'", jobs["installer-tests"])
         gate = jobs["test-and-build"]
         self.assertIn("always() && !cancelled()", gate)
-        for name in ("release-mode", "package", "security", "installer-tests", "go-checks", "browser", "native-session-archive", "claude-compaction-tests"):
+        for name in ("release-mode", "package", "security", "installer-tests", "go-checks", "browser", "native-session-archive", "claude-compaction-tests", "claude-usage-tests"):
             self.assertIn(f"needs.{name}.result == 'success'", gate)
-        for name in ("go-checks", "browser", "native-session-archive", "installer-tests", "claude-compaction-tests"):
+        for name in ("go-checks", "browser", "native-session-archive", "installer-tests", "claude-compaction-tests", "claude-usage-tests"):
             self.assertIn(f"needs.{name}.result == 'skipped'", gate)
         self.assertIn("needs.release-mode.outputs.installer_only == 'false'", gate)
         self.assertIn("needs.release-mode.outputs.installer_only == 'true'", gate)
@@ -167,9 +178,10 @@ class InstallerReleaseWorkflowTest(unittest.TestCase):
         self.assertIn("if: always() && !cancelled() && needs.test-and-build.result == 'success'", jobs["publish"])
         for name in ("native-whisper", "native-speech"):
             self.assertIn("needs: release-mode", jobs[name])
-            self.assertIn("run-smoke-tests: ${{ needs.release-mode.outputs.installer_only != 'true' && needs.release-mode.outputs.claude_compaction_only != 'true' }}", jobs[name])
+            self.assertIn("run-smoke-tests: ${{ needs.release-mode.outputs.installer_only != 'true' && needs.release-mode.outputs.claude_compaction_only != 'true' && needs.release-mode.outputs.claude_usage_only != 'true' }}", jobs[name])
         self.assertIn("github.event_name == 'workflow_dispatch' && inputs.claude_compaction_only", text)
-        self.assertIn('"$INSTALLER_ONLY" == \'true\' && "$CLAUDE_COMPACTION_ONLY" == \'true\'', text)
+        self.assertIn('for mode in "$INSTALLER_ONLY" "$CLAUDE_COMPACTION_ONLY" "$CLAUDE_USAGE_ONLY"', text)
+        self.assertIn('if (( selected > 1 )); then', text)
         self.assertLess(text.index("--scope claude-compaction"), text.index("installer_only=false\\nclaude_compaction_only=true"))
         focused = jobs["claude-compaction-tests"]
         self.assertIn("if: needs.release-mode.outputs.claude_compaction_only == 'true'", focused)
@@ -179,6 +191,15 @@ class InstallerReleaseWorkflowTest(unittest.TestCase):
         self.assertIn("node scripts/test-claude-ui.cjs", focused)
         self.assertNotIn("npm run test:browser", focused)
         self.assertNotIn("test-admin-audio", focused)
+        usage = jobs["claude-usage-tests"]
+        self.assertIn("if: needs.release-mode.outputs.claude_usage_only == 'true'", usage)
+        self.assertIn("--scope claude-usage", text)
+        self.assertIn("node scripts/test-claude-ui.cjs --usage-only", usage)
+        self.assertIn("TestNativeUsage", usage)
+        self.assertNotIn("npm run test:browser", usage)
+        self.assertNotIn("test-admin-audio", usage)
+        self.assertIn("needs.release-mode.outputs.claude_usage_only == 'false'", gate)
+        self.assertIn("needs.release-mode.outputs.claude_usage_only == 'true'", gate)
 
     def test_native_smoke_defaults_and_cache_admission_stay_strict(self):
         for name in ("native-whisper", "native-speech"):

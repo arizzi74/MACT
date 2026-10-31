@@ -99,6 +99,7 @@ type server struct {
 	closeOnce         sync.Once
 	balance           *CreditBalance
 	nativeUsage       *NativeUsage
+	accountRefresh    map[string]AccountRefresh
 	enterpriseBudget  *EnterpriseBudget
 	capabilities      nativeCapabilities
 	balanceGeneration uint64
@@ -310,6 +311,7 @@ func (r *Runtime) WithIdleSettingsUpdate(update func() error) error {
 	s.balance = nil
 	s.enterpriseBudget = nil
 	s.nativeUsage = nil
+	s.accountRefresh = nil
 	settings, err := s.settings()
 	if err != nil {
 		return err
