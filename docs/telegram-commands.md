@@ -1,9 +1,14 @@
 # Telegram commands
 
-Gateway commands begin with `/tg`. Unprefixed commands belong to Codex.
+Gateway commands begin with `/tg`. Unprefixed commands operate on the selected agent.
 The initial Telegram `/start` button is an alias for `/tgstart`.
 All commands are registered in the bot menu. Telegram requires underscores in
 menu names, so `/debug_config` is the menu spelling of `/debug-config`; both work.
+
+Claude Code sessions support `/skill` or `/skills` to browse available native
+skills, and `/skill NAME [arguments]` to invoke one. The list is scoped to the
+selected worker and project. Skill buttons run without arguments; use the text
+command when arguments are needed. An invocation queues behind an active turn.
 
 ## Gateway controls
 

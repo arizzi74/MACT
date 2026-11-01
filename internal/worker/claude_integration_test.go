@@ -69,7 +69,11 @@ func TestClaudeWorkerCLIHelper(t *testing.T) {
 		}
 		switch message.Type {
 		case "control_request":
-			send(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": message.RequestID, "response": map[string]any{}}})
+			metadata := map[string]any{}
+			if message.Request.Subtype == "initialize" {
+				metadata["commands"] = []map[string]any{{"name": "project:inspect", "description": "Inspect this project", "argumentHint": "<target>"}}
+			}
+			send(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": message.RequestID, "response": metadata}})
 			if message.Request.Subtype == "interrupt" {
 				finish("interrupted")
 			}
@@ -207,7 +211,8 @@ func TestClaudeWorkerIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gw := startControlGateway(t, registryStore, &telegramRecorder{}, logger)
+	telegram := &telegramRecorder{}
+	gw := startControlGateway(t, registryStore, telegram, logger)
 	defer gw.close()
 	slot := &gatewaySlot{}
 	slot.set(gw)
@@ -451,6 +456,68 @@ func TestClaudeWorkerIntegration(t *testing.T) {
 	if err := probe.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM events WHERE instr(payload,?)>0) + (SELECT count(*) FROM commands WHERE instr(payload,?)>0)`, credential, credential).Scan(&durableLeaks); err != nil || durableLeaks != 0 {
 		t.Fatal("Claude runtime credential entered gateway commands/events", err)
 	}
+	for _, name := range []string{"skill", "skills"} {
+		menu := browserA.success("gateway/command", map[string]any{"name": name, "args": ""})
+		if !strings.Contains(string(menu.Result), `"skill_menu"`) || !strings.Contains(string(menu.Result), "project:inspect") {
+			t.Fatalf("skill catalog missing from worker bridge: %s", menu.Result)
+		}
+	}
+	if invalid := browserA.request("gateway/command", map[string]any{"name": "skill", "args": "missing"}); len(invalid.Error) == 0 {
+		t.Fatal("unknown skill accepted")
+	}
+	invoked := browserA.success("gateway/command", map[string]any{"name": "skill", "args": "project:inspect src\nkeep arguments"})
+	if !strings.Contains(string(invoked.Result), `"state":"running"`) {
+		t.Fatalf("skill did not start: %s", invoked.Result)
+	}
+	complete()
+	history = browserA.success("thread/items/list", map[string]any{"threadId": a.ThreadID, "limit": 20, "sortDirection": "desc"})
+	if !strings.Contains(string(history.Result), "Answer: /project:inspect src\\nkeep arguments") {
+		t.Fatalf("skill arguments or result lost: %s", history.Result)
+	}
+	turn("approval")
+	skillApproval := browserA.next(func(rpc webUIRPC) bool { return rpc.Method == "item/commandExecution/requestApproval" })
+	queuedSkill := browserA.success("gateway/command", map[string]any{"name": "skill", "args": "project:inspect queued"})
+	if !strings.Contains(string(queuedSkill.Result), `"state":"queued"`) {
+		t.Fatalf("active skill not queued: %s", queuedSkill.Result)
+	}
+	skillAnswer, _ := json.Marshal(map[string]any{"id": json.RawMessage(skillApproval.ID), "result": map[string]string{"decision": "accept"}})
+	if err := browserA.stream.Send(ctx, skillAnswer); err != nil {
+		t.Fatal(err)
+	}
+	complete()
+	complete()
+	waitControl(t, func() bool {
+		lease, err := agent.prepareUpdate(ctx, time.Second)
+		if err != nil {
+			return false
+		}
+		if err = agent.abortUpdate(lease.Token); err != nil {
+			t.Fatal(err)
+		}
+		return true
+	})
+	// Exercise the actual durable registry -> dispatcher -> worker -> native
+	// skill command, including queueing behind a turn and final Telegram routing.
+	if _, err := registryStore.AcceptTelegram(ctx, registry.IncomingUpdate{BotID: "bot", UpdateID: 900, UserID: 7, ChatID: 9, Action: "connect", Target: a.ID, CommandTTL: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	postTelegram(t, gw.server.Client(), gw.server.URL, "secret", 901, "/skill", 0)
+	waitControl(t, func() bool { return telegram.hasText("Claude skills", "project:inspect") })
+	turn("approval")
+	tgApproval := browserA.next(func(rpc webUIRPC) bool { return rpc.Method == "item/commandExecution/requestApproval" })
+	postTelegram(t, gw.server.Client(), gw.server.URL, "secret", 902, "/skill project:inspect telegram", 0)
+	waitControl(t, func() bool {
+		var count int
+		err := probe.QueryRowContext(ctx, `SELECT count(*) FROM commands WHERE telegram_update_id=902`).Scan(&count)
+		return err == nil && count == 1
+	})
+	tgAnswer, _ := json.Marshal(map[string]any{"id": json.RawMessage(tgApproval.ID), "result": map[string]string{"decision": "accept"}})
+	if err := browserA.stream.Send(ctx, tgAnswer); err != nil {
+		t.Fatal(err)
+	}
+	complete()
+	complete()
+	waitControl(t, func() bool { return telegram.hasText("Answer: /project:inspect telegram") })
 	// Exercise the actual durable registry -> dispatcher -> worker -> native
 	// deletion route. The fake native transcript/sidecar share a directory with
 	// a sibling, while both project CWDs and their files must survive.

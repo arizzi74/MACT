@@ -97,6 +97,8 @@ func (s *sessionActor) executeCodexCommand(ctx context.Context, client *codexada
 			return protocol.Result{Text: text}, err
 		case "permissions":
 			return s.claudePermissions(ctx, client, args)
+		case "skill", "skills":
+			return s.claudeSkills(ctx, client, args)
 		case "rename", "pwd", "cwd", "copy", "new", "delete", "diff", "stop", "compact":
 			// Shared session and workspace operations use the same actor fences.
 		default:

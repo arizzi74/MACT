@@ -129,7 +129,7 @@ async function adminChecks(browser, width) {
   await page.close();
 }
 
-async function webUIChecks(browser, width, usageOnly = false, costOnly = false) {
+async function webUIChecks(browser, width, usageOnly = false, costOnly = false, skillsOnly = false) {
   const page = await browser.newPage({ viewport: { width, height: 900 } });
   const errors = [];
   const other = { ...session, session_id: 'claude-other', codex_thread_id: 'other-thread', name: 'Other Claude project', state: 'idle', stats: { model: 'STALE_INVENTORY_MODEL', context_tokens: 777, context_window: 1000 } };
@@ -191,6 +191,10 @@ async function webUIChecks(browser, width, usageOnly = false, costOnly = false) 
           const { name, args } = frame.params;
           const native = window.testStatuses[thread];
           let settings;
+          if (name === 'skill' || name === 'skills') {
+            const entries = [{ name: 'inspect', description: '<img src=x onerror=alert(1)> Inspect project', argument_hint: '<target>' }, { name: 'plugin:review', description: 'Review the code', argument_hint: '[instructions]' }];
+            result = args ? { text: 'Skill ' + args.split(' ')[0] + ' queued after the active turn.', state: 'queued' } : { text: 'Claude skills', skill_menu: { entries, options: entries.map(e => ({ args: e.name, label: e.name })) } };
+          }
           if (name === 'compact') result = { text: 'Compaction started. Claude Code will report when it finishes.', state: 'running' };
           if (name === 'model' && !args) result = { model_menu: { options: [{ label: 'Native Sonnet', args: '--menu sonnet' }, { label: 'Cancel', args: '--cancel' }] } };
           else if (name === 'model' && args === '--menu sonnet') result = { model_menu: { options: [{ label: 'Native Sonnet · high', args: 'sonnet high' }, { label: 'Native Sonnet · low', args: 'sonnet low' }, { label: 'Back to models', args: '--menu' }] } };
@@ -245,6 +249,33 @@ async function webUIChecks(browser, width, usageOnly = false, costOnly = false) 
   };
   await page.goto('https://webui.test/tgw/webui/');
   await select(session.session_id);
+  if (skillsOnly) {
+    const slash = async text => {
+      await page.locator('#prompt').fill(text);
+      await page.locator('#prompt').press('Enter');
+    };
+    await slash('/skill');
+    await page.getByRole('searchbox', { name: 'Find a skill' }).waitFor();
+    assert.equal(await page.locator('#command-content img').count(),0,'Metadata is rendered as text');
+    const before = await page.evaluate(() => window.testSent.filter(f=>f.method==='gateway/command').length);
+    await page.getByRole('searchbox',{name:'Find a skill'}).fill('plugin');
+    assert.equal(await page.locator('#command-content button.command-choice').filter({hasText:'inspect'}).count(),0);
+    await page.locator('#command-content button.command-choice').filter({hasText:'plugin:review'}).click();
+    assert.equal(await page.evaluate(() => window.testSent.filter(f=>f.method==='gateway/command').length),before,'Selecting a skill opens arguments before invocation');
+    await page.locator('#command-content textarea').fill('src\nkeep spacing');
+    await page.getByRole('button',{name:'Queue skill',exact:true}).click();
+    await page.waitForFunction(()=>window.testSent.some(f=>f.method==='gateway/command'&&f.params.name==='skill'&&f.params.args==='plugin:review src\nkeep spacing'));
+    await page.locator('#close-commands').click();
+    await slash('/skills');
+    await page.getByRole('searchbox',{name:'Find a skill'}).waitFor();
+    await page.locator('#close-commands').click();
+    await page.locator('#prompt').fill('/skill plug');
+    await page.locator('#prompt').dispatchEvent('input');
+    await page.locator('#command-content button.command-choice').filter({hasText:'plugin:review'}).click();
+    assert.equal(await page.locator('#prompt').inputValue(),'/skill plugin:review ');
+    assert.deepEqual(errors,[]);
+    await page.close(); return;
+  }
   if (costOnly) {
     const observedAt = Math.floor(Date.now() / 1000);
     const partial = { ...known, cost: { sessionUSD: null, lastTurnUSD: null, knownSessionUSD: 23.85, incomplete: true, reportedSessionUSD: 0.25, observedAt } };
@@ -712,6 +743,10 @@ async function deletionChecks(browser, width) {
 (async () => {
   const browser = await chromium.launch({ headless: true });
   try {
+    if (process.argv.includes('--skills-only')) {
+      for (const width of [390,1280]) await webUIChecks(browser,width,false,false,true);
+      process.stdout.write('Claude skills browser checks passed.\n');return;
+    }
     if (process.argv.includes('--cost-only')) {
       for (const width of [390, 1280]) await webUIChecks(browser, width, false, true);
       process.stdout.write('Claude session cost browser checks passed.\n');

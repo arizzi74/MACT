@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/iaia/telegramgw/internal/protocol"
 )
 
 type process struct {
@@ -50,6 +51,8 @@ type process struct {
 	costReady     bool   // A resumed conversation has emitted assistant/result output.
 	costRevision  uint64 // Fences a cost probe against a newer precise result.
 	costWake      chan struct{}
+	skills        []protocol.Skill // Native command catalog; protected by server.mu.
+	skillsKnown   bool
 }
 
 type controlReply struct {
@@ -156,6 +159,7 @@ func (s *server) startProcess(thread *savedThread) (*process, error) {
 			s.mu.Lock()
 			if !s.closed && s.runners[thread.ID] == p {
 				s.observeCapabilities(initialized)
+				p.skills, p.skillsKnown = decodeNativeSkills(initialized)
 				var native struct {
 					PermissionMode string `json:"current_permission_mode"`
 				}
@@ -437,6 +441,12 @@ func (p *process) handle(data []byte) {
 	}
 	if envelope.SessionID != "" && envelope.SessionID != t.ID {
 		p.stop()
+		return
+	}
+	if envelope.Type == "system" && envelope.Subtype == "commands_changed" {
+		if skills, known := decodeNativeSkills(data); known {
+			p.skills, p.skillsKnown = skills, true
+		}
 		return
 	}
 	if envelope.Type == "assistant" || envelope.Type == "user" || envelope.Type == "stream_event" || envelope.Type == "result" {

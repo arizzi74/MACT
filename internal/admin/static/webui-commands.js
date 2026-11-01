@@ -41,6 +41,7 @@
     command('theme', 'Choose the browser color theme', 'local', '[dark|light|system]'),
     command('tui', 'Show browser display controls and keyboard shortcuts', 'local'),
     command('skills', 'List the skills available to this workspace', 'worker'),
+    command('skill', 'List or run a Claude Code skill', 'worker', '[name] [arguments]', { source: 'claude' }),
     command('hooks', 'Inspect configured lifecycle hooks', 'worker'),
     command('memories', 'View or change session memory mode', 'worker', '[enabled|disabled]', { busy: false }),
     command('mcp', 'Inspect configured MCP servers and tools', 'worker', '[verbose]'),

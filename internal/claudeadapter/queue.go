@@ -49,7 +49,15 @@ func (s *server) nextQueued(t *savedThread) {
 	}
 	entry := t.Queue[0]
 	t.Queue = t.Queue[1:]
-	turn, proc, userItem, err := s.beginTurn(t, entry.Content)
+	var turn *savedTurn
+	var proc *process
+	var userItem map[string]any
+	var err error
+	if entry.SkillName != "" && (s.runners[t.ID] == nil || !hasNativeSkill(s.runners[t.ID].skills, entry.SkillName)) {
+		err = errQueuedSkillUnavailable
+	} else {
+		turn, proc, userItem, err = s.beginTurn(t, entry.Content)
+	}
 	if err != nil {
 		t.Queue = nil
 		if len(t.Turns) > 0 {

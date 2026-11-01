@@ -86,6 +86,16 @@ class InstallerReleaseScopeTest(unittest.TestCase):
                 with self.assertRaises(POLICY.ScopeError):
                     self.validate(scope="claude-usage")
 
+    def test_skills_scope_refuses_unrelated_features_and_dependencies(self):
+        changed = POLICY.SKILLS_ALLOWED | {f"docs/releases/{self.tag}.md"}
+        self.target(changed)
+        self.assertEqual(self.validate(scope="claude-skills"), changed)
+        for name in ("internal/audio/audio.go", "go.mod", "scripts/publish-release.py", "native/whisper/source.env"):
+            self.setUp()
+            self.target(("internal/claudeadapter/skills.go", name))
+            with self.assertRaises(POLICY.ScopeError):
+                self.validate(scope="claude-skills")
+
     def test_runtime_dependencies_security_publisher_and_unrelated_docs_are_refused(self):
         for name in ("internal/worker/worker.go", "go.mod", "package-lock.json", "scripts/publish-release.py",
                      ".github/workflows/security.yml", "docs/operations.md", "docs/releases/v1.2.3.md"):
@@ -178,7 +188,7 @@ class InstallerReleaseWorkflowTest(unittest.TestCase):
         self.assertIn("if: always() && !cancelled() && needs.test-and-build.result == 'success'", jobs["publish"])
         for name in ("native-whisper", "native-speech"):
             self.assertIn("needs: release-mode", jobs[name])
-            self.assertIn("run-smoke-tests: ${{ needs.release-mode.outputs.installer_only != 'true' && needs.release-mode.outputs.claude_compaction_only != 'true' && needs.release-mode.outputs.claude_usage_only != 'true' }}", jobs[name])
+            self.assertIn("run-smoke-tests: ${{ needs.release-mode.outputs.installer_only != 'true' && needs.release-mode.outputs.claude_compaction_only != 'true' && needs.release-mode.outputs.claude_usage_only != 'true' && needs.release-mode.outputs.claude_skills_only != 'true' }}", jobs[name])
         self.assertIn("github.event_name == 'workflow_dispatch' && inputs.claude_compaction_only", text)
         self.assertIn('for mode in "$INSTALLER_ONLY" "$CLAUDE_COMPACTION_ONLY" "$CLAUDE_USAGE_ONLY"', text)
         self.assertIn('if (( selected > 1 )); then', text)
@@ -191,6 +201,14 @@ class InstallerReleaseWorkflowTest(unittest.TestCase):
         self.assertIn("node scripts/test-claude-ui.cjs", focused)
         self.assertNotIn("npm run test:browser", focused)
         self.assertNotIn("test-admin-audio", focused)
+        skills = jobs["claude-skills-tests"]
+        self.assertIn("--scope claude-skills", text)
+        self.assertIn("node scripts/test-claude-ui.cjs --skills-only", skills)
+        self.assertIn("TestClaudeWorkerIntegration|TestClaudeSkill", skills)
+        self.assertNotIn("npm run test:browser", skills)
+        self.assertNotIn("test-admin-audio", skills)
+        self.assertIn("needs.claude-skills-tests.result == 'success'", gate)
+        self.assertIn("needs.claude-skills-tests.result == 'skipped'", gate)
         usage = jobs["claude-usage-tests"]
         self.assertIn("if: needs.release-mode.outputs.claude_usage_only == 'true'", usage)
         self.assertIn("--scope claude-usage", text)

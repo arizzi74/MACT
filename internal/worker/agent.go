@@ -844,7 +844,7 @@ func (s *sessionActor) command(req actorCommand) {
 		s.agent.report(err)
 		return
 	}
-	if c.Operation == protocol.StartTurn || (c.Operation == protocol.Steer && s.agent.cfg.AgentKind == "claude") {
+	if c.Operation == protocol.StartTurn || (c.Operation == protocol.Steer && s.agent.cfg.AgentKind == "claude") || (c.Operation == protocol.CodexCommand && s.agent.cfg.AgentKind == "claude" && claudeSkillInvocation(c.Arguments.Codex.Name, c.Arguments.Codex.Args)) {
 		if c.Operation == protocol.Steer && c.ExpectedTurnID != "" && s.session.ActiveTurnID != c.ExpectedTurnID {
 			reject(protocol.StaleTurn, "The active turn has changed. Send your message again.")
 			return
@@ -1097,7 +1097,15 @@ func (s *sessionActor) start(c protocol.Command) {
 	if !s.resumeForCommand(c, client) {
 		return
 	}
-	turn, err := client.StartTurnWithImages(s.agent.ctx, s.session.ThreadID, c.Arguments.Text, c.Arguments.Images)
+	var turn codexadapter.Turn
+	var err error
+	if c.Operation == protocol.CodexCommand && s.agent.cfg.AgentKind == "claude" && claudeSkillInvocation(c.Arguments.Codex.Name, c.Arguments.Codex.Args) {
+		var result protocol.Result
+		result, err = s.executeCodexCommand(s.agent.ctx, client, c.Arguments.Codex.Name, c.Arguments.Codex.Args)
+		turn.ID = result.TurnID
+	} else {
+		turn, err = client.StartTurnWithImages(s.agent.ctx, s.session.ThreadID, c.Arguments.Text, c.Arguments.Images)
+	}
 	if err != nil {
 		if !definiteRPCFailure(err) {
 			s.session.State = "unknown"

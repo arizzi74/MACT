@@ -603,6 +603,7 @@ func applySettingsMenuEvent(ctx context.Context, tx *dbTx, workerID uuid.UUID, e
 		Permissions json.RawMessage `json:"permissions"`
 		ModelMenu   json.RawMessage `json:"model_menu"`
 		UsageMenu   json.RawMessage `json:"usage_menu"`
+		SkillMenu   json.RawMessage `json:"skill_menu"`
 	}
 	if err := json.Unmarshal(event.Data, &envelope); err != nil {
 		return false, false, nil, ErrEventTarget
@@ -610,7 +611,8 @@ func applySettingsMenuEvent(ctx context.Context, tx *dbTx, workerID uuid.UUID, e
 	hasPermissions := len(envelope.Permissions) > 0 && !bytes.Equal(envelope.Permissions, []byte("null"))
 	hasModelMenu := len(envelope.ModelMenu) > 0 && !bytes.Equal(envelope.ModelMenu, []byte("null"))
 	hasUsageMenu := len(envelope.UsageMenu) > 0 && !bytes.Equal(envelope.UsageMenu, []byte("null"))
-	if !hasPermissions && !hasModelMenu && !hasUsageMenu {
+	hasSkillMenu := len(envelope.SkillMenu) > 0 && !bytes.Equal(envelope.SkillMenu, []byte("null"))
+	if !hasPermissions && !hasModelMenu && !hasUsageMenu && !hasSkillMenu {
 		return false, false, nil, nil
 	}
 	var result protocol.Result
@@ -618,11 +620,16 @@ func applySettingsMenuEvent(ctx context.Context, tx *dbTx, workerID uuid.UUID, e
 		target.runtimeID == nil || target.sessionID == nil || result.TurnID != "" ||
 		result.Session != nil || result.History != nil || result.Workspace != nil || result.Error != nil ||
 		(result.State != "" && result.State != "completed") || (hasPermissions && hasModelMenu) ||
-		(hasUsageMenu && (hasPermissions || hasModelMenu)) {
+		(hasUsageMenu && (hasPermissions || hasModelMenu)) || (hasSkillMenu && (hasPermissions || hasModelMenu || hasUsageMenu)) {
 		return true, false, nil, ErrEventTarget
 	}
 	name := "permissions"
-	if hasUsageMenu {
+	if hasSkillMenu {
+		name = "skill"
+		if result.SkillMenu.Validate() != nil {
+			return true, false, nil, ErrEventTarget
+		}
+	} else if hasUsageMenu {
 		name = "usage"
 		if result.UsageMenu.Validate() != nil {
 			return true, false, nil, ErrEventTarget
@@ -643,7 +650,7 @@ func applySettingsMenuEvent(ctx context.Context, tx *dbTx, workerID uuid.UUID, e
 	err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM commands
         WHERE command_id=$1 AND worker_id=$2 AND runtime_id=$3
           AND runtime_generation=$4 AND session_id=$5 AND operation='codex_command'
-          AND json_extract(payload, '$.arguments.codex.name')=$6)`, id,
+		  AND (json_extract(payload, '$.arguments.codex.name')=$6 OR ($6='skill' AND json_extract(payload, '$.arguments.codex.name')='skills')))`, id,
 		workerID, *target.runtimeID, int64(event.RuntimeGeneration), *target.sessionID, name).Scan(&matching)
 	if err != nil {
 		return true, false, nil, fmt.Errorf("registry: resolve settings result command: %w", err)

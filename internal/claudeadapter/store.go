@@ -34,8 +34,9 @@ type savedThread struct {
 }
 
 type queuedInput struct {
-	ID      string           `json:"id"`
-	Content []map[string]any `json:"content"`
+	SkillName string           `json:"skillName,omitempty"`
+	ID        string           `json:"id"`
+	Content   []map[string]any `json:"content"`
 }
 
 type savedTurn struct {

@@ -611,6 +611,9 @@ func (s *Sender) renderEvent(ctx context.Context, row registry.Delivery) (string
 		if result.ModelMenu != nil {
 			return s.renderModelMenu(ctx, row, identity, event, result)
 		}
+		if result.SkillMenu != nil {
+			return s.renderSkillMenu(ctx, row, identity, event, result)
+		}
 		if result.UsageMenu != nil {
 			return s.renderUsageMenu(ctx, row, identity, event, result)
 		}

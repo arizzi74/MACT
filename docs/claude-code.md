@@ -70,6 +70,31 @@ The account settings file is optional until first saved through the admin
 console. Its permissions must be `0600` or stricter. Native Claude login files
 remain under the installed CLI's normal configuration directory.
 
+## Invoke skills from WebUI or Telegram
+
+Use `/skill` (or `/skills`) to list user-invocable skills and custom commands
+advertised by Claude Code for the selected session. Personal, project, plugin and
+synced skills come from the native runtime under that session's working directory
+and account. Conversation and configuration controls such as `/clear`, `/compact`
+and `/model` remain on MACT's dedicated commands instead of the skill picker.
+
+Run `/skill NAME` or `/skill NAME arguments` to invoke a skill through Claude's
+native slash-command path. Namespaced names such as `plugin:review` are supported.
+Arguments, supporting files, permissions and background work retain native Claude
+behavior. MACT rejects unknown names before submitting a model prompt.
+
+The WebUI picker has local search and an optional argument form. Typing `/skill `
+opens suggestions; choosing one fills the composer without invoking it. Telegram
+lists skills with paged buttons; a skill button runs it without arguments. To pass
+arguments, type the command instead. Telegram buttons stay bound to the requesting
+user and original session, and each menu can be consumed only once.
+
+Listing uses native initialization metadata, with no model prompt or billing
+request. It can start the selected session's idle Claude process. Invocations
+queue behind an active turn and wait for its tracked background tasks. Native
+command-catalog notifications refresh the process's skill list. An older runtime
+that cannot advertise commands shows an update message instead of guessing names.
+
 ## Configure the worker account
 
 Expand **Workers** in the admin console, select the Claude worker's runtime

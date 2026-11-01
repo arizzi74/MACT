@@ -307,6 +307,7 @@ type EventAck struct {
 }
 
 type Result struct {
+	SkillMenu      *SkillMenu            `json:"skill_menu,omitempty"`
 	SessionArchive *SessionArchiveResult `json:"session_archive,omitempty"`
 	UsageMenu      *UsageMenu            `json:"usage_menu,omitempty"`
 	ModelMenu      *ModelMenu            `json:"model_menu,omitempty"`

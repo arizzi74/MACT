@@ -77,6 +77,17 @@ func (s *Store) CreateCallback(ctx context.Context, callback Callback) (string, 
 			return "", err
 		}
 	}
+	if callback.Action == "skill" {
+		if callback.SessionID == uuid.Nil || callback.RuntimeID == uuid.Nil || callback.Generation <= 0 || !validSkillMenuArgs(callback.Decision) {
+			return "", errors.New("registry: invalid skill callback")
+		}
+		if err := validateSkillCallbackOrigin(ctx, s.pool, callback.QuestionID, callback.SessionID, callback.RuntimeID.String(), callback.Generation, callback.BotID, callback.UserID, callback.ChatID, callback.TopicID); err != nil {
+			return "", err
+		}
+		if err := validateSkillMenuChoice(ctx, s.pool, callback.QuestionID, callback.Decision); err != nil {
+			return "", err
+		}
+	}
 	if callback.Action == "usage" {
 		if callback.SessionID == uuid.Nil || callback.RuntimeID == uuid.Nil || callback.Generation <= 0 || !protocol.ValidUsageMenuArgs(callback.Decision) {
 			return "", errors.New("registry: invalid usage callback")
@@ -238,6 +249,8 @@ func (s *Store) consumeCallback(ctx context.Context, tx *dbTx, in IncomingUpdate
 		return consumePermissionsCallback(ctx, tx, in, context, sessionID)
 	case "model":
 		return consumeModelCallback(ctx, tx, in, context, sessionID)
+	case "skill":
+		return consumeSkillCallback(ctx, tx, in, context, sessionID)
 	case "usage":
 		return consumeUsageCallback(ctx, tx, in, context, sessionID)
 	case "history":

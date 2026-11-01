@@ -245,7 +245,7 @@ func (c *Client) invalidateObservationResponse(raw []byte) {
 // mandatory after a metadata read is abandoned.
 func updateReadOnlyMethod(method string) bool {
 	switch method {
-	case "thread/list", "thread/loaded/list", "thread/read", "thread/turns/list", "thread/items/list", "thread/queue/list", "thread/goal/get", "thread/status/read", "thread/backgroundTerminals/list",
+	case "thread/list", "thread/loaded/list", "thread/read", "thread/turns/list", "thread/items/list", "thread/queue/list", "thread/goal/get", "thread/status/read", "thread/skills/list", "thread/backgroundTerminals/list",
 		"config/read", "configRequirements/read", "account/usage/read", "account/rateLimits/read", "model/list", "permissionProfile/list", "experimentalFeature/list",
 		"mcpServerStatus/list", "app/installed", "skills/list", "hooks/list", "plugin/list":
 		return true
@@ -259,7 +259,7 @@ func updateMethodName(method string) string {
 		return method
 	}
 	switch method {
-	case "initialize", "thread/start", "thread/resume", "turn/start", "turn/steer", "turn/interrupt", "thread/settings/update", "thread/compact/start", "thread/name/set", "thread/fork", "review/start", "thread/goal/set", "thread/goal/clear", "thread/backgroundTerminals/clean", "thread/archive", "thread/delete", "thread/memoryMode/set", "account/rateLimitResetCredit/consume":
+	case "initialize", "thread/start", "thread/resume", "turn/start", "thread/skill/start", "turn/steer", "turn/interrupt", "thread/settings/update", "thread/compact/start", "thread/name/set", "thread/fork", "review/start", "thread/goal/set", "thread/goal/clear", "thread/backgroundTerminals/clean", "thread/archive", "thread/delete", "thread/memoryMode/set", "account/rateLimitResetCredit/consume":
 		return method
 	default:
 		return "unknown"

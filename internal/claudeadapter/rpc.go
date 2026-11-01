@@ -27,6 +27,8 @@ type params struct {
 		ReasoningEffort *string `json:"model_reasoning_effort"`
 	} `json:"config"`
 	Name           string `json:"name"`
+	Args           string `json:"args"`
+	QueueIfBusy    bool   `json:"queueIfBusy"`
 	ApprovalPolicy string `json:"approvalPolicy"`
 	Sandbox        string `json:"sandbox"`
 	Personality    string `json:"personality"`
@@ -108,6 +110,10 @@ func (s *server) receive(peer *peer, data []byte) {
 		}
 		s.wg.Add(1)
 		go s.runDeletion(peer, append(json.RawMessage(nil), msg.ID...), record, proc)
+		return
+	}
+	if msg.Method == "thread/skills/list" || msg.Method == "thread/skill/start" {
+		s.skillRPC(peer, msg, p)
 		return
 	}
 	result, err := s.handle(peer, msg, p)

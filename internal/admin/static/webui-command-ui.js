@@ -140,7 +140,7 @@
         if (entry.name === 'approvals') return 'Use /permissions to choose Claude Code’s permission mode.';
         if (['delete', 'tgdeletesession'].includes(entry.name) && ctx.deletionUnavailable?.()) return ctx.deletionUnavailable();
         if (entry.name === 'tgsteer') return 'Claude Code cannot steer an active turn. Send a normal message to queue it after the current turn.';
-        if (entry.kind === 'unavailable' || entry.kind === 'worker' && !['model', 'permissions', 'status', 'usage', 'pwd', 'rename', 'delete', 'diff', 'stop', 'compact'].includes(entry.name)) return 'This command is unavailable for Claude Code workers.';
+        if (entry.kind === 'unavailable' || entry.kind === 'worker' && !['model', 'permissions', 'status', 'usage', 'pwd', 'rename', 'delete', 'diff', 'stop', 'compact', 'skill', 'skills'].includes(entry.name)) return 'This command is unavailable for Claude Code workers.';
       }
       if (entry.kind === 'unavailable') return entry.reason;
       if (entry.kind === 'gateway' || ['help', 'tghelp', 'theme', 'title', 'tui', 'resume', 'agents', 'tgsessions'].includes(entry.name)) return state.authenticated ? '' : 'Sign in to use commands.';
@@ -169,7 +169,7 @@
       matches = catalog.search(query).filter(entry => {
         if (!ctx.isClaude?.()) return entry.source !== 'claude';
         if (entry.source === 'gateway') return true;
-        return ['model', 'effort', 'permissions', 'status', 'usage', 'rename', 'new', 'clear', 'resume', 'delete', 'agents', 'copy', 'export', 'raw', 'diff', 'pwd', 'title', 'statusline', 'theme', 'tui', 'help', 'quit', 'stop', 'compact'].includes(entry.name);
+        return ['model', 'effort', 'permissions', 'status', 'usage', 'rename', 'new', 'clear', 'resume', 'delete', 'agents', 'copy', 'export', 'raw', 'diff', 'pwd', 'title', 'statusline', 'theme', 'tui', 'help', 'quit', 'stop', 'compact', 'skill', 'skills'].includes(entry.name);
       }); index = Math.min(index, Math.max(0, matches.length - 1)); paintSuggestions();
     }
     function open(query = '', fromPrompt = false) {
@@ -181,6 +181,12 @@
     function changed() {
       if (pending) return;
       const value = prompt.value;
+      if (ctx.isClaude?.() && /^\/skills?\s+[^\s]*$/.test(value) && document.activeElement === prompt) {
+        const query = value.replace(/^\/skills?\s+/, '');
+        if (mode !== 'skill-list') worker('skill', '', '', query);
+        else content.querySelector('input[data-skill-search]')?.dispatchEvent(new CustomEvent('skill-query', { detail: query }));
+        return;
+      }
       if (/^\/[\w-]*$/.test(value) && document.activeElement === prompt) {
         if (mode !== 'list' || !inline) open(value, true); else { index = 0; suggestions(value); }
       } else if (mode === 'list' && inline) close();
@@ -285,7 +291,7 @@
       if (name === 'fast') return args === 'on' || args === 'off';
       return ['reasoning', 'effort', 'permissions', 'approvals', 'plan', 'personality', 'memories', 'goal', 'rename'].includes(name);
     }
-    function worker(name, args = '', original = '') {
+    function worker(name, args = '', original = '', skillQuery = null) {
       const settingsCheckpoint = ctx.settingsCheckpoint?.();
       return perform('/' + name, async () => {
         try { return await ctx.rpc('gateway/command', { name, args }, 60000); }
@@ -304,6 +310,37 @@
         if (name === 'usage' && args === 'cancel' && !result.usage_menu) { close(); return; }
         if (!result.permissions && !result.model_menu && !result.usage_menu && settingChange(name, args)) { close(); return; }
         if (result.text) text(result.text);
+        if (result.skill_menu) {
+          if (skillQuery !== null && !/^\/skills?\s+[^\s]*$/.test(prompt.value)) { close(); return; }
+          mode = 'skill-list';
+          const input = node('input'); input.type = 'search'; input.placeholder = 'Find a skill…'; input.setAttribute('aria-label', 'Find a skill'); input.dataset.skillSearch = '';
+          input.value = skillQuery === null ? '' : prompt.value.replace(/^\/skills?\s+/, ''); content.append(input);
+          const rows = node('div'); content.append(rows);
+          const entries = result.skill_menu.entries || [];
+          const paint = () => {
+            rows.replaceChildren();
+            const query = input.value.toLowerCase();
+            const filtered = entries.filter(e => (e.name + ' ' + (e.description || '')).toLowerCase().includes(query));
+            for (const entry of filtered.slice(0, 50)) {
+              const choice = node('button', 'command-choice', entry.name); choice.type = 'button';
+              if (entry.description) choice.append(node('span', 'command-choice-description', entry.description));
+              choice.addEventListener('click', () => {
+                if (generation !== state.generation || ticket !== epoch) return;
+                if (skillQuery !== null) {
+                  prompt.value = '/skill ' + entry.name + ' '; ctx.saveDraft(); close(true); return;
+                }
+                form('/skill ' + entry.name, [{ key: 'arguments', label: entry.argument_hint || 'Arguments or instructions (optional)', required: false, multiline: true, maxLength: 16000 }], state.turn ? 'Queue skill' : 'Run skill', values => worker('skill', entry.name + (values.arguments ? ' ' + values.arguments : '')), () => worker('skill'));
+              });
+              rows.append(choice);
+            }
+            if (!filtered.length) rows.append(node('p', 'muted', 'No matching skills.'));
+            if (filtered.length > 50) rows.append(node('p', 'muted', 'Type more to narrow the list.'));
+          };
+          input.addEventListener('input', paint);
+          input.addEventListener('skill-query', event => { input.value = event.detail; paint(); });
+          paint();
+          button('Close', () => close(true));
+        }
         if (result.permissions) {
           const options = result.permissions.options || [];
           const confirmation = options.some(option => ['confirm-full-access', 'confirm-bypass-permissions'].includes(option.id));
@@ -328,7 +365,7 @@
           for (const option of options) button(option.label, () => worker('usage', option.args), option.description || '',
             { preferred: confirmation && option.args === 'cancel' });
         }
-        if (!result.text && !result.permissions && !result.model_menu && !result.usage_menu) text('Command completed.');
+        if (!result.text && !result.permissions && !result.model_menu && !result.usage_menu && !result.skill_menu) text('Command completed.');
       });
     }
     function choices(name, description, values) {
@@ -386,7 +423,7 @@
           }
         });
       }
-      if (['model', 'permissions', 'status', 'usage'].includes(name)) return worker(name, args, original);
+      if (['model', 'permissions', 'status', 'usage', 'skill'].includes(name) || (name === 'skills' && ctx.isClaude?.())) return worker(name, args, original);
       if (name === 'reasoning' || name === 'effort') {
         const effortCommand = ctx.isClaude?.() ? 'effort' : 'reasoning';
         if (args) return worker(effortCommand, args, original);
