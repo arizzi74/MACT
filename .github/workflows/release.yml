@@ -19,6 +19,10 @@ on:
         description: Prove the Claude skills diff and test native commands, queues and pickers without voice tests
         type: boolean
         default: false
+      claude_skills_ui_only:
+        description: With claude_skills_only, prove a UI-only diff and skip unchanged backend tests
+        type: boolean
+        default: false
       claude_usage_only:
         description: Prove a Claude accounting-only diff and test cost, account polling and status without voice tests
         type: boolean
@@ -43,6 +47,7 @@ jobs:
       claude_compaction_only: ${{ steps.scope.outputs.claude_compaction_only }}
       claude_usage_only: ${{ steps.scope.outputs.claude_usage_only }}
       claude_skills_only: ${{ steps.scope.outputs.claude_skills_only }}
+      claude_skills_ui_only: ${{ steps.scope.outputs.claude_skills_ui_only }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -60,6 +65,7 @@ jobs:
           CLAUDE_COMPACTION_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.claude_compaction_only }}
           CLAUDE_USAGE_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.claude_usage_only }}
           CLAUDE_SKILLS_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.claude_skills_only }}
+          CLAUDE_SKILLS_UI_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.claude_skills_ui_only }}
         run: |
           selected=0
           for mode in "$INSTALLER_ONLY" "$CLAUDE_COMPACTION_ONLY" "$CLAUDE_USAGE_ONLY" "$CLAUDE_SKILLS_ONLY"; do
@@ -69,7 +75,11 @@ jobs:
             echo 'Focused release modes are mutually exclusive.' >&2
             exit 1
           fi
-          printf 'claude_skills_only=false\nclaude_usage_only=false\nclaude_compaction_only=false\n' >> "$GITHUB_OUTPUT"
+          if [[ "$CLAUDE_SKILLS_UI_ONLY" == 'true' && "$CLAUDE_SKILLS_ONLY" != 'true' ]]; then
+            echo 'The UI-only modifier requires the scoped skills release mode.' >&2
+            exit 1
+          fi
+          printf 'claude_skills_ui_only=false\nclaude_skills_only=false\nclaude_usage_only=false\nclaude_compaction_only=false\n' >> "$GITHUB_OUTPUT"
           if [[ "$INSTALLER_ONLY" == 'true' ]]; then
             test "$RELEASE_REF" = "refs/tags/$RELEASE_TAG"
             python3 scripts/check-installer-release.py --repo "$RELEASE_REPO" --tag "$RELEASE_TAG" --baseline "$BASELINE_TAG" --commit "$RELEASE_COMMIT"
@@ -80,8 +90,11 @@ jobs:
             printf 'installer_only=false\nclaude_compaction_only=true\n' >> "$GITHUB_OUTPUT"
           elif [[ "$CLAUDE_SKILLS_ONLY" == 'true' ]]; then
             test "$RELEASE_REF" = "refs/tags/$RELEASE_TAG"
-            python3 scripts/check-installer-release.py --scope claude-skills --repo "$RELEASE_REPO" --tag "$RELEASE_TAG" --baseline "$BASELINE_TAG" --commit "$RELEASE_COMMIT"
+            scope=claude-skills
+            if [[ "$CLAUDE_SKILLS_UI_ONLY" == 'true' ]]; then scope=claude-skills-ui; fi
+            python3 scripts/check-installer-release.py --scope "$scope" --repo "$RELEASE_REPO" --tag "$RELEASE_TAG" --baseline "$BASELINE_TAG" --commit "$RELEASE_COMMIT"
             printf 'installer_only=false\nclaude_skills_only=true\n' >> "$GITHUB_OUTPUT"
+            if [[ "$CLAUDE_SKILLS_UI_ONLY" == 'true' ]]; then printf 'claude_skills_ui_only=true\n' >> "$GITHUB_OUTPUT"; fi
           elif [[ "$CLAUDE_USAGE_ONLY" == 'true' ]]; then
             test "$RELEASE_REF" = "refs/tags/$RELEASE_TAG"
             python3 scripts/check-installer-release.py --scope claude-usage --repo "$RELEASE_REPO" --tag "$RELEASE_TAG" --baseline "$BASELINE_TAG" --commit "$RELEASE_COMMIT"
@@ -242,6 +255,7 @@ jobs:
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_ci_installer_release.py
           go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color
       - name: Check native skill discovery, dispatch, queued turns and authenticated menus
+        if: needs.release-mode.outputs.claude_skills_ui_only != 'true'
         run: |
           ./scripts/check.sh format
           go vet ./internal/claudeadapter ./internal/codexadapter ./internal/worker ./internal/protocol ./internal/registry ./internal/gateway ./internal/telegramcommands

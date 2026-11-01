@@ -105,6 +105,16 @@ class InstallerReleaseScopeTest(unittest.TestCase):
                 with self.assertRaises(POLICY.ScopeError):
                     self.validate()
 
+    def test_skills_ui_scope_cannot_skip_tests_for_backend_or_audio_changes(self):
+        changed = POLICY.SKILLS_UI_ALLOWED | {f"docs/releases/{self.tag}.md"}
+        self.target(changed)
+        self.assertEqual(self.validate(scope="claude-skills-ui"), changed)
+        for name in ("internal/claudeadapter/skills.go", "internal/worker/agent.go", "internal/audio/audio.go", "go.mod"):
+            self.setUp()
+            self.target(("internal/admin/static/webui.css", name))
+            with self.assertRaises(POLICY.ScopeError):
+                self.validate(scope="claude-skills-ui")
+
     def test_invalid_or_nonadvancing_stable_tags_are_refused(self):
         self.target()
         for tag in ("main", "v1.2.4-rc1", "v01.2.4", "v1.2.4\n", self.baseline, "v0.9.9"):
@@ -202,7 +212,10 @@ class InstallerReleaseWorkflowTest(unittest.TestCase):
         self.assertNotIn("npm run test:browser", focused)
         self.assertNotIn("test-admin-audio", focused)
         skills = jobs["claude-skills-tests"]
-        self.assertIn("--scope claude-skills", text)
+        self.assertIn("scope=claude-skills", text)
+        self.assertIn("then scope=claude-skills-ui", text)
+        self.assertIn("UI-only modifier requires the scoped skills release mode", text)
+        self.assertIn("if: needs.release-mode.outputs.claude_skills_ui_only != 'true'", skills)
         self.assertIn("node scripts/test-claude-ui.cjs --skills-only", skills)
         self.assertIn("TestClaudeWorkerIntegration|TestClaudeSkill", skills)
         self.assertNotIn("npm run test:browser", skills)

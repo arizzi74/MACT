@@ -309,27 +309,32 @@
         // selection. Closing without focus also keeps mobile keyboards closed.
         if (name === 'usage' && args === 'cancel' && !result.usage_menu) { close(); return; }
         if (!result.permissions && !result.model_menu && !result.usage_menu && settingChange(name, args)) { close(); return; }
-        if (result.text) text(result.text);
+        if (result.text && !result.skill_menu) text(result.text);
         if (result.skill_menu) {
           if (skillQuery !== null && !/^\/skills?\s+[^\s]*$/.test(prompt.value)) { close(); return; }
           mode = 'skill-list';
+          const entries = result.skill_menu.entries || [];
+          text('Claude skills · ' + entries.length + ' available. Choose a skill to view its details and optional arguments.');
           const input = node('input'); input.type = 'search'; input.placeholder = 'Find a skill…'; input.setAttribute('aria-label', 'Find a skill'); input.dataset.skillSearch = '';
           input.value = skillQuery === null ? '' : prompt.value.replace(/^\/skills?\s+/, ''); content.append(input);
-          const rows = node('div'); content.append(rows);
-          const entries = result.skill_menu.entries || [];
+          const rows = node('div', 'command-skill-list'); content.append(rows);
           const paint = () => {
             rows.replaceChildren();
             const query = input.value.toLowerCase();
             const filtered = entries.filter(e => (e.name + ' ' + (e.description || '')).toLowerCase().includes(query));
             for (const entry of filtered.slice(0, 50)) {
-              const choice = node('button', 'command-choice', entry.name); choice.type = 'button';
-              if (entry.description) choice.append(node('span', 'command-choice-description', entry.description));
+              const choice = node('button', 'command-choice command-skill'); choice.type = 'button';
+              const body = node('span', 'command-choice-body');
+              body.append(node('span', 'command-choice-label', entry.name));
+              if (entry.description) body.append(node('small', '', entry.description));
+              choice.append(body);
               choice.addEventListener('click', () => {
-                if (generation !== state.generation || ticket !== epoch) return;
+                if (pending || generation !== state.generation || ticket !== epoch) return;
                 if (skillQuery !== null) {
                   prompt.value = '/skill ' + entry.name + ' '; ctx.saveDraft(); close(true); return;
                 }
                 form('/skill ' + entry.name, [{ key: 'arguments', label: entry.argument_hint || 'Arguments or instructions (optional)', required: false, multiline: true, maxLength: 16000 }], state.turn ? 'Queue skill' : 'Run skill', values => worker('skill', entry.name + (values.arguments ? ' ' + values.arguments : '')), () => worker('skill'));
+                if (entry.description) content.prepend(node('p', 'command-text', entry.description));
               });
               rows.append(choice);
             }
@@ -339,7 +344,10 @@
           input.addEventListener('input', paint);
           input.addEventListener('skill-query', event => { input.value = event.detail; paint(); });
           paint();
-          button('Close', () => close(true));
+          const actions = node('div', 'command-actions');
+          const dismiss = node('button', 'quiet', 'Close'); dismiss.type = 'button';
+          dismiss.addEventListener('click', () => { if (!pending && generation === state.generation && ticket === epoch) close(true); });
+          actions.append(dismiss); content.append(actions);
         }
         if (result.permissions) {
           const options = result.permissions.options || [];

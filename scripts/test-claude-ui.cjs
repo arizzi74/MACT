@@ -131,6 +131,7 @@ async function adminChecks(browser, width) {
 
 async function webUIChecks(browser, width, usageOnly = false, costOnly = false, skillsOnly = false) {
   const page = await browser.newPage({ viewport: { width, height: 900 } });
+  if (skillsOnly) await page.emulateMedia({ colorScheme: 'dark' });
   const errors = [];
   const other = { ...session, session_id: 'claude-other', codex_thread_id: 'other-thread', name: 'Other Claude project', state: 'idle', stats: { model: 'STALE_INVENTORY_MODEL', context_tokens: 777, context_window: 1000 } };
   const codexWorker = { ID: 'codex-worker', Name: 'Codex worker', AgentKind: 'codex', Enabled: true, Connectivity: 'online' };
@@ -193,7 +194,8 @@ async function webUIChecks(browser, width, usageOnly = false, costOnly = false, 
           let settings;
           if (name === 'skill' || name === 'skills') {
             const entries = [{ name: 'inspect', description: '<img src=x onerror=alert(1)> Inspect project', argument_hint: '<target>' }, { name: 'plugin:review', description: 'Review the code', argument_hint: '[instructions]' }];
-            result = args ? { text: 'Skill ' + args.split(' ')[0] + ' queued after the active turn.', state: 'queued' } : { text: 'Claude skills', skill_menu: { entries, options: entries.map(e => ({ args: e.name, label: e.name })) } };
+            for (let i = 0; i < 110; i++) entries.push({ name: 'account-lookup-' + i + '-with-a-long-project-specific-skill-name', description: 'INTERNAL SKILL invoked by the orchestrator. Infrastructure utility chained during the account lookup. ' + 'Look up the selected account and review its project information. '.repeat(6) });
+            result = args ? { text: 'Skill ' + args.split(' ')[0] + ' queued after the active turn.', state: 'queued' } : { text: 'Claude skills (112 available, page 1/14). Choose a skill.', skill_menu: { entries, options: entries.map(e => ({ args: e.name, label: e.name })) } };
           }
           if (name === 'compact') result = { text: 'Compaction started. Claude Code will report when it finishes.', state: 'running' };
           if (name === 'model' && !args) result = { model_menu: { options: [{ label: 'Native Sonnet', args: '--menu sonnet' }, { label: 'Cancel', args: '--cancel' }] } };
@@ -257,10 +259,36 @@ async function webUIChecks(browser, width, usageOnly = false, costOnly = false, 
     await slash('/skill');
     await page.getByRole('searchbox', { name: 'Find a skill' }).waitFor();
     assert.equal(await page.locator('#command-content img').count(),0,'Metadata is rendered as text');
+    assert.match(await page.locator('#command-content').textContent(), /112 available/);
+    assert.doesNotMatch(await page.locator('#command-content').textContent(), /page 1\//, 'The WebUI searches the full catalog rather than the Telegram page');
+    const assertSkillLayout = async () => {
+      const geometry = await page.locator('.command-skill-list').evaluate(list => {
+        const bounds = list.getBoundingClientRect();
+        return { width: bounds.width, overflow: list.scrollWidth > list.clientWidth + 1, rows: [...list.querySelectorAll('.command-skill')].map(row => {
+          const r = row.getBoundingClientRect(), label = row.querySelector('.command-choice-label').getBoundingClientRect(), description = row.querySelector('small');
+          const d = description?.getBoundingClientRect();
+          return { width: r.width, labelWidth: label.width, labelBottom: label.bottom, descriptionTop: d?.top, descriptionHeight: d?.height, lineHeight: description ? parseFloat(getComputedStyle(description).lineHeight) : 0 };
+        }) };
+      });
+      assert.ok(!geometry.overflow, 'Skill rows never create horizontal overflow');
+      assert.equal(geometry.rows.length, 50);
+      for (const row of geometry.rows) {
+        assert.ok(row.width >= geometry.width - 2, 'Each skill occupies a full-width row');
+        assert.ok(row.labelWidth >= row.width - 30, 'Names use the row width rather than numbered-choice columns');
+        assert.ok(row.descriptionTop >= row.labelBottom, 'Descriptions are below names without overlap');
+        assert.ok(row.descriptionHeight <= row.lineHeight * 3 + 1, 'Long descriptions have a compact three-line preview');
+      }
+    };
+    await assertSkillLayout();
+    if (process.env.CLAUDE_SKILL_SCREENSHOTS) {
+      fs.mkdirSync(process.env.CLAUDE_SKILL_SCREENSHOTS, { recursive: true });
+      await page.locator('#command-panel').screenshot({ path: path.join(process.env.CLAUDE_SKILL_SCREENSHOTS, 'claude-skills-' + width + '.png') });
+    }
     const before = await page.evaluate(() => window.testSent.filter(f=>f.method==='gateway/command').length);
     await page.getByRole('searchbox',{name:'Find a skill'}).fill('plugin');
     assert.equal(await page.locator('#command-content button.command-choice').filter({hasText:'inspect'}).count(),0);
-    await page.locator('#command-content button.command-choice').filter({hasText:'plugin:review'}).click();
+    const review = page.locator('#command-content button.command-choice').filter({hasText:'plugin:review'});
+    await review.focus(); await review.press('Enter');
     assert.equal(await page.evaluate(() => window.testSent.filter(f=>f.method==='gateway/command').length),before,'Selecting a skill opens arguments before invocation');
     await page.locator('#command-content textarea').fill('src\nkeep spacing');
     await page.getByRole('button',{name:'Queue skill',exact:true}).click();
@@ -744,7 +772,7 @@ async function deletionChecks(browser, width) {
   const browser = await chromium.launch({ headless: true });
   try {
     if (process.argv.includes('--skills-only')) {
-      for (const width of [390,1280]) await webUIChecks(browser,width,false,false,true);
+      for (const width of [320,390,768,1280]) await webUIChecks(browser,width,false,false,true);
       process.stdout.write('Claude skills browser checks passed.\n');return;
     }
     if (process.argv.includes('--cost-only')) {
