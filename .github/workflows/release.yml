@@ -69,9 +69,7 @@ jobs:
             echo 'Focused release modes are mutually exclusive.' >&2
             exit 1
           fi
-          printf 'claude_skills_only=false\n' >> "$GITHUB_OUTPUT"
-          printf 'claude_usage_only=false\n' >> "$GITHUB_OUTPUT"
-          printf 'claude_compaction_only=false\n' >> "$GITHUB_OUTPUT"
+          printf 'claude_skills_only=false\nclaude_usage_only=false\nclaude_compaction_only=false\n' >> "$GITHUB_OUTPUT"
           if [[ "$INSTALLER_ONLY" == 'true' ]]; then
             test "$RELEASE_REF" = "refs/tags/$RELEASE_TAG"
             python3 scripts/check-installer-release.py --repo "$RELEASE_REPO" --tag "$RELEASE_TAG" --baseline "$BASELINE_TAG" --commit "$RELEASE_COMMIT"
