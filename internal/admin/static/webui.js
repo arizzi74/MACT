@@ -2919,11 +2919,14 @@
     }
   }
   function rememberAnsweredQuestion(entry) {
-    if (!entry?.approval_id || !Array.isArray(entry.fields) || !entry.fields.length || !Number.isFinite(Date.parse(entry.answered_at))) return;
+    if (!entry?.approval_id || !Array.isArray(entry.fields) || !entry.fields.length || !Number.isFinite(Date.parse(entry.answered_at))) return false;
     const text = entry.fields.map(field => '> ' + String(field.question || '').replace(/\n/g, '\n> ') + '\n\n' + String(field.answer || '')).join('\n\n');
+    const previous = answeredQuestions.get(entry.approval_id);
+    if (previous && previous.item._time === Date.parse(entry.answered_at) && previous.turn_id === entry.turn_id && previous.item_id === entry.item_id && itemText(previous.item) === text) return false;
     const item = { id: 'question-answer-' + entry.approval_id, type: 'userMessage', content: [{ type: 'text', text }],
       _turn: entry.turn_id, ...itemTiming({}, {}, { recordedAtMs: Date.parse(entry.answered_at) }), _complete: true };
     answeredQuestions.set(entry.approval_id, { ...entry, item });
+    return true;
   }
   async function refreshAnsweredQuestions() {
     if (!state.connected || state.loading || !state.selected) return;
@@ -2934,8 +2937,9 @@
     try {
       const snapshot = await fetchJSON(api + '/question-answers?' + new URLSearchParams({ session_id: sessionID }), flight.controller.signal);
       if (generation !== state.generation || sessionID !== state.selected?.session_id || !state.connected) return;
-      for (const entry of snapshot?.answers || []) rememberAnsweredQuestion(entry);
-      scheduleRender();
+      let changed = false;
+      for (const entry of snapshot?.answers || []) if (rememberAnsweredQuestion(entry)) changed = true;
+      if (changed) scheduleRender();
     } catch (_) { /* Optional history must not prevent using the native session. */ }
     finally {
       clearTimeout(timer);

@@ -75,6 +75,13 @@ const assets = process.env.WEBUI_ASSETS || path.resolve(__dirname, '../internal/
    };
    await open();
    await page.waitForSelector('[data-request-id="worker:approval"]');
+   await page.waitForTimeout(300);
+   await page.evaluate(() => {
+    window.answerHistoryArticle = document.querySelector('#messages article');
+    window.sockets.at(-1).emit({ method: 'serverRequest/resolved', params: { threadId: window.nativeParams.threadId, requestId: 'unrelated-empty' } });
+   });
+   await page.waitForTimeout(300);
+   assert.equal(await page.evaluate(() => window.answerHistoryArticle === document.querySelector('#messages article')), true, 'Empty answer-history refresh does not redraw the conversation');
    await page.evaluate(() => window.sockets.at(-1).emit({ id: 'live', method: 'item/tool/requestUserInput', params: window.nativeParams }));
    const card = page.locator('[data-request-id="live"]');
    await card.locator('input[type=radio]').check();
@@ -101,6 +108,13 @@ const assets = process.env.WEBUI_ASSETS || path.resolve(__dirname, '../internal/
    await page.locator('[data-item-id="question-answer-approval"]').waitFor();
    assert.equal(await page.locator('[data-item-id="question-answer-approval"]').count(), 1, 'Reconnect restores exactly one durable answer');
    assert.equal(await page.locator('#questions').isHidden(), true);
+   await page.waitForTimeout(300);
+   await page.evaluate(() => {
+    window.answerHistoryArticle = document.querySelector('[data-item-id="question-answer-approval"]');
+    window.sockets.at(-1).emit({ method: 'serverRequest/resolved', params: { threadId: window.nativeParams.threadId, requestId: 'unrelated-unchanged' } });
+   });
+   await page.waitForTimeout(300);
+   assert.equal(await page.evaluate(() => window.answerHistoryArticle === document.querySelector('[data-item-id="question-answer-approval"]')), true, 'Unchanged answered history does not redraw the conversation');
    assert.deepEqual(errors, []);
    await page.close();
    console.log(agent + ': live two-question reply, failure, worker recording, durable echo and reconnect passed');
