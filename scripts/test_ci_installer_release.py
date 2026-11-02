@@ -115,6 +115,16 @@ class InstallerReleaseScopeTest(unittest.TestCase):
             with self.assertRaises(POLICY.ScopeError):
                 self.validate(scope="claude-skills-ui")
 
+    def test_question_scope_refuses_unrelated_runtime_voice_or_dependency_changes(self):
+        changed = POLICY.QUESTIONS_ALLOWED | {f"docs/releases/{self.tag}.md"}
+        self.target(changed)
+        self.assertEqual(self.validate(scope="webui-questions"), changed)
+        for name in ("internal/audio/audio.go", "go.mod", "internal/worker/agent.go", "scripts/publish-release.py"):
+            self.setUp()
+            self.target(("internal/admin/static/webui.js", name))
+            with self.assertRaises(POLICY.ScopeError):
+                self.validate(scope="webui-questions")
+
     def test_invalid_or_nonadvancing_stable_tags_are_refused(self):
         self.target()
         for tag in ("main", "v1.2.4-rc1", "v01.2.4", "v1.2.4\n", self.baseline, "v0.9.9"):
@@ -198,7 +208,7 @@ class InstallerReleaseWorkflowTest(unittest.TestCase):
         self.assertIn("if: always() && !cancelled() && needs.test-and-build.result == 'success'", jobs["publish"])
         for name in ("native-whisper", "native-speech"):
             self.assertIn("needs: release-mode", jobs[name])
-            self.assertIn("run-smoke-tests: ${{ needs.release-mode.outputs.installer_only != 'true' && needs.release-mode.outputs.claude_compaction_only != 'true' && needs.release-mode.outputs.claude_usage_only != 'true' && needs.release-mode.outputs.claude_skills_only != 'true' }}", jobs[name])
+            self.assertIn("run-smoke-tests: ${{ needs.release-mode.outputs.installer_only != 'true' && needs.release-mode.outputs.claude_compaction_only != 'true' && needs.release-mode.outputs.claude_usage_only != 'true' && needs.release-mode.outputs.claude_skills_only != 'true' && needs.release-mode.outputs.webui_questions_only != 'true' }}", jobs[name])
         self.assertIn("github.event_name == 'workflow_dispatch' && inputs.claude_compaction_only", text)
         self.assertIn('for mode in "$INSTALLER_ONLY" "$CLAUDE_COMPACTION_ONLY" "$CLAUDE_USAGE_ONLY"', text)
         self.assertIn('if (( selected > 1 )); then', text)
@@ -211,6 +221,14 @@ class InstallerReleaseWorkflowTest(unittest.TestCase):
         self.assertIn("node scripts/test-claude-ui.cjs", focused)
         self.assertNotIn("npm run test:browser", focused)
         self.assertNotIn("test-admin-audio", focused)
+        questions = jobs["webui-question-tests"]
+        self.assertIn("if: needs.release-mode.outputs.webui_questions_only == 'true'", questions)
+        self.assertIn("node scripts/test-webui-question-answers.cjs", questions)
+        self.assertIn("node scripts/test-webui-async-questions.cjs", questions)
+        self.assertNotIn("npm run test:browser", questions)
+        self.assertNotIn("test-admin-audio", questions)
+        self.assertIn("needs.webui-question-tests.result == 'success'", gate)
+        self.assertIn("needs.webui-question-tests.result == 'skipped'", gate)
         skills = jobs["claude-skills-tests"]
         self.assertIn("scope=claude-skills", text)
         self.assertIn("then scope=claude-skills-ui", text)

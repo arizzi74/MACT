@@ -138,6 +138,7 @@ itemTimes['timestamp-older-completed'] = { startedAtMs: null, completedAtMs: tim
   let creationBehavior = 'pending';
   await page.route('https://webui.test/**', async route => {
     const url = new URL(route.request().url()); paths.push(url.pathname);
+    if (url.pathname === '/tgw/api/v1/webui/question-answers') return route.fulfill({ contentType: 'application/json', body: '{"answers":[]}' });
     if (url.pathname === '/tgw/api/v1/webui/telegram-bots') return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ revision: 'fixture-bots', bots: [] }) });
     if (url.pathname === '/tgw/api/v1/webui/push/config') return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ supported: false, scope: 'all', subscribed: false }) });
     if (url.pathname === '/tgw/api/v1/webui/workspaces') {
@@ -266,7 +267,7 @@ itemTimes['timestamp-older-completed'] = { startedAtMs: null, completedAtMs: tim
       constructor(url) {
         this.url = url; this.readyState = 0; this.session = new URL(url).searchParams.get('session_id');
         this.activity = new URL(url).pathname.endsWith('/activity');
-        this.sequence = 0;
+        this.sequence = 0; this.nativeQuestions = new Map();
         if (this.activity) { window.testActivitySocket = this; window.testActivitySockets.push(this); } else window.testSockets.push(this);
         setTimeout(() => {
           if (this.readyState === 3) return;
@@ -276,7 +277,13 @@ itemTimes['timestamp-older-completed'] = { startedAtMs: null, completedAtMs: tim
           if (this.activity) this.heartbeatTimer = setInterval(() => { if (!window.testPauseActivityHeartbeats && this.readyState === 1) this.emit({ type: 'heartbeat', version: 3, sequence: this.sequence }); }, 15000);
         }, 5);
       }
-      emit(value) { if (value.type === 'activity_snapshot') value = { telegram_bots: [], telegram_bots_revision: 'fixture-bots', ...value }; this.onmessage?.({ data: JSON.stringify(value) }); }
+      emit(value) {
+        if (value.id !== undefined && value.method?.includes('request')) {
+          value.params.itemId ||= 'item-' + value.id;
+          this.nativeQuestions.set('live-' + value.id, value);
+        }
+        if (value.method === 'serverRequest/resolved') this.nativeQuestions.delete('live-' + value.params.requestId);
+        if (value.type === 'activity_snapshot') value = { telegram_bots: [], telegram_bots_revision: 'fixture-bots', ...value }; this.onmessage?.({ data: JSON.stringify(value) }); }
       close(code = 1000) { this.readyState = 3; clearInterval(this.heartbeatTimer); this.onclose?.({ code }); }
       drop(code = 1006) { this.close(code); }
       send(raw) {
@@ -325,12 +332,18 @@ itemTimes['timestamp-older-completed'] = { startedAtMs: null, completedAtMs: tim
         }
         else if (frame.method === 'gateway/questions') {
           result = { questions: this.session === 'c' && !window.testAnsweredOldQuestion ? [{ approvalId: window.testReplacementQuestion ? 'approval-replacement-c' : 'approval-old-c', async: false, method: 'item/tool/requestUserInput', params: { threadId: 'thread-c', turnId: 'old-c', questions: [{ id: 'question-c', question: window.testReplacementQuestion ? 'Replacement question with the same pending count?' : 'Pending question outside the latest 20 items?' }] } }] : [] };
+          result.questions.push(...[...this.nativeQuestions.entries()].map(([approvalId, request]) => ({ approvalId, async: false, method: request.method, params: request.params })));
           if (window.testHoldQuestions) { this.heldQuestions = { frame, result }; return; }
           if (window.testFailQuestions) { setTimeout(() => this.emit({ id: frame.id, error: { message: 'Question inventory unavailable' } }), 1); return; }
         }
         else if (frame.method === 'gateway/answer') {
           if (window.testHoldGatewayAnswer) { this.heldGatewayAnswer = frame; return; }
-          window.testAnsweredOldQuestion = true; result = { state: 'completed' };
+          const native = this.nativeQuestions.get(frame.params.approvalId);
+          if (native) {
+            setTimeout(() => this.emit(window.testRejectAnswers ? { id: frame.id, error: { message: 'Answer rejected by runtime' } } : { method: 'serverRequest/resolved', params: { requestId: native.id } }), 1);
+            if (window.testRejectAnswers) return;
+          } else window.testAnsweredOldQuestion = true;
+          result = { state: 'completed' };
         }
         else if (frame.method === 'gateway/command') {
           if (window.testDropCommand) { this.drop(); return; }
@@ -1006,7 +1019,7 @@ itemTimes['timestamp-older-completed'] = { startedAtMs: null, completedAtMs: tim
     await choose('a');
     await page.waitForSelector('[data-item-id="reply-a"]');
     await page.waitForSelector('[data-item-id="earliest-message"]');
-    assert.equal(await page.locator('#messages article').first().getAttribute('data-item-id'), 'earliest-message', 'A partial first page fills the recent viewport in chronological order');
+    assert.equal(await page.locator('#messages article:not([data-item-id^="question-answer-"])').first().getAttribute('data-item-id'), 'earliest-message', 'A partial first page fills the recent viewport in chronological order');
     assert.equal(await page.locator('#messages img').count(), 0, 'Untrusted HTML cannot become a DOM element');
     assert.equal(await page.evaluate(() => window.injected), undefined);
     assert.equal(await page.getByLabel('Dismissed Telegram question?', { exact: true }).count(), 0, 'An empty authoritative question snapshot prevents dismissed historical async questions from resurfacing');
@@ -1374,7 +1387,7 @@ itemTimes['timestamp-older-completed'] = { startedAtMs: null, completedAtMs: tim
     await page.locator('#transcript').evaluate(element => { element.scrollTop = 0; });
     await page.locator('[data-item-id="earliest-message"]').waitFor({ state: 'attached' });
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-    await page.evaluate(() => { window.quotaArticle = document.querySelector('#messages article'); window.quotaScroll = document.querySelector('#transcript').scrollTop; window.quotaReadCount = window.testSent.filter(frame => frame.method === 'account/rateLimits/read').length; });
+    await page.evaluate(() => { window.quotaArticle = document.querySelector('#messages article:not([data-item-id^="question-answer-"])'); window.quotaScroll = document.querySelector('#transcript').scrollTop; window.quotaReadCount = window.testSent.filter(frame => frame.method === 'account/rateLimits/read').length; });
     await current({ method: 'account/rateLimits/updated', params: { rateLimits: { ...rateLimits, primary: { ...rateLimits.primary, usedPercent: 31 }, secondary: { ...rateLimits.secondary, usedPercent: 49 } } } });
     await page.waitForFunction(() => document.querySelector('#rate-limits').textContent.includes('5h 69% left'));
     assert.match(await page.locator('#rate-limits').textContent(), /Weekly 51% left/);
@@ -1383,7 +1396,7 @@ itemTimes['timestamp-older-completed'] = { startedAtMs: null, completedAtMs: tim
     await current({ method: 'account/rateLimits/updated', params: { rateLimits: { limitId: 'codex', primary: null, secondary: { ...rateLimits.secondary, usedPercent: 49 } } } });
     assert.match(await page.locator('#rate-limits').textContent(), /5h 69% left/, 'Sparse updates preserve a previously reported primary quota');
     await page.waitForTimeout(1100);
-    assert.equal(await page.evaluate(() => window.quotaArticle === document.querySelector('#messages article')), true, 'Quota updates do not re-render the transcript');
+    assert.equal(await page.evaluate(() => window.quotaArticle === document.querySelector('#messages article:not([data-item-id^="question-answer-"])')), true, 'Quota updates do not re-render the transcript');
     assert.equal(await page.evaluate(() => document.querySelector('#transcript').scrollTop === window.quotaScroll), true, 'Quota updates preserve reading position');
     assert.equal(await page.evaluate(() => window.testSent.filter(frame => frame.method === 'account/rateLimits/read').length === window.quotaReadCount), true, 'Quota events do not trigger polling or another quota read');
     // Missing or failed quota reads must never disable an otherwise connected
@@ -1512,10 +1525,10 @@ itemTimes['timestamp-older-completed'] = { startedAtMs: null, completedAtMs: tim
     assert.equal(gatewayStatusReads(), readsBeforeSwitch, 'Selecting another session cancels pending update observation');
     await page.locator('#prompt').fill('');
     // Heartbeats/status-only traffic must leave the idle transcript DOM intact.
-    await page.evaluate(() => { window.originalArticle = document.querySelector('#messages article'); });
+    await page.evaluate(() => { window.originalArticle = document.querySelector('#messages article:not([data-item-id^="question-answer-"])'); });
     await current({ type: 'heartbeat' });
     await page.waitForTimeout(120);
-    assert.equal(await page.evaluate(() => window.originalArticle === document.querySelector('#messages article')), true, 'Idle heartbeat must not re-render');
+    assert.equal(await page.evaluate(() => window.originalArticle === document.querySelector('#messages article:not([data-item-id^="question-answer-"])')), true, 'Idle heartbeat must not re-render');
     // Prompts sent through Telegram or another API client arrive unsolicited.
     // Both item lifecycle events must update one entry in the selected session.
     const externalPrompt = { threadId: 'thread-a', turnId: 'telegram-turn-a', item: { id: 'telegram-user-a', type: 'userMessage', content: [{ type: 'text', text: 'This prompt was sent through Telegram.' }] } };
@@ -1532,7 +1545,7 @@ itemTimes['timestamp-older-completed'] = { startedAtMs: null, completedAtMs: tim
     assert.equal(await page.locator('[data-item-id="telegram-user-b"]').count(), 0, 'External prompts from another thread remain hidden');
     if (await page.locator('#older').isVisible()) await page.locator('#older').click();
     await page.waitForSelector('[data-item-id="earliest-message"]');
-    assert.equal(await page.locator('#messages article').first().getAttribute('data-item-id'), 'earliest-message');
+    assert.equal(await page.locator('#messages article:not([data-item-id^="question-answer-"])').first().getAttribute('data-item-id'), 'earliest-message');
     for (const [command, expectedCount] of [['/tghistory', 2], ['/tglastmessages', 1], ['/tghistory 3', 3]]) {
       await page.locator('#prompt').fill(command);
       await page.locator('#send').click();
@@ -1922,12 +1935,12 @@ itemTimes['timestamp-older-completed'] = { startedAtMs: null, completedAtMs: tim
     await page.getByLabel('Any extra notes?').fill('Use the external display.');
     await page.getByRole('button', { name: 'Send answer', exact: true }).click();
     await page.waitForFunction(() => document.querySelector('#questions').hidden);
-    const answer = await page.evaluate(() => window.testSent.find(frame => frame.id === 'question-b' && frame.result));
+    const answer = await page.evaluate(() => window.testSent.find(frame => frame.method === 'gateway/answer' && frame.params.approvalId === 'live-question-b')?.params);
     assert.equal(answer.result.answers.platform.answers[0], 'Apple Silicon');
     assert.equal(answer.result.answers.notes.answers[0], 'Use the external display.');
     await current({ id: 'approval-b', method: 'item/commandExecution/requestApproval', params: { threadId: 'thread-b', turnId: 'running-b', command: 'go test ./...', availableDecisions: ['accept', 'decline'] } });
     await page.getByRole('button', { name: 'Allow once', exact: true }).click();
-    assert.ok(await page.evaluate(() => window.testSent.some(frame => frame.id === 'approval-b' && frame.result?.decision === 'accept')));
+    await page.waitForFunction(() => window.testSent.some(frame => frame.method === 'gateway/answer' && frame.params.approvalId === 'live-approval-b' && frame.params.result?.decision === 'accept'));
     await page.waitForFunction(() => document.querySelector('#questions').hidden);
     await page.evaluate(() => { window.testRejectAnswers = true; });
     await current({ id: 'rejected-b', method: 'item/tool/requestUserInput', params: { threadId: 'thread-b', turnId: 'running-b', questions: [{ id: 'retry', question: 'Keep this answer if rejected?' }] } });
@@ -2586,12 +2599,12 @@ itemTimes['timestamp-older-completed'] = { startedAtMs: null, completedAtMs: tim
     await page.setViewportSize({ width: 1440, height: 1000 });
     await choose('c');
     assert.equal(await page.locator('#permissions').textContent(), 'Permissions ?', 'A session whose runtime omits permission metadata never inherits the previous session’s mode');
-    await page.waitForFunction(() => document.querySelectorAll('#messages article').length === 20);
-    const historyIDs = () => page.locator('#messages article').evaluateAll(items => items.map(item => item.dataset.itemId));
+    await page.waitForFunction(() => document.querySelectorAll('#messages article:not([data-item-id^="question-answer-"])').length === 20);
+    const historyIDs = () => page.locator('#messages article:not([data-item-id^="question-answer-"])').evaluateAll(items => items.map(item => item.dataset.itemId));
     const historyDiagnostics = async expected => {
       const diagnostics = await page.evaluate(() => {
         const scroller = document.querySelector('#transcript');
-        const articles = [...document.querySelectorAll('#messages article')];
+        const articles = [...document.querySelectorAll('#messages article:not([data-item-id^="question-answer-"])')];
         return { count: articles.length, first: articles[0]?.dataset.itemId, last: articles.at(-1)?.dataset.itemId,
           scroll: { top: scroller.scrollTop, height: scroller.scrollHeight, visible: scroller.clientHeight },
           older: { hidden: document.querySelector('#older').hidden, disabled: document.querySelector('#older').disabled },
@@ -2602,7 +2615,7 @@ itemTimes['timestamp-older-completed'] = { startedAtMs: null, completedAtMs: tim
       console.error('History pagination diagnostics:', JSON.stringify({ expected, ...diagnostics }));
     };
     const waitHistoryCount = async expected => {
-      try { await page.waitForFunction(count => document.querySelectorAll('#messages article').length === count, expected); }
+      try { await page.waitForFunction(count => document.querySelectorAll('#messages article:not([data-item-id^="question-answer-"])').length === count, expected); }
       catch (error) { await historyDiagnostics(expected); throw error; }
     };
     assert.deepEqual(await historyIDs(), Array.from({ length: 20 }, (_, index) => 'history-' + (index + 65)), 'The initial page contains the latest 20 transcript items in chronological order');
@@ -2636,7 +2649,7 @@ itemTimes['timestamp-older-completed'] = { startedAtMs: null, completedAtMs: tim
     await page.getByRole('button', { name: 'Send answer', exact: true }).click();
     await page.waitForFunction(() => document.querySelector('#questions').hidden);
     assert.ok(await page.evaluate(() => window.testSent.some(frame => frame.method === 'gateway/answer' && frame.params.approvalId === 'approval-replacement-c' && frame.params.result.answers['question-c'].answers[0] === 'Recovered from the worker snapshot.')), 'The replacement question outside the visible history is answered through the worker');
-    assert.equal(await page.locator('#messages article').count(), 20, 'Closing the question panel does not automatically fetch older history');
+    assert.equal(await page.locator('#messages article:not([data-item-id^="question-answer-"])').count(), 20, 'Closing the question panel does not automatically fetch older history');
     for (const count of [40, 60]) {
       // Use a real reader gesture. Assigning scrollTop alone after the question
       // panel collapses can race its layout-driven bottom-follow animation and
@@ -2671,7 +2684,7 @@ itemTimes['timestamp-older-completed'] = { startedAtMs: null, completedAtMs: tim
       // cannot become stale before the reply.
       const capturedScrollTop = await page.locator('#transcript').evaluate(scroller => {
         scroller.scrollTo({ top: 0, behavior: 'instant' });
-        const first = document.querySelector('#messages article');
+        const first = document.querySelector('#messages article:not([data-item-id^="question-answer-"])');
         window.historyAnchor = { id: first.dataset.itemId, top: first.getBoundingClientRect().top };
         const top = scroller.scrollTop;
         const socket = window.testSockets.at(-1), reply = socket.heldOlderItems;
@@ -2693,11 +2706,11 @@ itemTimes['timestamp-older-completed'] = { startedAtMs: null, completedAtMs: tim
     await page.waitForFunction(() => Boolean(window.testSockets.at(-1).heldOlderItems));
     await page.locator('#transcript').evaluate(scroller => {
       scroller.scrollTop = Math.floor(scroller.scrollHeight / 2);
-      const visible = [...document.querySelectorAll('#messages article')].find(item => item.getBoundingClientRect().bottom > scroller.getBoundingClientRect().top);
+      const visible = [...document.querySelectorAll('#messages article:not([data-item-id^="question-answer-"])')].find(item => item.getBoundingClientRect().bottom > scroller.getBoundingClientRect().top);
       window.movingHistoryAnchor = { id: visible.dataset.itemId, top: visible.getBoundingClientRect().top };
     });
     await page.evaluate(() => { const socket = window.testSockets.at(-1); const held = socket.heldOlderItems; socket.emit({ id: held.frame.id, result: held.result }); socket.heldOlderItems = null; });
-    await page.waitForFunction(() => document.querySelectorAll('#messages article').length === 80);
+    await page.waitForFunction(() => document.querySelectorAll('#messages article:not([data-item-id^="question-answer-"])').length === 80);
     const movingDrift = await page.evaluate(() => document.querySelector('[data-item-id="' + window.movingHistoryAnchor.id + '"]').getBoundingClientRect().top - window.movingHistoryAnchor.top);
     assert.ok(Math.abs(movingDrift) < 3, 'A delayed page preserves the reader’s latest anchor after scrolling away: ' + movingDrift);
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
@@ -2710,7 +2723,7 @@ itemTimes['timestamp-older-completed'] = { startedAtMs: null, completedAtMs: tim
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     await choose('d');
     await page.waitForTimeout(150);
-    assert.equal(await page.locator('#messages article').count(), 20, 'A short initial page is not expanded by programmatic session-switch scrolling');
+    assert.equal(await page.locator('#messages article:not([data-item-id^="question-answer-"])').count(), 20, 'A short initial page is not expanded by programmatic session-switch scrolling');
     assert.equal(await page.evaluate(() => window.testSent.filter(frame => frame.method === 'thread/items/list' && frame.params.threadId === 'thread-d').length), 1, 'Bootstrap loads just one 20-item page until the reader requests older history');
     await page.evaluate(() => { window.testHoldOlderItems = false; window.oldHistoryHandler({ data: JSON.stringify({ id: window.oldHistoryReply.frame.id, result: window.oldHistoryReply.result }) }); });
     assert.equal(await page.locator('[data-item-id^="history-"]').count(), 0, 'A delayed older page from another session cannot enter the selected transcript');
@@ -2724,7 +2737,7 @@ itemTimes['timestamp-older-completed'] = { startedAtMs: null, completedAtMs: tim
     // Scrolling a short page to expose this button can itself finish pagination
     // before Playwright clicks it. Exercise the retry handler directly here.
     await page.locator('#older').evaluate(button => button.click());
-    await page.waitForFunction(() => document.querySelectorAll('#messages article').length === 22);
+    await page.waitForFunction(() => document.querySelectorAll('#messages article:not([data-item-id^="question-answer-"])').length === 22);
     assert.equal(await page.locator('#notice').isHidden(), true, 'A successful older-history retry removes its recovered error banner');
     assert.equal(await page.locator('#reconnect').isHidden(), true, 'The reload fallback disappears after pagination recovers');
     assert.equal(await page.locator('#prompt').inputValue(), 'Selected session remains usable after pagination.');
@@ -2732,13 +2745,13 @@ itemTimes['timestamp-older-completed'] = { startedAtMs: null, completedAtMs: tim
     await page.evaluate(() => { window.testFailOlderItems = true; document.querySelector('#older').click(); });
     await page.getByRole('button', { name: 'Reload recent messages', exact: true }).waitFor();
     await page.getByRole('button', { name: 'Reload recent messages', exact: true }).click(); await connected();
-    assert.equal(await page.locator('#messages article').count(), 20, 'Reloading after a history failure restores the latest 20 messages');
+    assert.equal(await page.locator('#messages article:not([data-item-id^="question-answer-"])').count(), 20, 'Reloading after a history failure restores the latest 20 messages');
     assert.equal(await page.locator('#prompt').inputValue(), 'Selected session remains usable after pagination.', 'Reloading recent messages preserves the unsent prompt');
     assert.equal(await page.locator('#notice').isHidden(), true, 'Reloading recent messages clears the resolved older-history error');
     assert.equal(await page.locator('#reconnect').isHidden(), true);
     await current({ method: 'error', params: { threadId: 'thread-d', error: { message: 'Unrelated runtime error during pagination' } } });
     await page.locator('#older').evaluate(button => button.click());
-    await page.waitForFunction(() => document.querySelectorAll('#messages article').length === 22);
+    await page.waitForFunction(() => document.querySelectorAll('#messages article:not([data-item-id^="question-answer-"])').length === 22);
     assert.match(await page.locator('#notice').textContent(), /Unrelated runtime error during pagination/, 'Successful pagination cannot clear an unrelated runtime error');
 
     // Native lifecycle dates and saved record dates belong to each entry.
@@ -2767,7 +2780,7 @@ itemTimes['timestamp-older-completed'] = { startedAtMs: null, completedAtMs: tim
     };
     await page.evaluate(() => { window.testHoldMetadata = true; window.testMalformedHistoryEntry = true; window.testItemTimes['timestamp-25'].turnStartedAt = undefined; });
     await page.locator('[data-session-id="times"]').click();
-    await page.waitForFunction(() => Boolean(window.testSockets.at(-1).heldMetadata) && document.querySelectorAll('#messages article').length === 20);
+    await page.waitForFunction(() => Boolean(window.testSockets.at(-1).heldMetadata) && document.querySelectorAll('#messages article:not([data-item-id^="question-answer-"])').length === 20);
     await assertProducerTimes();
     await assertRecordedTimes();
     assert.equal(await page.locator('[data-item-id="timestamp-25"] time').count(), 0, 'Missing item times remain unavailable until turn metadata arrives');
@@ -3051,7 +3064,7 @@ itemTimes['timestamp-older-completed'] = { startedAtMs: null, completedAtMs: tim
       await page.setViewportSize({ width: 390, height: 844 });
       await page.screenshot({ path: path.join(process.env.WEBUI_SCREENSHOTS, 'webui-signin.png') });
     }
-    assert.equal(await page.locator('#messages article').count(), 0);
+    assert.equal(await page.locator('#messages article:not([data-item-id^="question-answer-"])').count(), 0);
     assert.equal(await page.locator('iframe').count(), 0, 'Authentication expiry disposes the diagram renderer');
     assert.equal(await page.locator('img.mermaid-image').count(), 0, 'Authentication expiry removes private diagram images');
     assert.equal(await page.locator('.session-button').count(), 0);

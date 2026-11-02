@@ -35,6 +35,7 @@
   let loadingOlder = false, suppressHistoryScroll = false;
   let questionRevision = 0, questionSnapshotSequence = 0;
   let questionRefresh = null;
+  let answeredQuestions = new Map(), answerHistoryRead = null;
   let selectedGoal = null, goalRevision = 0, goalSnapshotSequence = 0, goalDialogSessionID = '';
   let turnTimes = new Map(), turnCursor = null, turnMetadataWork = null, historyRead = rpc, resumedThread = null;
   const attachmentDrafts = new Map();
@@ -888,7 +889,7 @@
       updateSessionIndicators();
       renderTelegramBots();
       const nextPending = activity.sessions.get(state.selected?.session_id);
-      if (state.connected && !state.loading && (previousPending?.pending_questions !== nextPending?.pending_questions || previousPending?.pending_revision !== nextPending?.pending_revision)) refreshQuestions();
+      if (state.connected && !state.loading && (previousPending?.pending_questions !== nextPending?.pending_questions || previousPending?.pending_revision !== nextPending?.pending_revision)) { refreshQuestions(); refreshAnsweredQuestions(); }
       if (message.event === 'session_removed') renderSessions();
       if (inventoryChanged) refreshSessions();
     };
@@ -1132,6 +1133,7 @@
   }
   function closeSocket() {
     fileUI.clear();
+    answerHistoryRead?.controller.abort(); answerHistoryRead = null; answeredQuestions.clear();
     resumedThread = null;
     clearSteerNotice();
     clearGoal();
@@ -2337,6 +2339,7 @@
     // Start this optional worker lookup only after the essential native reads
     // finish: older workers share its input lane with history fallback reads.
     // New live requests received after dispatch take precedence over a snapshot.
+    refreshAnsweredQuestions();
     const revision = questionRevision;
     read('gateway/questions', {}).then(snapshot => {
       if (!current()) return;
@@ -2711,7 +2714,7 @@
     const anchorTop = anchor?.getBoundingClientRect().top;
     const diagrams = new Map(articles.map(article => [article.dataset.itemId, [...article.querySelectorAll('figure.mermaid-diagram')]]));
     const fragment = document.createDocumentFragment();
-    for (const item of state.items.values()) {
+    for (const item of conversationWithAnswers()) {
       const article = renderItem(item);
       const previousDetails = expanded.get(article.dataset.itemId);
       if (previousDetails?.open && !(previousDetails.complete === 'false' && article.dataset.toolComplete === 'true')) {
@@ -2848,7 +2851,7 @@
     } else if (method === 'turn/plan/updated') {
       ingestItem({ id: 'plan-' + p.turnId, type: 'plan', text: [p.explanation, ...(p.plan || []).map(step => (step.status === 'completed' ? '✓ ' : step.status === 'inProgress' ? '› ' : '○ ') + step.step)].filter(Boolean).join('\n') }, { ...turnTimes.get(p.turnId), id: p.turnId });
     } else if (method === 'thread/tokenUsage/updated') { updateUsage(p.tokenUsage || p); return; }
-    else if (method === 'serverRequest/resolved') { questionRevision++; state.questions.delete(String(p.requestId)); renderQuestions(); refreshQuestions(); return; }
+    else if (method === 'serverRequest/resolved') { questionRevision++; state.questions.delete(String(p.requestId)); renderQuestions(); refreshQuestions(); refreshAnsweredQuestions(); return; }
     else if (method === 'error') {
       const retrying = p.willRetry === true;
       const text = p.error?.message || p.message || 'Codex reported an error.';
@@ -2884,8 +2887,8 @@
       if (!request.approvalId || !request.params || !request.method) continue;
       const id = 'worker:' + request.approvalId;
       const duplicate = [...state.questions.entries()].find(([key, current]) => key !== id && request.params.itemId && current.params.itemId === request.params.itemId);
-      // Live native requests are answered on this browser's connection. A
-      // restored request is answered through its owning worker connection.
+      // Preserve the live card and its drafts; sendAnswer resolves its durable
+      // worker identity before submitting through the same recorded path.
       if (duplicate && !duplicate[1].synthetic) continue;
       if (duplicate) state.questions.delete(duplicate[0]);
       const previous = state.questions.get(id);
@@ -2915,6 +2918,44 @@
       }
     }
   }
+  function rememberAnsweredQuestion(entry) {
+    if (!entry?.approval_id || !Array.isArray(entry.fields) || !entry.fields.length || !Number.isFinite(Date.parse(entry.answered_at))) return;
+    const text = entry.fields.map(field => '> ' + String(field.question || '').replace(/\n/g, '\n> ') + '\n\n' + String(field.answer || '')).join('\n\n');
+    const item = { id: 'question-answer-' + entry.approval_id, type: 'userMessage', content: [{ type: 'text', text }],
+      _turn: entry.turn_id, ...itemTiming({}, {}, { recordedAtMs: Date.parse(entry.answered_at) }), _complete: true };
+    answeredQuestions.set(entry.approval_id, { ...entry, item });
+  }
+  async function refreshAnsweredQuestions() {
+    if (!state.connected || state.loading || !state.selected) return;
+    const generation = state.generation, sessionID = state.selected.session_id;
+    if (answerHistoryRead?.generation === generation) { answerHistoryRead.dirty = true; return; }
+    const flight = { generation, controller: new AbortController(), dirty: false }; answerHistoryRead = flight;
+    const timer = setTimeout(() => flight.controller.abort(), 15000);
+    try {
+      const snapshot = await fetchJSON(api + '/question-answers?' + new URLSearchParams({ session_id: sessionID }), flight.controller.signal);
+      if (generation !== state.generation || sessionID !== state.selected?.session_id || !state.connected) return;
+      for (const entry of snapshot?.answers || []) rememberAnsweredQuestion(entry);
+      scheduleRender();
+    } catch (_) { /* Optional history must not prevent using the native session. */ }
+    finally {
+      clearTimeout(timer);
+      if (answerHistoryRead === flight) { answerHistoryRead = null; if (flight.dirty && generation === state.generation) refreshAnsweredQuestions(); }
+    }
+  }
+  function conversationWithAnswers() {
+    const items = [...state.items.values()];
+    for (const entry of [...answeredQuestions.values()].sort((a, b) => Date.parse(a.answered_at) - Date.parse(b.answered_at))) {
+      const at = Date.parse(entry.answered_at);
+      const questionIndex = items.findIndex(item => item.id === entry.item_id);
+      let index = items.findIndex((item, i) => i > questionIndex && Number.isFinite(item._time) && item._time > at);
+      // Keep older answers outside the currently loaded history page until
+      // their question or neighbouring native messages have been loaded.
+      if (questionIndex < 0 && !items.some(item => Number.isFinite(item._time) && item._time <= at)) continue;
+      if (index < 0) index = items.length;
+      items.splice(index, 0, entry.item);
+    }
+    return items;
+  }
   async function sendAnswer(request, result) {
     if (!state.connected || state.loading || state.socket?.readyState !== WebSocket.OPEN || request.answered || state.questions.get(String(request.id)) !== request) return;
     const generation = state.generation;
@@ -2931,11 +2972,30 @@
         if (generation !== state.generation) return;
         if (reply?.turn?.id) state.turn = reply.turn.id;
         state.questions.delete(String(request.id)); renderQuestions(); updateControls();
-      } else if (request.source === 'worker') {
-        await rpc('gateway/answer', { approvalId: request.approvalId, result });
+      } else {
+        let approvalId = request.approvalId;
+        if (!approvalId) {
+          const snapshot = await rpc('gateway/questions', {});
+          if (generation !== state.generation) return;
+          const p = request.params;
+          const matches = (snapshot?.questions || []).filter(q => !q.async && q.method === request.method && p.itemId &&
+            q.params?.itemId === p.itemId && q.params?.threadId === p.threadId && (q.params?.turnId || '') === (p.turnId || ''));
+          if (matches.length !== 1) throw new Error('The request is no longer pending or is still being registered. Refresh the questions before retrying.');
+          approvalId = matches[0].approvalId;
+        }
+        // Replies on the browser's native connection bypassed durable answer
+        // events, leaving Telegram questions unresolved. Always use the actor.
+        await rpc('gateway/answer', { approvalId, result });
         if (generation !== state.generation) return;
-        state.questions.delete(String(request.id)); renderQuestions(); updateControls();
-      } else state.socket.send(JSON.stringify({ id: request.id, result }));
+        if (request.method === 'item/tool/requestUserInput') {
+          rememberAnsweredQuestion({ approval_id: approvalId, turn_id: request.params.turnId, item_id: request.params.itemId,
+            answered_at: new Date().toISOString(), fields: (request.params.questions || []).map(q => ({
+              question: q.question || q.header || 'Question', answer: q.isSecret ? '[REDACTED]' : (result.answers[q.id]?.answers || []).join('\n'),
+            })) });
+          scheduleRender();
+        }
+        state.questions.delete(String(request.id)); renderQuestions(); updateControls(); refreshAnsweredQuestions();
+      }
     } catch (error) {
       if (generation !== state.generation) return;
       request.answered = false; renderQuestions(); notice(error.message || 'The answer could not be sent. Reconnect and check whether the question is still pending.');

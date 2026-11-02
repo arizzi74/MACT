@@ -47,6 +47,7 @@ func (s *Server) webuiRoutes() {
 		})
 	}
 	s.mux.HandleFunc("/tgw/api/v1/webui/sessions", s.webuiSessions)
+	s.mux.HandleFunc("/tgw/api/v1/webui/question-answers", s.webuiQuestionAnswers)
 	s.mux.HandleFunc("/tgw/api/v1/webui/sessions/delete", s.webuiSessionDelete)
 	s.mux.HandleFunc("/tgw/api/v1/webui/sessions/capacity-retry", s.webuiCapacityRetry)
 	s.mux.HandleFunc("/tgw/api/v1/webui/sessions/new", s.webuiSessionNew)
