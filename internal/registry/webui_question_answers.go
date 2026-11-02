@@ -40,7 +40,9 @@ func (s *Store) WebUIQuestionAnswers(ctx context.Context, session uuid.UUID) ([]
    FROM (SELECT question,answer FROM telegram_question_answers WHERE approval_id=a.approval_id AND answer IS NOT NULL ORDER BY rowid) q)
   FROM approvals a JOIN sessions s ON s.session_id=a.session_id JOIN workers w ON w.worker_id=s.worker_id
   WHERE a.session_id=$1 AND a.worker_id=s.worker_id AND a.runtime_id=s.runtime_id
-    AND s.archived=FALSE AND w.enabled=TRUE AND a.state IN ('approved','cleared') AND a.resolved_at IS NOT NULL
+    AND s.archived=FALSE AND w.enabled=TRUE
+    AND COALESCE(json_extract(a.request_payload,'$.async'),FALSE)=FALSE
+    AND a.state IN ('approved','cleared') AND a.resolved_at IS NOT NULL
     AND EXISTS(SELECT 1 FROM telegram_question_answers q WHERE q.approval_id=a.approval_id AND q.answer IS NOT NULL)
   ORDER BY a.resolved_at DESC,a.approval_id LIMIT 64`, session)
 	if err != nil {

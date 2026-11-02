@@ -129,3 +129,26 @@ func TestWebUIQuestionAnswersIgnoreUnconfirmedDrafts(t *testing.T) {
 		t.Fatalf("draft leaked: %+v %v", got, err)
 	}
 }
+
+func TestWebUIQuestionAnswerHistoryDoesNotDuplicateAsyncNativeEcho(t *testing.T) {
+	env := newHistoryTestEnv(t)
+	ctx := context.Background()
+	id := insertPendingQuestion(t, env, env.session, "async-turn", true, protocol.Question{ID: "field", Prompt: "Question already answered by an ordinary native prompt?"})
+	var raw []byte
+	if err := env.store.pool.QueryRow(ctx, `SELECT request_payload FROM approvals WHERE approval_id=$1`, id).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	var answer protocol.Approval
+	_ = json.Unmarshal(raw, &answer)
+	answer.Answers = map[string][]string{"field": {"Already visible in native history"}}
+	if _, err := env.store.pool.Exec(ctx, `UPDATE approvals SET state='cleared',resolved_at=`+sqliteNow+` WHERE approval_id=$1`, id); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.store.RecoverWebUIQuestionAnswer(ctx, env.worker, env.runtime, env.session, answer); err != nil {
+		t.Fatal(err)
+	}
+	got, err := env.store.WebUIQuestionAnswers(ctx, env.session)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("Duplicated async native answer: %+v %v", got, err)
+	}
+}
