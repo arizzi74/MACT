@@ -125,6 +125,17 @@ class InstallerReleaseScopeTest(unittest.TestCase):
             with self.assertRaises(POLICY.ScopeError):
                 self.validate(scope="webui-questions")
 
+    def test_webui_scope_refuses_backend_audio_and_dependency_changes(self):
+        changed = POLICY.WEBUI_ALLOWED | {f"docs/releases/{self.tag}.md"}
+        self.target(changed)
+        self.assertEqual(self.validate(scope="webui"), changed)
+        for name in ("internal/admin/webui.go", "internal/registry/events.go", "internal/worker/agent.go",
+                     "internal/audio/audio.go", "go.mod", "package-lock.json", "scripts/publish-release.py"):
+            self.setUp()
+            self.target(("internal/admin/static/webui.css", name))
+            with self.assertRaises(POLICY.ScopeError):
+                self.validate(scope="webui")
+
     def test_invalid_or_nonadvancing_stable_tags_are_refused(self):
         self.target()
         for tag in ("main", "v1.2.4-rc1", "v01.2.4", "v1.2.4\n", self.baseline, "v0.9.9"):
@@ -183,6 +194,40 @@ class InstallerReleaseScopeTest(unittest.TestCase):
 
 
 class InstallerReleaseWorkflowTest(unittest.TestCase):
+    def test_each_release_mode_requires_its_checks_before_signing(self):
+        text = (ROOT / ".github/workflows/release.yml").read_text()
+        section = text.split("  test-and-build:\n", 1)[1]
+        expression = section.split("    if: >-\n", 1)[1].split("    runs-on:", 1)[0]
+        checks = {"go-checks", "browser", "native-session-archive", "installer-tests",
+                  "claude-compaction-tests", "claude-usage-tests", "claude-skills-tests",
+                  "webui-question-tests", "webui-tests"}
+        modes = {
+            "full": (None, {"go-checks", "browser", "native-session-archive"}),
+            "installer": ("installer_only", {"installer-tests"}),
+            "compaction": ("claude_compaction_only", {"claude-compaction-tests"}),
+            "usage": ("claude_usage_only", {"claude-usage-tests"}),
+            "skills": ("claude_skills_only", {"claude-skills-tests"}),
+            "questions": ("webui_questions_only", {"webui-question-tests"}),
+            "webui": ("webui_only", {"webui-tests"}),
+        }
+        def permits(flags, results):
+            rendered = re.sub(r"needs\.release-mode\.outputs\.([a-z_]+)",
+                              lambda m: repr("true" if m[1] in flags else "false"), expression)
+            rendered = re.sub(r"needs\.([a-z-]+)\.result", lambda m: repr(results[m[1]]), rendered)
+            rendered = rendered.replace("always()", "True").replace("cancelled()", "False")
+            rendered = rendered.replace("&&", " and ").replace("||", " or ").replace("!", " not ")
+            return eval(" ".join(rendered.split()), {"__builtins__": {}}, {})
+        for mode, (flag, required) in modes.items():
+            flags = {flag} if flag else set()
+            results = {name: "success" if name in required else "skipped" for name in checks}
+            results.update({"release-mode": "success", "package": "success", "security": "success"})
+            with self.subTest(mode=mode):
+                self.assertTrue(permits(flags, results))
+            for job in required | {"release-mode", "package", "security"}:
+                for outcome in ("failure", "skipped", "cancelled"):
+                    with self.subTest(mode=mode, job=job, outcome=outcome):
+                        self.assertFalse(permits(flags, {**results, job: outcome}))
+
     def test_manual_scope_proof_gates_both_focused_mode_and_normal_validation(self):
         text = (ROOT / ".github/workflows/release.yml").read_text()
         self.assertIn("github.event_name == 'workflow_dispatch' && inputs.installer_only", text)
@@ -208,7 +253,7 @@ class InstallerReleaseWorkflowTest(unittest.TestCase):
         self.assertIn("if: always() && !cancelled() && needs.test-and-build.result == 'success'", jobs["publish"])
         for name in ("native-whisper", "native-speech"):
             self.assertIn("needs: release-mode", jobs[name])
-            self.assertIn("run-smoke-tests: ${{ needs.release-mode.outputs.installer_only != 'true' && needs.release-mode.outputs.claude_compaction_only != 'true' && needs.release-mode.outputs.claude_usage_only != 'true' && needs.release-mode.outputs.claude_skills_only != 'true' && needs.release-mode.outputs.webui_questions_only != 'true' }}", jobs[name])
+            self.assertIn("run-smoke-tests: ${{ needs.release-mode.outputs.installer_only != 'true' && needs.release-mode.outputs.claude_compaction_only != 'true' && needs.release-mode.outputs.claude_usage_only != 'true' && needs.release-mode.outputs.claude_skills_only != 'true' && needs.release-mode.outputs.webui_questions_only != 'true' && needs.release-mode.outputs.webui_only != 'true' }}", jobs[name])
         self.assertIn("github.event_name == 'workflow_dispatch' && inputs.claude_compaction_only", text)
         self.assertIn('for mode in "$INSTALLER_ONLY" "$CLAUDE_COMPACTION_ONLY" "$CLAUDE_USAGE_ONLY"', text)
         self.assertIn('if (( selected > 1 )); then', text)
@@ -221,6 +266,16 @@ class InstallerReleaseWorkflowTest(unittest.TestCase):
         self.assertIn("node scripts/test-claude-ui.cjs", focused)
         self.assertNotIn("npm run test:browser", focused)
         self.assertNotIn("test-admin-audio", focused)
+        webui = jobs["webui-tests"]
+        self.assertIn("if: needs.release-mode.outputs.webui_only == 'true'", webui)
+        self.assertIn("--scope webui --repo", text)
+        self.assertIn("node scripts/test-webui-ios-header.cjs", webui)
+        self.assertIn("node scripts/test-webui.cjs", webui)
+        self.assertNotIn("npm run test:browser", webui)
+        self.assertNotIn("go test", webui)
+        self.assertNotIn("test-admin-audio", webui)
+        self.assertIn("needs.webui-tests.result == 'success'", gate)
+        self.assertIn("needs.webui-tests.result == 'skipped'", gate)
         questions = jobs["webui-question-tests"]
         self.assertIn("if: needs.release-mode.outputs.webui_questions_only == 'true'", questions)
         self.assertIn("node scripts/test-webui-question-answers.cjs", questions)

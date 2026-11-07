@@ -23,6 +23,10 @@ on:
         description: With claude_skills_only, prove a UI-only diff and skip unchanged backend tests
         type: boolean
         default: false
+      webui_only:
+        description: Prove a WebUI-only diff and check layout without unchanged backend or audio tests
+        type: boolean
+        default: false
       webui_questions_only:
         description: Prove the question synchronization diff and run affected checks without audio tests
         type: boolean
@@ -47,6 +51,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
+      webui_only: ${{ steps.scope.outputs.webui_only }}
       webui_questions_only: ${{ steps.scope.outputs.webui_questions_only }}
       installer_only: ${{ steps.scope.outputs.installer_only }}
       claude_compaction_only: ${{ steps.scope.outputs.claude_compaction_only }}
@@ -66,6 +71,7 @@ jobs:
           RELEASE_REF: ${{ github.ref }}
           RELEASE_COMMIT: ${{ github.sha }}
           BASELINE_TAG: ${{ inputs.baseline_tag }}
+          WEBUI_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.webui_only }}
           WEBUI_QUESTIONS_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.webui_questions_only }}
           INSTALLER_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.installer_only }}
           CLAUDE_COMPACTION_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.claude_compaction_only }}
@@ -74,7 +80,7 @@ jobs:
           CLAUDE_SKILLS_UI_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.claude_skills_ui_only }}
         run: |
           selected=0
-          for mode in "$INSTALLER_ONLY" "$CLAUDE_COMPACTION_ONLY" "$CLAUDE_USAGE_ONLY" "$CLAUDE_SKILLS_ONLY" "$WEBUI_QUESTIONS_ONLY"; do
+          for mode in "$INSTALLER_ONLY" "$CLAUDE_COMPACTION_ONLY" "$CLAUDE_USAGE_ONLY" "$CLAUDE_SKILLS_ONLY" "$WEBUI_QUESTIONS_ONLY" "$WEBUI_ONLY"; do
             if [[ "$mode" == 'true' ]]; then selected=$((selected + 1)); fi
           done
           if (( selected > 1 )); then
@@ -85,8 +91,12 @@ jobs:
             echo 'The UI-only modifier requires the scoped skills release mode.' >&2
             exit 1
           fi
-          printf 'webui_questions_only=false\nclaude_skills_ui_only=false\nclaude_skills_only=false\nclaude_usage_only=false\nclaude_compaction_only=false\n' >> "$GITHUB_OUTPUT"
-          if [[ "$WEBUI_QUESTIONS_ONLY" == 'true' ]]; then
+          printf 'webui_only=false\nwebui_questions_only=false\nclaude_skills_ui_only=false\nclaude_skills_only=false\nclaude_usage_only=false\nclaude_compaction_only=false\n' >> "$GITHUB_OUTPUT"
+          if [[ "$WEBUI_ONLY" == 'true' ]]; then
+            test "$RELEASE_REF" = "refs/tags/$RELEASE_TAG"
+            python3 scripts/check-installer-release.py --scope webui --repo "$RELEASE_REPO" --tag "$RELEASE_TAG" --baseline "$BASELINE_TAG" --commit "$RELEASE_COMMIT"
+            printf 'installer_only=false\nwebui_only=true\n' >> "$GITHUB_OUTPUT"
+          elif [[ "$WEBUI_QUESTIONS_ONLY" == 'true' ]]; then
             test "$RELEASE_REF" = "refs/tags/$RELEASE_TAG"
             python3 scripts/check-installer-release.py --scope webui-questions --repo "$RELEASE_REPO" --tag "$RELEASE_TAG" --baseline "$BASELINE_TAG" --commit "$RELEASE_COMMIT"
             printf 'installer_only=false\nwebui_questions_only=true\n' >> "$GITHUB_OUTPUT"
@@ -119,12 +129,12 @@ jobs:
 
   go-checks:
     needs: release-mode
-    if: needs.release-mode.outputs.installer_only != 'true' && needs.release-mode.outputs.claude_compaction_only != 'true' && needs.release-mode.outputs.claude_usage_only != 'true' && needs.release-mode.outputs.claude_skills_only != 'true' && needs.release-mode.outputs.webui_questions_only != 'true'
+    if: needs.release-mode.outputs.installer_only != 'true' && needs.release-mode.outputs.claude_compaction_only != 'true' && needs.release-mode.outputs.claude_usage_only != 'true' && needs.release-mode.outputs.claude_skills_only != 'true' && needs.release-mode.outputs.webui_questions_only != 'true' && needs.release-mode.outputs.webui_only != 'true'
     uses: ./.github/workflows/go-checks.yml
 
   native-session-archive:
     needs: release-mode
-    if: needs.release-mode.outputs.installer_only != 'true' && needs.release-mode.outputs.claude_compaction_only != 'true' && needs.release-mode.outputs.claude_usage_only != 'true' && needs.release-mode.outputs.claude_skills_only != 'true' && needs.release-mode.outputs.webui_questions_only != 'true'
+    if: needs.release-mode.outputs.installer_only != 'true' && needs.release-mode.outputs.claude_compaction_only != 'true' && needs.release-mode.outputs.claude_usage_only != 'true' && needs.release-mode.outputs.claude_skills_only != 'true' && needs.release-mode.outputs.webui_questions_only != 'true' && needs.release-mode.outputs.webui_only != 'true'
     uses: ./.github/workflows/native-session-archive.yml
 
   native-whisper:
@@ -132,18 +142,18 @@ jobs:
     uses: ./.github/workflows/native-whisper.yml
     with:
       version: ${{ github.ref_name }}
-      run-smoke-tests: ${{ needs.release-mode.outputs.installer_only != 'true' && needs.release-mode.outputs.claude_compaction_only != 'true' && needs.release-mode.outputs.claude_usage_only != 'true' && needs.release-mode.outputs.claude_skills_only != 'true' && needs.release-mode.outputs.webui_questions_only != 'true' }}
+      run-smoke-tests: ${{ needs.release-mode.outputs.installer_only != 'true' && needs.release-mode.outputs.claude_compaction_only != 'true' && needs.release-mode.outputs.claude_usage_only != 'true' && needs.release-mode.outputs.claude_skills_only != 'true' && needs.release-mode.outputs.webui_questions_only != 'true' && needs.release-mode.outputs.webui_only != 'true' }}
 
   native-speech:
     needs: release-mode
     uses: ./.github/workflows/native-speech.yml
     with:
       version: ${{ github.ref_name }}
-      run-smoke-tests: ${{ needs.release-mode.outputs.installer_only != 'true' && needs.release-mode.outputs.claude_compaction_only != 'true' && needs.release-mode.outputs.claude_usage_only != 'true' && needs.release-mode.outputs.claude_skills_only != 'true' && needs.release-mode.outputs.webui_questions_only != 'true' }}
+      run-smoke-tests: ${{ needs.release-mode.outputs.installer_only != 'true' && needs.release-mode.outputs.claude_compaction_only != 'true' && needs.release-mode.outputs.claude_usage_only != 'true' && needs.release-mode.outputs.claude_skills_only != 'true' && needs.release-mode.outputs.webui_questions_only != 'true' && needs.release-mode.outputs.webui_only != 'true' }}
 
   browser:
     needs: release-mode
-    if: needs.release-mode.outputs.installer_only != 'true' && needs.release-mode.outputs.claude_compaction_only != 'true' && needs.release-mode.outputs.claude_usage_only != 'true' && needs.release-mode.outputs.claude_skills_only != 'true' && needs.release-mode.outputs.webui_questions_only != 'true'
+    if: needs.release-mode.outputs.installer_only != 'true' && needs.release-mode.outputs.claude_compaction_only != 'true' && needs.release-mode.outputs.claude_usage_only != 'true' && needs.release-mode.outputs.claude_skills_only != 'true' && needs.release-mode.outputs.webui_questions_only != 'true' && needs.release-mode.outputs.webui_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -311,6 +321,33 @@ jobs:
           node scripts/test-webui.cjs
           node scripts/test-webui-async-questions.cjs
 
+  webui-tests:
+    needs: release-mode
+    if: needs.release-mode.outputs.webui_only == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.26.x'
+          check-latest: true
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Validate WebUI scope and workflow gates
+        run: |
+          ./scripts/check.sh format
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_ci_installer_release.py
+          go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium webkit
+      - name: Check iOS header clearance and existing WebUI interactions
+        run: |
+          node scripts/test-webui-ios-header.cjs
+          node scripts/test-webui.cjs
+
   package:
     needs: [native-whisper, native-speech]
     uses: ./.github/workflows/package.yml
@@ -318,11 +355,11 @@ jobs:
       version: ${{ github.ref_name }}
 
   test-and-build:
-    needs: [release-mode, go-checks, browser, package, native-session-archive, security, installer-tests, claude-compaction-tests, claude-usage-tests, claude-skills-tests, webui-question-tests]
+    needs: [release-mode, go-checks, browser, package, native-session-archive, security, installer-tests, claude-compaction-tests, claude-usage-tests, claude-skills-tests, webui-question-tests, webui-tests]
     if: >-
       always() && !cancelled() &&
       needs.release-mode.result == 'success' && needs.package.result == 'success' && needs.security.result == 'success' &&
-      ((needs.release-mode.outputs.webui_questions_only == 'false' && needs.webui-question-tests.result == 'skipped' && ((needs.claude-skills-tests.result == 'skipped' && needs.release-mode.outputs.installer_only == 'true' && needs.claude-usage-tests.result == 'skipped' && needs.claude-compaction-tests.result == 'skipped' && needs.installer-tests.result == 'success' &&
+      ((needs.release-mode.outputs.webui_only == 'false' && needs.webui-tests.result == 'skipped' && ((needs.release-mode.outputs.webui_questions_only == 'false' && needs.webui-question-tests.result == 'skipped' && ((needs.claude-skills-tests.result == 'skipped' && needs.release-mode.outputs.installer_only == 'true' && needs.claude-usage-tests.result == 'skipped' && needs.claude-compaction-tests.result == 'skipped' && needs.installer-tests.result == 'success' &&
         needs.go-checks.result == 'skipped' && needs.browser.result == 'skipped' && needs.native-session-archive.result == 'skipped') ||
        (needs.claude-skills-tests.result == 'skipped' && needs.release-mode.outputs.installer_only == 'false' && needs.release-mode.outputs.claude_compaction_only == 'false' && needs.release-mode.outputs.claude_usage_only == 'false' && needs.claude-usage-tests.result == 'skipped' && needs.installer-tests.result == 'skipped' && needs.claude-compaction-tests.result == 'skipped' &&
         needs.go-checks.result == 'success' && needs.browser.result == 'success' && needs.native-session-archive.result == 'success') ||
@@ -335,6 +372,10 @@ jobs:
         needs.go-checks.result == 'skipped' && needs.browser.result == 'skipped' && needs.native-session-archive.result == 'skipped' &&
         needs.installer-tests.result == 'skipped' && needs.claude-compaction-tests.result == 'skipped' && needs.claude-usage-tests.result == 'skipped'))) ||
        (needs.release-mode.outputs.webui_questions_only == 'true' && needs.webui-question-tests.result == 'success' &&
+        needs.release-mode.outputs.installer_only == 'false' && needs.release-mode.outputs.claude_compaction_only == 'false' && needs.release-mode.outputs.claude_usage_only == 'false' && needs.release-mode.outputs.claude_skills_only == 'false' &&
+        needs.go-checks.result == 'skipped' && needs.browser.result == 'skipped' && needs.native-session-archive.result == 'skipped' && needs.installer-tests.result == 'skipped' && needs.claude-compaction-tests.result == 'skipped' && needs.claude-usage-tests.result == 'skipped' && needs.claude-skills-tests.result == 'skipped'))) ||
+       (needs.release-mode.outputs.webui_only == 'true' && needs.webui-tests.result == 'success' &&
+        needs.release-mode.outputs.webui_questions_only == 'false' && needs.webui-question-tests.result == 'skipped' &&
         needs.release-mode.outputs.installer_only == 'false' && needs.release-mode.outputs.claude_compaction_only == 'false' && needs.release-mode.outputs.claude_usage_only == 'false' && needs.release-mode.outputs.claude_skills_only == 'false' &&
         needs.go-checks.result == 'skipped' && needs.browser.result == 'skipped' && needs.native-session-archive.result == 'skipped' && needs.installer-tests.result == 'skipped' && needs.claude-compaction-tests.result == 'skipped' && needs.claude-usage-tests.result == 'skipped' && needs.claude-skills-tests.result == 'skipped'))
     runs-on: ubuntu-latest

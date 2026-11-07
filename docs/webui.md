@@ -500,3 +500,13 @@ With an existing Playwright installation, `PLAYWRIGHT_MODULE=/path/to/playwright
 Set `WEBUI_SCREENSHOTS=/tmp/webui-screenshots` to save desktop and mobile screenshots. These development tools are optional; they are not dependencies of an installed gateway. The browser checks use a simulated app-server transport and verify safe rendering, mobile wrapping, pagination, model controls, questions/approvals, session switching, disconnection/reconnection, draft preservation, no automatic prompt replay, and authentication expiry. `node scripts/test-webui-markdown.cjs` checks the real formatter with 8/16/32/64/128 KiB brackets, delimiters, escapes, links and HTML, plus real assistant/plan/reasoning updates and a usable composer. Mermaid checks exercise the actual bundled library and sandbox, including theme changes, mobile zoom, invalid input, resource isolation and cache cleanup. Go integration tests exercise the authenticated gateway/worker relay separately.
 
 The mobile shell uses the visual viewport's document coordinates (`pageTop`/`pageLeft`) with absolute positioning. Safari can pan the layout viewport too, so a fixed shell using only `offsetTop` is insufficient; WebKit's [viewport implementation](https://github.com/WebKit/WebKit/blob/main/Source/WebCore/page/VisualViewport.cpp) distinguishes those coordinates. Focus and keyboard transitions receive a brief, bounded geometry recheck because [WebKit can report stale offsets during an event](https://bugs.webkit.org/show_bug.cgi?id=237851). There is no continuous viewport polling while idle, and keyboard panning does not repeatedly resize the focused textarea. The browser checks simulate keyboard resizing, panning, document scrolling, and delayed metrics; they do not emulate an iPhone's native keyboard or Safari compositor. Verify keyboard opening, dismissal, question entry, and session search on an actual iPhone when changing this behavior.
+
+Installed iOS apps reserve the top safe area plus 20 CSS pixels above the header,
+and the mobile session drawer receives the same extra clearance. This keeps
+controls below the system status-bar blur [reported on iOS 27 Home Screen
+apps](https://github.com/anomalyco/opencode/issues/56969).
+Detection uses `navigator.standalone` and touch capability, including iPads with
+a desktop user agent; browser tabs and desktop installed apps keep their usual
+layout. The strip follows the page background in either theme. It is a layout
+workaround, not a way to disable the native blur. Actual iPhone verification is
+required because desktop WebKit does not reproduce that system compositor.

@@ -3,6 +3,10 @@
   const { node, clean, markdown, code } = window.CodexFormat;
   const $ = id => document.getElementById(id);
   const api = '/tgw/api/v1/webui';
+  // iOS can blur past the status bar into an installed app's first controls.
+  // Use the Home Screen and touch capabilities instead of an iOS version UA:
+  // iPad can identify as a Mac, and browser tabs need no additional clearance.
+  document.documentElement.classList.toggle('ios-home-screen', navigator.standalone === true && navigator.maxTouchPoints > 0);
   const state = { sessions: [], workers: [], runtimes: [], selected: null, socket: null, generation: 0, authGeneration: 0, sequence: 0, pending: new Map(), drafts: new Map(), positions: new Map(), items: new Map(), questions: new Map(), models: [], turn: null, connected: false, stopped: false, attempts: 0, timer: null, loading: false, cursor: null, queuedEvents: [], submitting: false, renderTimer: null, authenticated: false, refreshing: false, refreshTimer: null };
   let commandUI = null, notificationUI = null, sessionAuth = null, rawView = false, gatewayCommandAbort = null;
   let authRestore = null, restoringPosition = false, uncertainSend = false;
