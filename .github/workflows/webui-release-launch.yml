@@ -1,0 +1,55 @@
+name: Launch verified WebUI layout release
+on:
+  push:
+    branches:
+      - release/launch-v0.7.27-ios-header-20261107
+permissions:
+  contents: read
+  actions: write
+concurrency:
+  group: launch-verified-webui-layout-v0.7.27
+  cancel-in-progress: false
+jobs:
+  launch:
+    if: github.repository == 'arizzi74/MACT' && github.ref == 'refs/heads/release/launch-v0.7.27-ios-header-20261107'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Prove frozen source, target tag and latest baseline before requesting scoped release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request
+          repo = 'arizzi74/MACT'
+          source = 'd22eff0e706a832acd8800b65cc85804fb498a09'
+          target, baseline = 'v0.7.27', 'v0.7.26'
+          def api(path, body=None):
+              request = urllib.request.Request('https://api.github.com/repos/'+repo+'/'+path,
+                  data=None if body is None else json.dumps(body).encode(),
+                  headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],
+                           'Accept':'application/vnd.github+json','Content-Type':'application/json',
+                           'X-GitHub-Api-Version':'2022-11-28','Cache-Control':'no-cache'})
+              with urllib.request.urlopen(request,timeout=30) as response:
+                  raw=response.read(2<<20)
+                  return json.loads(raw) if raw else None
+          assert api('git/ref/heads/main')['object']['sha'] == source
+          ref = api('git/ref/tags/'+target)
+          assert ref['ref'] == 'refs/tags/'+target
+          obj=ref['object']
+          for _ in range(4):
+              if obj['type']=='commit': break
+              assert obj['type']=='tag'
+              obj=api('git/tags/'+obj['sha'])['object']
+          assert obj['type']=='commit' and obj['sha']==source
+          latest=api('releases/latest')
+          assert latest['draft'] is False and latest['prerelease'] is False and latest['tag_name']==baseline
+          runs=api('actions/workflows/release.yml/runs?head_sha='+source+'&per_page=100')['workflow_runs']
+          previous=[r for r in runs if r['event']=='workflow_dispatch' and r['head_sha']==source]
+          if previous:
+              print('A release dispatch already exists; leaving it unchanged:', previous[0]['id'])
+          else:
+              api('actions/workflows/release.yml/dispatches',{'ref':target,'inputs':{
+                  'installer_only':False,'webui_only':True,'baseline_tag':baseline}})
+              print('Requested verified WebUI-only Release at '+target+' ('+source+').')
+          PY

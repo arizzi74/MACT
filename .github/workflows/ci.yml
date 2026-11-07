@@ -3,8 +3,8 @@ name: CI
 on:
   # Release tags receive independent checks in release.yml.
   push:
-    branches:
-      - '**'
+    branches-ignore:
+      - 'release/launch-v0.7.27-ios-header-20261107'
   pull_request:
   schedule:
     - cron: '17 6 * * *'
