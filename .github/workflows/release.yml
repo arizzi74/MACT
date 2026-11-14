@@ -1,0 +1,177 @@
+name: MACT immutable compatibility copies
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v0.7.10', 'v0.7.32']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mact-compatibility-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CANONICAL_REPO: arizzi74/Twarm
+  CANONICAL_REPOSITORY_ID: '1369450599'
+  CANONICAL_SIGNING_REPO: arizzi74/MACT
+  CANONICAL_SOURCE_COMMIT: 3d08a0f67cec851bfd1e0de7179284f5c02c2ccb
+  SHIM_REPO: arizzi74/MACT
+  BRIDGE_TAG: v0.7.32
+  BOOTSTRAP_TAG: v0.7.10
+  BOOTSTRAP_MANIFEST_SHA256: 5c24e4581f704bceb1f4c54e1a0efb9af11badc72714d10a15b676138071b8f3
+
+jobs:
+  copy-verify-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Require the renamed official repository and exact shim tag
+        run: |
+          test "$GITHUB_REPOSITORY" = "$SHIM_REPO"
+          case "$GITHUB_REF" in "refs/tags/$BRIDGE_TAG"|"refs/tags/$BOOTSTRAP_TAG") ;; *) exit 1 ;; esac
+          [[ "$CANONICAL_SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          gh api "repos/$CANONICAL_REPO" > "$RUNNER_TEMP/canonical-repository.json"
+          gh api "repos/$SHIM_REPO" > "$RUNNER_TEMP/shim-repository.json"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          temporary = Path(os.environ["RUNNER_TEMP"])
+          canonical = json.loads((temporary / "canonical-repository.json").read_text())
+          shim = json.loads((temporary / "shim-repository.json").read_text())
+          expected = int(os.environ["CANONICAL_REPOSITORY_ID"])
+          assert canonical["id"] == expected and canonical["full_name"] == os.environ["CANONICAL_REPO"]
+          assert shim["full_name"] == os.environ["SHIM_REPO"] and shim["id"] != expected
+          assert shim["owner"]["login"] == "arizzi74" and shim["private"] is False
+          PY
+          test "$(gh api "repos/$CANONICAL_REPO/commits/$BRIDGE_TAG" --jq .sha)" = "$CANONICAL_SOURCE_COMMIT"
+          test "$(gh api "repos/$SHIM_REPO/commits/$GITHUB_REF_NAME" --jq .sha)" = "$GITHUB_SHA"
+          gh api "repos/$CANONICAL_REPO/releases/tags/$GITHUB_REF_NAME" > "$RUNNER_TEMP/canonical-release.json"
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: ${{ env.CANONICAL_REPO }}
+          ref: ${{ env.CANONICAL_SOURCE_COMMIT }}
+          path: trusted-current
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.26.x'
+          check-latest: true
+          cache: false
+
+      - name: Build the exact pinned verifier and scope release assets
+        run: |
+          test "$(git -C trusted-current rev-parse HEAD)" = "$CANONICAL_SOURCE_COMMIT"
+          go -C trusted-current build -o "$RUNNER_TEMP/release-tool" ./cmd/release-tool
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          temporary = Path(os.environ["RUNNER_TEMP"])
+          tag, repo = os.environ["GITHUB_REF_NAME"], os.environ["CANONICAL_REPO"]
+          release = json.loads((temporary / "canonical-release.json").read_text())
+          assert release["tag_name"] == tag and release["draft"] is False and release["prerelease"] is False
+          assert release["html_url"] == f"https://github.com/{repo}/releases/tag/{tag}"
+          all_names = {"install.sh", "SHA256SUMS", "SHA256SUMS.sigstore.json"}
+          for system in ("linux", "darwin"):
+              components = ("gateway", "worker", "local", "whisper") if system == "linux" else ("worker", "local", "whisper")
+              for arch in ("amd64", "arm64"):
+                  all_names.add(f"codex-telegramgw-{system}-{arch}")
+                  all_names.add(f"claude-worker-{system}-{arch}.tar.gz")
+                  all_names.update(f"codex-{component}-{system}-{arch}.tar.gz" for component in (*components, "piper", "qwen-tts"))
+          assets = release["assets"]
+          assert len(all_names) == 33 and len(assets) == 33
+          assert {asset["name"] for asset in assets} == all_names
+          for asset in assets:
+              assert asset["browser_download_url"] == f"https://github.com/{repo}/releases/download/{tag}/{asset['name']}"
+          selected = all_names if tag == os.environ["BRIDGE_TAG"] else {
+              "SHA256SUMS", "SHA256SUMS.sigstore.json",
+              *(f"codex-telegramgw-{system}-{arch}" for system in ("linux", "darwin") for arch in ("amd64", "arm64")),
+          }
+          (temporary / "artifact-names.txt").write_text("".join(name + "\n" for name in sorted(selected)))
+          PY
+          mkdir canonical
+          if [ "$GITHUB_REF_NAME" = "$BRIDGE_TAG" ]; then
+            gh release download "$GITHUB_REF_NAME" --repo "$CANONICAL_REPO" --dir canonical
+          else
+            while IFS= read -r name; do
+              gh release download "$GITHUB_REF_NAME" --repo "$CANONICAL_REPO" --dir canonical --pattern "$name"
+            done < "$RUNNER_TEMP/artifact-names.txt"
+          fi
+
+      - name: Authenticate unchanged original MACT signatures and every selected file
+        run: |
+          "$RUNNER_TEMP/release-tool" verify-provenance --dist "$GITHUB_WORKSPACE/canonical" --repo "$CANONICAL_SIGNING_REPO" --tag "$GITHUB_REF_NAME"
+          if [ "$GITHUB_REF_NAME" = "$BRIDGE_TAG" ]; then
+            "$RUNNER_TEMP/release-tool" verify --root "$GITHUB_WORKSPACE/trusted-current" --dist "$GITHUB_WORKSPACE/canonical"
+            (cd canonical && sha256sum --strict -c SHA256SUMS)
+          else
+            python3 - <<'PY'
+          import hashlib, os
+          from pathlib import Path
+          directory = Path("canonical")
+          assert hashlib.sha256((directory / "SHA256SUMS").read_bytes()).hexdigest() == os.environ["BOOTSTRAP_MANIFEST_SHA256"]
+          pins = {
+              "linux-amd64": "14679733a214051917367b297c2b1053f8a9aff2aca3ae1ac15382b967887c96",
+              "linux-arm64": "50644f55ac39030140e2de84387f71ba397f7c8285037e3e33d6756a00a958cb",
+              "darwin-amd64": "0ef44ca5d470166944ef71d17657a51800a3d7defeaf0351012c24110992abf1",
+              "darwin-arm64": "af5085990b286575c98ac839112a2b6d6c232d8b8cd097812bd5eef52dc4d7cc",
+          }
+          hashes = dict((line.split()[1].removeprefix("*"), line.split()[0]) for line in (directory / "SHA256SUMS").read_text().splitlines())
+          for target, expected in pins.items():
+              name = "codex-telegramgw-" + target
+              assert hashes[name] == expected
+              assert hashlib.sha256((directory / name).read_bytes()).hexdigest() == expected
+          PY
+          fi
+          diff -u "$RUNNER_TEMP/artifact-names.txt" <(find canonical -mindepth 1 -maxdepth 1 -type f -printf '%f\n' | sort)
+          mkdir dist
+          cp canonical/* dist/
+          for file in canonical/*; do cmp -- "$file" "dist/$(basename "$file")"; done
+
+      - name: Refuse existing releases and publish only a verified draft
+        run: |
+          gh api --paginate "repos/$SHIM_REPO/releases?per_page=100" --jq '.[].tag_name' > "$RUNNER_TEMP/existing-tags.txt"
+          if grep -Fxq "$GITHUB_REF_NAME" "$RUNNER_TEMP/existing-tags.txt"; then
+            echo 'A release already exists for this tag; refusing to replace it.' >&2
+            exit 1
+          fi
+          if [ "$GITHUB_REF_NAME" = "$BRIDGE_TAG" ]; then
+            make_latest=true
+            title="$BRIDGE_TAG — Twarm repository compatibility bridge"
+            cat > "$RUNNER_TEMP/release-notes.md" <<'NOTES'
+          Immutable compatibility copy of the official v0.7.32 bridge published under the MACT name before the Twarm repository rename.
+
+          Every file, including SHA256SUMS.sigstore.json, is copied byte-for-byte from the canonical Twarm repository. The original MACT signing identity is preserved. Installed MACT managers can authenticate this bridge and then resolve Twarm by the original immutable repository ID.
+
+          Source, issues, documentation, history and future releases: https://github.com/arizzi74/Twarm.
+          NOTES
+          else
+            make_latest=false
+            title="$BOOTSTRAP_TAG — Historical pinned installer bootstrap files"
+            cat > "$RUNNER_TEMP/release-notes.md" <<'NOTES'
+          Compatibility copy of the four official v0.7.10 native managers, their unchanged checksum manifest and original MACT attestation.
+
+          Historical HTTPS installers pin these exact manager bytes. This release intentionally contains no component archives and is not an installation target. Use the current Twarm installer for installation and recovery: https://raw.githubusercontent.com/arizzi74/Twarm/main/scripts/install.sh.
+          NOTES
+          fi
+          gh release create "$GITHUB_REF_NAME" --repo "$SHIM_REPO" --draft --verify-tag --latest=false --title "$title" --notes-file "$RUNNER_TEMP/release-notes.md"
+          gh release upload "$GITHUB_REF_NAME" dist/* --repo "$SHIM_REPO"
+          mkdir "$RUNNER_TEMP/downloaded-release"
+          gh release download "$GITHUB_REF_NAME" --repo "$SHIM_REPO" --dir "$RUNNER_TEMP/downloaded-release"
+          diff -u "$RUNNER_TEMP/artifact-names.txt" <(find "$RUNNER_TEMP/downloaded-release" -mindepth 1 -maxdepth 1 -type f -printf '%f\n' | sort)
+          for file in dist/*; do cmp -- "$file" "$RUNNER_TEMP/downloaded-release/$(basename "$file")"; done
+          "$RUNNER_TEMP/release-tool" verify-provenance --dist "$RUNNER_TEMP/downloaded-release" --repo "$CANONICAL_SIGNING_REPO" --tag "$GITHUB_REF_NAME"
+          if [ "$GITHUB_REF_NAME" = "$BRIDGE_TAG" ]; then
+            "$RUNNER_TEMP/release-tool" verify --root "$GITHUB_WORKSPACE/trusted-current" --dist "$RUNNER_TEMP/downloaded-release"
+          fi
+          test "$(gh api "repos/$SHIM_REPO/commits/$GITHUB_REF_NAME" --jq .sha)" = "$GITHUB_SHA"
+          gh release edit "$GITHUB_REF_NAME" --repo "$SHIM_REPO" --draft=false --latest="$make_latest"
